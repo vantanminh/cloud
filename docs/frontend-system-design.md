@@ -2,7 +2,7 @@
 
 > **Status:** Implemented MVP, living design contract  
 > **Scope:** `apps/web`  
-> **Last updated:** 2026-09-12  
+> **Last updated:** 2026-09-13
 > **Frontend:** Vite + React 19 + React Router + shadcn/Base UI + Tailwind CSS v4  
 > **Production:** `https://cloud.knotree.com`  
 > **API:** `https://cloudapi.knotree.com/api/v1`
@@ -34,8 +34,12 @@ session should feel quick, calm, and trustworthy:
 - Project creation with an editable project URL slug.
 - Workspace project index with empty, loading, error, and populated states.
 - Project topology home with a real PostgreSQL creation flow, resource cards,
-  connection details inspector, add menu, zoom/history controls, environment
-  context, responsive navigation, and transient feedback.
+  resource workspace sheet, add menu, zoom/history controls, environment
+  context, responsive navigation, theme toggles, logs placeholder, and
+  transient feedback.
+- Resource workspace sections for Deployments, Database, Backups, Variables,
+  Metrics, Console, and Settings, with truthful empty/unavailable states.
+- Light and dark dashboard themes persisted as local view preferences.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
 ### Not in the current slice
@@ -43,15 +47,14 @@ session should feel quick, calm, and trustworthy:
 - Password reset or email delivery.
 - OAuth or social login.
 - Multiple workspaces per user.
-- Workspace switching, invitations, billing, or settings.
-- Redis/app-service provisioning, deployment execution, metrics data, logs data,
-  or persistent topology editing.
-- Active dark-mode UI. A theme provider scaffold exists, but it is not mounted
-  in the current application and the MVP is intentionally light-only.
+- Workspace switching, invitations, billing data, or settings mutations.
+- Redis/app-service provisioning, deployment execution, metrics data, log data,
+  database schema editing, and persistent topology editing.
 
 The topology home now owns one real PostgreSQL resource per project. Other
-resource types remain placeholders until their provisioning APIs and product
-contracts exist. New UI should not imply that an omitted capability exists.
+resource types and operational sections keep their visual shell but remain
+explicitly unavailable until their APIs and product contracts exist. New UI
+must not imply that an omitted capability exists.
 
 ## 2. Experience principles
 
@@ -193,11 +196,11 @@ Click Sign out
   → navigate to /workspace/:slug/project/:projectSlug
   → GET /workspaces/:slug/projects/:projectSlug
   → topology dashboard
-  → Add → Postgres database
+  → Add → Postgres
   → database display name
   → POST /workspaces/:slug/projects/:projectSlug/resources
   → real database + login role + connectivity check
-  → ready Postgres card + connection details inspector
+  → ready Postgres card + resource workspace
 ```
 
 Project creation is scoped to the current workspace. The API owns slug
@@ -348,27 +351,34 @@ Component: `ProjectHomePage` and `TopologyDashboard`
 Route: `/workspace/:workspaceSlug/project/:projectSlug`
 
 The topology home follows the visual language in
-`design/infra-topology-dashboard.html`: a quiet white canvas, a 64px topbar,
-a 64px desktop rail, and a dotted topology work area.
+`design/infra-topology-dashboard.html`: a quiet light canvas by default, a
+64px topbar, a 64px desktop rail, and a dotted topology work area. A dark
+theme uses the same layout and replaces the page-local surface tokens.
 
 #### Desktop composition
 
-- Topbar: Knotree mark, workspace switcher, environment switcher, activity and
-  notification affordances, current project badge, and Agent affordance.
+- Topbar: Knotree mark, workspace switcher, environment switcher, activity,
+  notifications, theme toggle, billing-plan badge, and Agent affordance.
 - Side rail: Topology (active), Metrics, Logs, Resources, Settings, and the
   account/sign-out control.
 - Canvas: blue `Add` button, the project service card, an optional real
   PostgreSQL card, a dashed connector when the database exists, and
   zoom/history/layers controls.
 - Resource cards expose name, status, and database name. Clicking a card opens
-  a resource details inspector with Type, Status, Database, Host, Port, and
-  Username.
-- Add → `Postgres database` opens the creation dialog. The API generates the
+  the `ResourceWorkspace` sheet. The sheet has `Deployments`, `Database`,
+  `Backups`, `Variables`, `Metrics`, `Console`, and `Settings` tabs.
+- The `Deployments` tab communicates resource status and lifecycle history.
+  The `Database` tab has `Data`, `Stats`, and `Config` sub-tabs, search,
+  refresh, SQL preview, and a truthful `No tables yet` state when the API has
+  no schema data. `Connect` copies the real connection string without
+  displaying credentials in the UI.
+- Add → `Postgres` opens the creation dialog. The API generates the
   database identifier, login role, and strong password, provisions the database
   on the configured PostgreSQL cluster, and returns a connection string after
   a successful connectivity check.
-- Redis and App service remain explicit coming-soon choices and do not create
-  fake topology nodes.
+- `Backups`, `Metrics`, `Console`, and write-oriented `Settings` controls use
+  explicit empty or unavailable states until their APIs exist. Redis and App
+  service remain explicit coming-soon choices and do not create fake nodes.
 
 #### Context and transient state
 
@@ -377,9 +387,13 @@ a 64px desktop rail, and a dotted topology work area.
   the current page.
 - Zoom is clamped from 80% to 125%; fit returns to 100%. Zoom and selected
   resource are persisted per project in local storage as view preferences.
+- The global dashboard theme and canvas theme toggle between `light` and
+  `dark`, and persist in local storage. Theme controls have explicit labels.
+- The Logs rail item opens a project-scoped logs shell with resource filtering,
+  search, and Live/Paused controls. It remains empty until log ingestion exists.
 - Resource loading and provisioning failures keep the Add action available and
   show a safe, page-level message; raw database errors never reach the browser.
-- Activity, notifications, Agent, non-topology rail items, undo/redo, and
+- Activity, notifications, Agent, Metrics, Resources, Settings, undo/redo, and
   layers provide explicit placeholder feedback until their APIs exist.
 - Direct project lookup failures show `Project unavailable` and a `Back to
 workspace` action.
@@ -388,10 +402,13 @@ workspace` action.
 
 - The desktop rail becomes a fixed bottom navigation bar.
 - Topbar keeps a truncated workspace label, environment, activity, and
-  notifications; Agent and the project badge hide to preserve space.
+  notifications, and the theme action; Agent and the billing badge hide to
+  preserve space.
 - The dotted canvas stacks resource cards in a single column; connectors are
   hidden because relationship lines are not useful in the narrow layout.
-- Inspector becomes a bottom sheet-like panel above the navigation bar.
+- `ResourceWorkspace` becomes a full-viewport sheet with a horizontally
+  scrollable tab bar; the body remains vertically scrollable and the fixed
+  bottom navigation is not visible while the modal is open.
 - The layout must remain within the viewport width at 320px and 390px.
 
 The project card is a logical project node. PostgreSQL topology data comes only
@@ -504,12 +521,17 @@ it keeps the same restraint. Its page-local tokens live in
 | `--project-surface` | `#f7f8fa` | Card footers, hover, quiet surfaces |
 | `--project-muted`   | `#6b7280` | Supporting text and connector lines |
 | `--project-border`  | `#d9dee7` | Shell, card, and control borders    |
+| `--project-ok`      | `#16803c` | Ready state text and status accents |
+| `--project-warn`    | `#b45309` | Pending and caution states          |
 
-Topology layout constants are a 64px topbar, a 64px desktop rail, 8px shell
-inset, 8px card radius, and 360px desktop node cards. The canvas uses a
-24px dot grid, low-elevation card shadows, and dashed connector paths. On
-mobile the rail is 60px high, the content is stacked, and fixed controls stay
-above the navigation bar.
+The default light values above are overridden by the `[data-theme="dark"]`
+dashboard scope (`#0f1216` background, `#f4f6f8` foreground, `#171c22`
+surface, and `#2a323c` border). Topology layout constants are a 64px topbar,
+a 64px desktop rail, 8px shell inset, 8px card radius, and 360px desktop
+node cards. The canvas uses a 24px dot grid, low-elevation card shadows, and
+dashed connector paths. The resource workspace is at most 1180x860px on
+desktop. On mobile the rail is 60px high, the content is stacked, and the
+resource workspace fills the viewport.
 
 Use the local topology tokens only inside the topology page. Shared auth and
 workspace surfaces continue to use the semantic OKLCH tokens above.
@@ -533,7 +555,9 @@ StrictMode
                   ├─ ProjectCreateDialog
                   └─ ProjectHomePage
                       ├─ PostgresCreateDialog
-                      └─ TopologyDashboard
+                      ├─ TopologyDashboard
+                      ├─ ResourceWorkspace
+                      └─ LogsWorkspace
 ```
 
 ### Component inventory
@@ -551,7 +575,9 @@ StrictMode
 | `ProjectCreateDialog`                                        | Create and validate a project name and slug                                      | Use for project creation; API remains authoritative                            |
 | `PostgresCreateDialog`                                       | Request one real PostgreSQL resource and show pending/error states               | Never collect or persist database passwords in the browser                     |
 | `ProjectHomePage`                                            | Load one project and render unavailable/loading states                           | Keep route data fetching typed and scoped to the current workspace             |
-| `TopologyDashboard`                                          | Topbar, rail, topology canvas, resource inspector, controls, menus, and feedback | Keep unsupported resource actions explicit until their provisioning APIs exist |
+| `TopologyDashboard`                                          | Topbar, rail, topology canvas, controls, menus, themes, and feedback             | Keep unsupported resource actions explicit until their provisioning APIs exist |
+| `ResourceWorkspace`                                          | Accessible resource sheet, section tabs, database empty state, and safe copy    | Keep operational data truthful; never fabricate tables, metrics, or logs       |
+| `LogsWorkspace`                                              | Project-scoped log toolbar and unavailable/empty state                           | Add streaming/query APIs before rendering runtime events                       |
 | `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives                                                        | Prefer composition and variants over bespoke controls                          |
 
 UI primitives are generated/configured through shadcn and backed by Base UI.
@@ -564,6 +590,8 @@ labels, values, and domain states.
 apps/web/src/
 ├─ auth/             session context and auth commands
 ├─ components/       product-level composition
+│  ├─ resource-workspace.tsx
+│  ├─ resource-workspace.css
 │  └─ ui/             shadcn/Base UI primitives
 ├─ lib/               API client, types, slug normalization, utilities
 ├─ pages/             route-level screens and topology styles
@@ -623,10 +651,12 @@ topology dashboard
   ├─ listPostgresResources success + resource → real Postgres node
   ├─ listPostgresResources failure → resource error + Add remains available
   ├─ createPostgresResource pending → disabled dialog + spinner
-  ├─ createPostgresResource success → ready node + inspector + connection string
+  ├─ createPostgresResource success → ready node + resource workspace
   ├─ createPostgresResource failure → safe dialog/page error
-  ├─ select node → selected card + resource inspector
-  └─ zoom/menu/control action → local view state + toast where useful
+  ├─ select node → selected card + resource workspace
+  ├─ resource tab action → section-local empty/unavailable state
+  ├─ copy connection action → clipboard + polite toast
+  └─ zoom/menu/theme/log action → local view state + toast where useful
 ```
 
 ### State ownership
@@ -644,7 +674,8 @@ topology dashboard
 | `project`, load error, selected node, menus, toast                    | `ProjectHomePage` / `TopologyDashboard` | Project data is API-backed; view preferences persist locally                                        |
 | `postgresResource`, resource loading/error, create dialog, copy state | `TopologyDashboard`                     | Database metadata and credentials are API-backed; connection string is held in component state only |
 | Zoom and selected resource                                            | `TopologyDashboard`                     | `localStorage` keyed by project id                                                                  |
-| Theme selection                                                       | Reserved `ThemeProvider`                | Local storage only when theme provider is mounted                                                   |
+| Global theme and canvas theme                                         | `TopologyDashboard`                     | `localStorage` keys `project-topology-dashboard-theme` and `project-topology-canvas-theme`          |
+| Resource tab, table search, variables search, logs filters            | `ResourceWorkspace` / `LogsWorkspace`   | Memory only; reset when the surface unmounts                                                        |
 
 The frontend does not store the session token, password, or workspace
 membership in local storage.
@@ -791,7 +822,7 @@ Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
 | Project home | Missing or inaccessible project             | `Project unavailable` state with a back-to-workspace action                   |
 | Database     | Empty/too-long name                         | Field error for database name                                                 |
 | Database     | Provisioning permissions or cluster failure | Safe API error; retain dialog action and never show raw SQL                   |
-| Database     | Successful provisioning                     | Ready card, inspector, and copyable connection string                         |
+| Database     | Successful provisioning                     | Ready card, resource workspace, and copyable connection action                |
 | Any submit   | Request pending                             | Disable CTA and show spinner                                                  |
 | Any API call | Network/unknown failure                     | Page-level unavailable message                                                |
 
@@ -823,7 +854,9 @@ The current CSS uses Tailwind's standard responsive breakpoints:
 - Project topbar hides the project badge and Agent action on narrow screens;
   workspace context truncates instead of creating horizontal overflow.
 - Topology cards become a single-column stack; connectors are hidden on mobile.
-- The resource inspector is positioned above the mobile navigation bar.
+- The resource workspace fills the mobile viewport and locks page scrolling;
+  its tab row scrolls horizontally inside the sheet without widening the
+  document.
 
 ## 12. Accessibility contract
 
@@ -848,7 +881,10 @@ Target WCAG 2.2 AA for all new work in this surface.
 - Respect reduced motion for any future animation; the current UI uses no
   essential animation.
 - Topology resource cards are keyboard-focusable buttons with `aria-label` and
-  `aria-pressed`; the selected resource details use a labelled `aside`.
+  `aria-pressed`; the selected resource uses a labelled modal dialog.
+- The resource workspace uses `role="dialog"`, `aria-modal`, an explicit close
+  label, Escape-to-close, a tablist with selected tabs, and a polite copy
+  confirmation. The connection string is never rendered as plaintext.
 - Icon-only topology actions have explicit accessible labels, and menu state is
   exposed through `aria-expanded`/`aria-controls`.
 - Toast feedback uses a polite live region; the zoom readout is also announced
@@ -925,8 +961,9 @@ Current behavior coverage includes:
 - Slug normalization handles accents and kebab-case rules.
 - Project creation routes to `/workspace/:workspaceSlug/project/:projectSlug`.
 - Project list/detail API responses drive the workspace list and topology home.
-- Topology interactions cover resource selection/inspector, Add menu feedback,
-  zoom controls, responsive bottom navigation, and no-overflow mobile layout.
+- Topology interactions cover resource selection/workspace, Add menu feedback,
+  workspace tabs, connection copy, theme/log navigation, zoom controls,
+  responsive bottom navigation, and no-overflow mobile layout.
 
 Every new route or meaningful interaction should add:
 
@@ -944,9 +981,12 @@ Every new route or meaningful interaction should add:
 - Verify errors are readable and do not shift the primary CTA unpredictably.
 - Refresh `/new/workspace` and `/workspace/:slug` while authenticated.
 - Refresh a project deep link while authenticated and verify the project reloads.
-- Check topology selection, inspector close, Add → Postgres database, pending and
-  error states, connection-string copy, environment menu, zoom, and sign-out
-  actions with keyboard and pointer input.
+- Check topology selection, resource workspace close, Add → Postgres, pending
+  and error states, Deployments/Database tabs, no-table empty state,
+  connection-string copy, theme toggles, Logs navigation, environment menu,
+  zoom, and sign-out actions with keyboard and pointer input.
+- Check the resource workspace at desktop and mobile widths, including tab
+  scrolling and document-width preservation.
 - Open direct deep links through the Cloudflare SPA fallback.
 - Verify production bundles point to `cloudapi.knotree.com`, not localhost.
 
@@ -974,8 +1014,8 @@ When adding a feature to this frontend:
 - Add password reset with explicit pending/success/failure states.
 - Add email verification UX and a resend path before turning the production
   verification flag on for real users.
-- Introduce a theme switch only after dark-mode tokens and visual QA are
-  complete.
+- Replace Metrics, Logs, Console, Backups, and write-oriented Settings
+  placeholders with API-backed data and explicit loading/error contracts.
 - Add a dedicated query/cache layer if workspace data becomes larger than the
   current session response.
 
