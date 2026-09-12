@@ -1,7 +1,10 @@
 import type { ApiErrorPayload } from "@/lib/types"
 
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080/api/v1"
+  import.meta.env.VITE_API_BASE_URL ??
+  (import.meta.env.PROD
+    ? "https://cloudapi.knotree.com/api/v1"
+    : "http://localhost:8080/api/v1")
 ).replace(/\/$/, "")
 
 let csrfToken: string | null = null
