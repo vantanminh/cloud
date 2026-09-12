@@ -1,0 +1,6 @@
+apiVersion: v2
+name: knotree-api
+description: Knotree Cloud REST API
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

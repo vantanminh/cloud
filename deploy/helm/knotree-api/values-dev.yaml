@@ -1,0 +1,17 @@
+replicaCount: 1
+
+image:
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: false
+
+certManager:
+  enabled: false
+
+env:
+  appEnv: development
+  corsAllowedOrigins: http://localhost:5173
+  cookieSecure: "false"
+  authRequireEmailVerification: "false"
+  rustLog: info,knotree_api=debug

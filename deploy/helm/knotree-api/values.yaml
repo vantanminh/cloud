@@ -1,0 +1,76 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/knotree/knotree-api
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  host: cloudapi.knotree.com
+  entryPoints:
+    - websecure
+  tls:
+    enabled: true
+    secretName: cloudapi-knotree-com-tls
+
+certManager:
+  enabled: true
+  clusterIssuer: letsencrypt-prod
+
+secrets:
+  existingSecret: knotree-api-secrets
+  databaseUrlKey: DATABASE_URL
+
+env:
+  appEnv: production
+  corsAllowedOrigins: https://cloud.knotree.com
+  cookieSecure: "true"
+  authRequireEmailVerification: "true"
+  sessionTtlDays: "30"
+  databaseMaxConnections: "10"
+  rustLog: info,knotree_api=debug
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+migrations:
+  enabled: true
+  backoffLimit: 4

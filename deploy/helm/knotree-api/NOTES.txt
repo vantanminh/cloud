@@ -1,0 +1,11 @@
+Knotree API is deployed as {{ include "knotree-api.fullname" . }}.
+
+The API reads DATABASE_URL from the existing Kubernetes Secret {{ .Values.secrets.existingSecret }}.
+Create it before installing:
+
+  kubectl create secret generic {{ .Values.secrets.existingSecret }} \
+    --from-literal={{ .Values.secrets.databaseUrlKey }}='postgres://user:password@postgres.example/knotree_cloud' \
+    --namespace {{ .Release.Namespace }}
+
+The migration hook runs before install and upgrade. The Traefik route is:
+  https://{{ .Values.ingress.host }}
