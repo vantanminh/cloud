@@ -8,9 +8,9 @@
 > **API:** `https://cloudapi.knotree.com/api/v1`
 
 This document is the source of truth for the frontend experience in the first
-Knotree Cloud slice: email/password authentication and the first-workspace
-onboarding flow. It documents both the behavior already implemented and the
-rules future screens must preserve.
+Knotree Cloud slice: email/password authentication, first-workspace onboarding,
+project creation, and the initial topology dashboard. It documents both the
+behavior already implemented and the rules future screens must preserve.
 
 ## 1. Product intent and scope
 
@@ -31,6 +31,10 @@ session should feel quick, calm, and trustworthy:
 - Success confirmation before entering the workspace.
 - Existing-workspace destination after a later login.
 - Session loading, field validation, API errors, sign out, and protected routes.
+- Project creation with an editable project URL slug.
+- Workspace project index with empty, loading, error, and populated states.
+- Project topology home with resource cards, inspector, add menu, zoom/history
+  controls, environment context, responsive navigation, and transient feedback.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
 ### Not in the current slice
@@ -39,12 +43,15 @@ session should feel quick, calm, and trustworthy:
 - OAuth or social login.
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing, or settings.
-- A dashboard/editor inside the workspace.
+- Resource provisioning, deployment execution, metrics data, logs data, or
+  persistent topology editing.
 - Active dark-mode UI. A theme provider scaffold exists, but it is not mounted
   in the current application and the MVP is intentionally light-only.
 
-These omissions are deliberate. New UI should not imply that any of these
-capabilities exists until the corresponding API and product contract exists.
+These omissions are deliberate. The topology home is a faithful product shell
+with starter resource cards until resource CRUD and runtime status APIs exist.
+New UI should not imply that any omitted capability exists until the
+corresponding API and product contract exists.
 
 ## 2. Experience principles
 
@@ -67,6 +74,7 @@ Each screen has one dominant CTA:
 - `Sign in` or `Create account` on authentication screens.
 - `Create workspace` during onboarding.
 - `Continue to workspace` after successful creation.
+- `Create project` or `New project` at the workspace boundary.
 
 ### Feedback close to the cause
 
@@ -90,7 +98,8 @@ keyboard and screen-reader affordances.
 | `/login` | Public only | Sign-in form | Authenticated users are sent to their workspace destination |
 | `/register` | Public only | Registration form | Authenticated users are sent to their workspace destination |
 | `/new/workspace` | Authenticated | First-workspace form or creation confirmation | An account that already has a workspace is sent to `/workspace/:slug` |
-| `/workspace/:slug` | Authenticated | Workspace-ready placeholder | No workspace → `/new/workspace`; a non-matching slug → the account's own workspace |
+| `/workspace/:slug` | Authenticated | Workspace project index | No workspace → `/new/workspace`; a non-matching slug → the account's own workspace |
+| `/workspace/:workspaceSlug/project/:projectSlug` | Authenticated | Project topology home | Workspace mismatch → the account's own workspace; missing project → unavailable state |
 | Any other route | Any | None | Redirect to `/` |
 
 The route guards live in `apps/web/src/App.tsx`. The workspace page also
@@ -99,15 +108,19 @@ workspace.
 
 ### Navigation model
 
-The MVP has no global navigation sidebar. Navigation is intentional and small:
+Navigation is intentionally small at the workspace boundary:
 
 - Brand mark identifies the product on auth/onboarding screens.
 - Auth screens link only to the alternate auth mode.
-- Workspace-ready screen exposes the signed-in email and `Sign out`.
-- The success state provides the only forward transition into the workspace.
+- Workspace project index exposes the signed-in email, project list, `New
+  project`, and `Sign out`.
+- Project home provides the topology rail, workspace/environment context, and a
+  clear route back to the workspace project index.
+- The workspace success state provides the first forward transition into the
+  workspace.
 
-Future product navigation should be introduced at the workspace boundary, not
-added to the auth shell.
+Auth remains a quiet entry shell; product navigation belongs at the workspace
+and project boundaries.
 
 ## 4. Primary user journeys
 
@@ -167,6 +180,25 @@ Click Sign out
   → clear local session and CSRF cache regardless of response
   → replace history with /login
 ```
+
+### Create a project and open topology home
+
+```text
+/workspace/:slug
+  → GET /workspaces/:slug/projects
+  → empty project state or project list
+  → New project
+  → project name + generated slug
+  → POST /workspaces/:slug/projects
+  → navigate to /workspace/:slug/project/:projectSlug
+  → GET /workspaces/:slug/projects/:projectSlug
+  → topology dashboard
+```
+
+Project creation is scoped to the current workspace. The API owns slug
+normalization and uniqueness; the client mirrors the normalization for fast
+feedback. The first dashboard uses starter topology nodes while resource
+provisioning is still outside this slice.
 
 ## 5. Screen specifications
 
@@ -283,24 +315,77 @@ Displayed inline after a successful `POST /workspaces`:
 The confirmation is intentionally separate from the API response transition so
 the user can recognize that the workspace was created before entering it.
 
-### 5.6 Workspace-ready placeholder
+### 5.6 Workspace project index
 
 Route: `/workspace/:slug`
 
-This is the first authenticated workspace surface and the extension point for
-the future product shell.
+This is the authenticated project index and the entry point for project work.
 
 - Header contains compact brand mark on the left.
 - Signed-in email is visible on desktop and hidden on narrow screens to keep
   the header compact.
-- `Sign out` is a ghost action with a logout icon.
-- Main content shows a primary-color checkmark, the eyebrow `Workspace ready`,
-  and a welcome message containing the workspace name and URL.
+- Header provides `New project` and `Sign out` actions.
+- Empty state uses the heading `Create your first project`, explains that a
+  project owns topology/resources, and keeps `Create project` as the dominant
+  action.
+- Populated state lists projects with name, slug, count, and links to their
+  topology homes.
+- Loading uses a centered spinner; project-list failures use a page-level
+  alert while leaving the create action available.
 
 The workspace route must only render the workspace returned for the current
 session. A mismatching URL slug is corrected by the route guard.
 
-### 5.7 Loading and unavailable states
+### 5.7 Project topology home
+
+Component: `ProjectHomePage` and `TopologyDashboard`
+Route: `/workspace/:workspaceSlug/project/:projectSlug`
+
+The topology home follows the visual language in
+`design/infra-topology-dashboard.html`: a quiet white canvas, a 64px topbar,
+a 64px desktop rail, and a dotted topology work area.
+
+#### Desktop composition
+
+- Topbar: Knotree mark, workspace switcher, environment switcher, activity and
+  notification affordances, current project badge, and Agent affordance.
+- Side rail: Topology (active), Metrics, Logs, Resources, Settings, and the
+  account/sign-out control.
+- Canvas: blue `Add` button, three starter cards (Postgres, Redis, and the
+  project service), dashed connectors, and zoom/history/layers controls.
+- Resource cards expose name, status, and volume label. Clicking a card opens
+  a resource details inspector with Type, Status, and Volume.
+- Add menu exposes Postgres, Redis, and App service choices. Until resource
+  CRUD exists, choices confirm readiness with a toast and do not persist a
+  resource.
+
+#### Context and transient state
+
+- Workspace and environment controls are keyboard-operable menus.
+- Environment options are `production` and `staging`; selection is local to
+  the current page.
+- Zoom is clamped from 80% to 125%; fit returns to 100%. Zoom and selected
+  resource are persisted per project in local storage as view preferences.
+- Activity, notifications, Agent, non-topology rail items, undo/redo, and
+  layers provide explicit placeholder feedback until their APIs exist.
+- Direct project lookup failures show `Project unavailable` and a `Back to
+  workspace` action.
+
+#### Mobile composition
+
+- The desktop rail becomes a fixed bottom navigation bar.
+- Topbar keeps a truncated workspace label, environment, activity, and
+  notifications; Agent and the project badge hide to preserve space.
+- The dotted canvas stacks resource cards in a single column; connectors are
+  hidden because relationship lines are not useful in the narrow layout.
+- Inspector becomes a bottom sheet-like panel above the navigation bar.
+- The layout must remain within the viewport width at 320px and 390px.
+
+Starter topology data is intentionally derived from the project slug and is
+not a claim that those resources exist in the runtime environment. Replace it
+with a typed resource query when the backend contract is ready.
+
+### 5.8 Loading and unavailable states
 
 `LoadingScreen` is rendered while the auth provider is bootstrapping. It is a
 minimal centered loading surface and must not expose a partially evaluated
@@ -392,6 +477,30 @@ Rules:
 - Decorative images use an empty `alt` attribute. Product-critical information
   must remain in text.
 
+### 6.6 Topology dashboard tokens
+
+The topology dashboard is a denser product surface than auth/onboarding, but
+it keeps the same restraint. Its page-local tokens live in
+`apps/web/src/pages/project-home.css`:
+
+| Token | Value | Role |
+| --- | --- | --- |
+| `--project-bg` | `#ffffff` | Canvas and card background |
+| `--project-fg` | `#111111` | Node titles and primary controls |
+| `--project-accent` | `#1677ff` | Add CTA, selected node, active rail |
+| `--project-surface` | `#f7f8fa` | Card footers, hover, quiet surfaces |
+| `--project-muted` | `#6b7280` | Supporting text and connector lines |
+| `--project-border` | `#d9dee7` | Shell, card, and control borders |
+
+Topology layout constants are a 64px topbar, a 64px desktop rail, 8px shell
+inset, 8px card radius, and 360px desktop node cards. The canvas uses a
+24px dot grid, low-elevation card shadows, and dashed connector paths. On
+mobile the rail is 60px high, the content is stacked, and fixed controls stay
+above the navigation bar.
+
+Use the local topology tokens only inside the topology page. Shared auth and
+workspace surfaces continue to use the semantic OKLCH tokens above.
+
 ## 7. Component architecture
 
 ### Application composition
@@ -408,6 +517,9 @@ StrictMode
               ├─ NewWorkspacePage
               │   └─ WorkspaceCreated
               └─ WorkspacePage
+                  ├─ ProjectCreateDialog
+                  └─ ProjectHomePage
+                      └─ TopologyDashboard
 ```
 
 ### Component inventory
@@ -421,7 +533,10 @@ StrictMode
 | `LoadingScreen` | Auth bootstrap loading state | Use before protected/public route decisions are known |
 | `AuthPage` | Login/register form and local validation | Mode is explicit: `login` or `register` |
 | `NewWorkspacePage` | First workspace form and success state | Must not become a general workspace CRUD screen without a new contract |
-| `WorkspacePage` | Minimal post-onboarding landing surface | Future workspace shell grows from this boundary |
+| `WorkspacePage` | Project index, empty state, project list, and sign out | Keep workspace-level project selection here |
+| `ProjectCreateDialog` | Create and validate a project name and slug | Use for project creation; API remains authoritative |
+| `ProjectHomePage` | Load one project and render unavailable/loading states | Keep route data fetching typed and scoped to the current workspace |
+| `TopologyDashboard` | Topbar, rail, topology canvas, inspector, controls, menus, and feedback | Keep resource actions explicit until backend resource APIs exist |
 | `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives | Prefer composition and variants over bespoke controls |
 
 UI primitives are generated/configured through shadcn and backed by Base UI.
@@ -436,7 +551,9 @@ apps/web/src/
 ├─ components/       product-level composition
 │  └─ ui/             shadcn/Base UI primitives
 ├─ lib/               API client, types, slug normalization, utilities
-├─ pages/             route-level screens
+├─ pages/             route-level screens and topology styles
+│  ├─ project-home-page.tsx
+│  └─ project-home.css
 ├─ App.tsx            route table and guards
 ├─ main.tsx           runtime providers
 └─ index.css         tokens and global layout rules
@@ -444,6 +561,8 @@ apps/web/src/
 
 Keep server/API concerns in `lib/api.ts` and typed models. Do not call
 `fetch` directly from a page when the request changes session or CSRF state.
+Project requests are grouped in `lib/projects.ts`; pages consume those typed
+functions rather than constructing project URLs inline.
 
 ## 8. Frontend state and data flow
 
@@ -466,6 +585,26 @@ ready + session
   └─ signOut → anonymous + CSRF cache reset
 ```
 
+### Project dashboard state machine
+
+```text
+workspace route
+  ├─ listProjects pending → loading state
+  ├─ listProjects success + [] → empty project state
+  ├─ listProjects success + projects → project list
+  └─ listProjects failure → alert + create action remains available
+
+project route
+  ├─ getProject pending → loading state
+  ├─ getProject success → topology dashboard
+  └─ getProject failure → project unavailable + back action
+
+topology dashboard
+  ├─ select node → selected card + resource inspector
+  ├─ Add resource → readiness toast (not persisted in this slice)
+  └─ zoom/menu/control action → local view state + toast where useful
+```
+
 ### State ownership
 
 | State | Owner | Persistence |
@@ -476,6 +615,10 @@ ready + session
 | CSRF token cache | `lib/api.ts` | Memory only; CSRF cookie is server-managed |
 | Form values/errors/loading | Route page | Reset on page mount/navigation |
 | `createdWorkspace` confirmation | `NewWorkspacePage` | Memory only; session is updated by provider |
+| `projects` and project-list error | `WorkspacePage` | Memory only; refetched on workspace page mount |
+| Project create form | `ProjectCreateDialog` | Reset when dialog closes/reopens |
+| `project`, load error, selected node, menus, toast | `ProjectHomePage` / `TopologyDashboard` | Project data is API-backed; view preferences persist locally |
+| Zoom and selected resource | `TopologyDashboard` | `localStorage` keyed by project id |
 | Theme selection | Reserved `ThemeProvider` | Local storage only when theme provider is mounted |
 
 The frontend does not store the session token, password, or workspace
@@ -518,6 +661,9 @@ so a production build cannot silently point at localhost.
 | `POST` | `/auth/logout` | Session + CSRF | Revoke session and clear cookies |
 | `POST` | `/workspaces` | Session + CSRF | Create the account's first workspace |
 | `GET` | `/workspaces/:slug` | Session | Reserved for future workspace data loading |
+| `GET` | `/workspaces/:workspaceSlug/projects` | Session + membership | List projects in the current workspace |
+| `POST` | `/workspaces/:workspaceSlug/projects` | Session + membership + CSRF | Create a project |
+| `GET` | `/workspaces/:workspaceSlug/projects/:projectSlug` | Session + membership | Load one project for topology home |
 
 ### Shared success shape
 
@@ -539,6 +685,21 @@ so a production build cannot silently point at localhost.
 
 `workspace` is `null` until the first workspace is created.
 
+Project list and detail endpoints return the compact project shape:
+
+```json
+{
+  "id": "uuid",
+  "name": "Knotree Study",
+  "slug": "knotree-study"
+}
+```
+
+`POST /workspaces/:workspaceSlug/projects` accepts `{ "name": "...", "slug":
+"..." }`. The slug is normalized server-side and is unique within the
+workspace. A duplicate returns `PROJECT_SLUG_TAKEN`; an inaccessible workspace
+or project returns the corresponding not-found envelope.
+
 ### Error envelope
 
 ```json
@@ -556,7 +717,8 @@ so a production build cannot silently point at localhost.
 The UI maps `fields` by field name and uses `message` for the page-level alert.
 Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
 `SLUG_TAKEN`, `WORKSPACE_EXISTS`, `AUTHENTICATION_REQUIRED`, and
-`EMAIL_NOT_VERIFIED`.
+`EMAIL_NOT_VERIFIED`, `PROJECT_SLUG_TAKEN`, `PROJECT_NOT_FOUND`, and
+`WORKSPACE_NOT_FOUND`.
 
 ## 10. Validation and interaction matrix
 
@@ -573,6 +735,10 @@ Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
 | Workspace | Invalid slug | Field error for lowercase URL slug |
 | Workspace | Slug already used | API field error/page alert for `SLUG_TAKEN` |
 | Workspace | Second creation attempt | API conflict `WORKSPACE_EXISTS`; route normally redirects existing users away |
+| Project | Empty/too-long name | Field error for project name |
+| Project | Invalid slug | Field error for lowercase project URL slug |
+| Project | Slug already used in workspace | API conflict `PROJECT_SLUG_TAKEN` mapped to the slug field/page alert |
+| Project home | Missing or inaccessible project | `Project unavailable` state with a back-to-workspace action |
 | Any submit | Request pending | Disable CTA and show spinner |
 | Any API call | Network/unknown failure | Page-level unavailable message |
 
@@ -599,6 +765,12 @@ The current CSS uses Tailwind's standard responsive breakpoints:
 - Heading sizes step down on narrow screens while preserving hierarchy.
 - Decorative artwork may crop; content and controls may not.
 - Touch targets must remain usable at 100% and 200% zoom.
+- Project topology uses a fixed 60px bottom rail below `768px` and reserves
+  bottom padding so cards are not hidden behind it.
+- Project topbar hides the project badge and Agent action on narrow screens;
+  workspace context truncates instead of creating horizontal overflow.
+- Topology cards become a single-column stack; connectors are hidden on mobile.
+- The resource inspector is positioned above the mobile navigation bar.
 
 ## 12. Accessibility contract
 
@@ -622,6 +794,12 @@ Target WCAG 2.2 AA for all new work in this surface.
 - Do not put validation messages only in placeholders or tooltips.
 - Respect reduced motion for any future animation; the current UI uses no
   essential animation.
+- Topology resource cards are keyboard-focusable buttons with `aria-label` and
+  `aria-pressed`; the selected resource details use a labelled `aside`.
+- Icon-only topology actions have explicit accessible labels, and menu state is
+  exposed through `aria-expanded`/`aria-controls`.
+- Toast feedback uses a polite live region; the zoom readout is also announced
+  as a live value.
 
 ## 13. Security and privacy UX rules
 
@@ -639,6 +817,8 @@ Target WCAG 2.2 AA for all new work in this surface.
   pending/verified UX before enabling it in production.
 - Workspace access is always derived from the current authenticated session;
   never trust a slug supplied by the user as proof of membership.
+- Project list/create/detail requests are scoped through the authenticated
+  workspace membership; the route slug is never treated as authorization.
 
 ## 14. Runtime and deployment design
 
@@ -660,8 +840,9 @@ Vite source
 - Custom domain route: `cloud.knotree.com`.
 - Worker observability enabled.
 
-The SPA fallback is required so direct visits to `/login`,
-`/new/workspace`, and `/workspace/:slug` resolve to the React application.
+The SPA fallback is required so direct visits to `/login`, `/new/workspace`,
+`/workspace/:slug`, and `/workspace/:workspaceSlug/project/:projectSlug` resolve
+to the React application.
 
 ### Environment contract
 
@@ -689,6 +870,10 @@ Current behavior coverage includes:
 - First workspace creation routes to `/workspace/:slug` after confirmation.
 - Existing workspace login routes directly to that workspace.
 - Slug normalization handles accents and kebab-case rules.
+- Project creation routes to `/workspace/:workspaceSlug/project/:projectSlug`.
+- Project list/detail API responses drive the workspace list and topology home.
+- Topology interactions cover resource selection/inspector, Add menu feedback,
+  zoom controls, responsive bottom navigation, and no-overflow mobile layout.
 
 Every new route or meaningful interaction should add:
 
@@ -705,6 +890,9 @@ Every new route or meaningful interaction should add:
 - Toggle password visibility without submitting the form.
 - Verify errors are readable and do not shift the primary CTA unpredictably.
 - Refresh `/new/workspace` and `/workspace/:slug` while authenticated.
+- Refresh a project deep link while authenticated and verify the project reloads.
+- Check topology selection, inspector close, Add menu, environment menu, zoom,
+  and sign-out actions with keyboard and pointer input.
 - Open direct deep links through the Cloudflare SPA fallback.
 - Verify production bundles point to `cloudapi.knotree.com`, not localhost.
 
@@ -718,14 +906,15 @@ When adding a feature to this frontend:
 3. Reuse semantic tokens and existing Base UI/shadcn primitives.
 4. Keep server state in a typed API boundary and auth state in `AuthProvider`.
 5. Keep page-specific transient state local unless multiple routes need it.
-6. Preserve the auth/onboarding shell as a quiet entry experience; do not turn
-   it into a dashboard.
+6. Preserve the auth/onboarding shell as a quiet entry experience; product
+   density belongs in workspace/project shells.
 7. Update tests and this document in the same slice.
 
 ### Planned evolution points
 
-- Replace the workspace-ready placeholder with the product shell and global
-  navigation.
+- Replace starter topology cards with resource API data and real provisioning
+  flows.
+- Add persistent topology editing only with an explicit graph/resource model.
 - Add a workspace selector only when multiple memberships are supported by the
   API and data model.
 - Add password reset with explicit pending/success/failure states.
@@ -746,8 +935,10 @@ When adding a feature to this frontend:
 | Shared types | `apps/web/src/lib/types.ts`, `apps/web/src/lib/auth-types.ts` |
 | Auth screens | `apps/web/src/pages/auth-page.tsx` |
 | Workspace screens | `apps/web/src/pages/workspace-page.tsx` |
+| Project API boundary | `apps/web/src/lib/projects.ts` |
+| Project creation dialog | `apps/web/src/components/project-create-dialog.tsx` |
+| Project topology home | `apps/web/src/pages/project-home-page.tsx`, `apps/web/src/pages/project-home.css` |
 | Product composition | `apps/web/src/components/` |
 | Design tokens and layout CSS | `apps/web/src/index.css` |
 | Frontend deployment | `apps/web/wrangler.jsonc` |
-| Browser-facing API contract | `apps/api/src/auth.rs`, `apps/api/src/workspaces.rs`, `apps/api/src/models.rs` |
-
+| Browser-facing API contract | `apps/api/src/auth.rs`, `apps/api/src/workspaces.rs`, `apps/api/src/projects.rs`, `apps/api/src/models.rs` |
