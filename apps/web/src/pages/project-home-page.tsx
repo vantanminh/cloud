@@ -372,7 +372,7 @@ function TopologyDashboard({
                 <button
                   key={option}
                   type="button"
-                  className={`project-context-menu-item${option === environment ? "is-current" : ""}`}
+                  className={`project-context-menu-item${option === environment ? " is-current" : ""}`}
                   onClick={() => {
                     setEnvironment(option)
                     closeMenus()
@@ -467,7 +467,7 @@ function TopologyDashboard({
       <main className="project-dashboard-main">
         <h1 className="sr-only">{project.name} infrastructure topology</h1>
         <section
-          className={`project-topology-shell${selectedNode ? "has-selection" : ""}${layersVisible ? "has-layer-guidance" : ""}`}
+          className={`project-topology-shell${selectedNode ? " has-selection" : ""}${layersVisible ? " has-layer-guidance" : ""}`}
           aria-label={`${environment} infrastructure topology for ${project.name}`}
         >
           <div className="project-canvas-toolbar">
@@ -582,7 +582,7 @@ function TopologyDashboard({
             {nodes.map((node) => (
               <article
                 key={node.id}
-                className={`project-node-card${selectedNode === node.id ? "is-selected" : ""}`}
+                className={`project-node-card${selectedNode === node.id ? " is-selected" : ""}`}
                 style={{
                   left: `${node.position.left}%`,
                   top: `${node.position.top}%`,

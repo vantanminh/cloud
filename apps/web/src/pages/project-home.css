@@ -1001,6 +1001,15 @@
     gap: 12px;
   }
 
+  .project-workspace-switcher {
+    flex: 1 1 0;
+    overflow: hidden;
+  }
+
+  .project-workspace-name {
+    width: 100%;
+  }
+
   .project-topbar-divider {
     display: none;
   }
@@ -1010,7 +1019,16 @@
   }
 
   .project-workspace-name .project-context-trigger {
+    min-width: 0;
     max-width: 150px;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .project-workspace-name .project-context-label {
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 auto;
   }
 
   .project-agent-button {
