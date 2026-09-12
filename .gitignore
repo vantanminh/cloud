@@ -6,3 +6,16 @@
 harness.db
 harness.db-wal
 harness.db-shm
+
+# Local build output and dependencies
+node_modules/
+dist/
+target/
+.wrangler/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+apps/web/.env.*
+!apps/web/.env.example

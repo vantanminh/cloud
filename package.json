@@ -1,0 +1,17 @@
+{
+  "name": "knotree-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.3.3",
+  "scripts": {
+    "dev:web": "pnpm --dir apps/web dev",
+    "build:web": "pnpm --dir apps/web build",
+    "lint:web": "pnpm --dir apps/web lint",
+    "test:web": "pnpm --dir apps/web test",
+    "typecheck:web": "pnpm --dir apps/web typecheck",
+    "check:api": "cargo check --manifest-path apps/api/Cargo.toml",
+    "test:api": "cargo test --manifest-path apps/api/Cargo.toml",
+    "fmt:api": "cargo fmt --manifest-path apps/api/Cargo.toml --all -- --check",
+    "check": "pnpm typecheck:web && pnpm lint:web && pnpm check:api"
+  }
+}

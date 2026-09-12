@@ -1,0 +1,7 @@
+.git
+.5harness
+node_modules
+target
+dist
+**/.env
+**/.dev.vars

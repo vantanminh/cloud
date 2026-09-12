@@ -1,0 +1,216 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Geist Variable", sans-serif;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-link: var(--link);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.19 0.025 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.19 0.025 255);
+  --primary: oklch(0.31 0.075 165);
+  --primary-foreground: oklch(0.985 0.01 165);
+  --secondary: oklch(0.965 0.012 255);
+  --secondary-foreground: oklch(0.24 0.025 255);
+  --muted: oklch(0.972 0.008 255);
+  --muted-foreground: oklch(0.52 0.025 255);
+  --accent: oklch(0.965 0.02 260);
+  --accent-foreground: oklch(0.31 0.075 270);
+  --link: oklch(0.42 0.13 275);
+  --destructive: oklch(0.58 0.19 26);
+  --border: oklch(0.90 0.018 255);
+  --input: oklch(0.86 0.025 255);
+  --ring: oklch(0.45 0.09 165);
+  --radius: 0.75rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  body {
+    @apply min-w-[320px] bg-background text-foreground antialiased;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.auth-page,
+.workspace-page {
+  min-height: 100svh;
+  background: #ffffff;
+  padding: 1rem;
+}
+
+.auth-frame {
+  display: grid;
+  min-height: calc(100svh - 2rem);
+  max-width: 1200px;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgb(226 232 240 / 0.9);
+  border-radius: 1rem;
+  background: #ffffff;
+  box-shadow: 0 20px 60px rgb(15 23 42 / 0.06);
+}
+
+.auth-brand-panel {
+  position: relative;
+  display: flex;
+  min-height: 18rem;
+  flex-direction: column;
+  gap: 2rem;
+  overflow: hidden;
+  padding: 2rem;
+  background: #fcfefd;
+}
+
+.auth-form-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.5rem;
+}
+
+.auth-motif {
+  pointer-events: none;
+  position: absolute;
+  right: -12rem;
+  bottom: -2rem;
+  width: 42rem;
+  max-width: none;
+  opacity: 0.7;
+}
+
+.form-content,
+.workspace-content {
+  display: flex;
+  width: min(100%, 25rem);
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.workspace-page {
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.workspace-frame {
+  display: flex;
+  width: min(100%, 38rem);
+  flex-direction: column;
+  gap: 4rem;
+  padding: 2rem 0;
+}
+
+.workspace-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.workspace-stepper span {
+  height: 0.25rem;
+  width: 4rem;
+  border-radius: 999px;
+  background: rgb(226 232 240);
+}
+
+.workspace-stepper .workspace-stepper-active {
+  background: oklch(0.31 0.075 165);
+}
+
+.workspace-success {
+  align-items: center;
+  gap: 1.5rem;
+  text-align: center;
+}
+
+.workspace-ready-mark {
+  display: grid;
+  height: 3.25rem;
+  width: 3.25rem;
+  place-items: center;
+  border-radius: 999px;
+  background: oklch(0.31 0.075 165);
+  color: white;
+  font-weight: 600;
+}
+
+.workspace-ready-mark svg {
+  height: 1.5rem;
+  width: 1.5rem;
+  stroke-width: 2.5;
+}
+
+@media (min-width: 768px) {
+  .auth-page,
+  .workspace-page {
+    padding: 2rem;
+  }
+
+  .auth-frame {
+    min-height: calc(100svh - 4rem);
+  }
+
+  .auth-brand-panel {
+    padding: 2.5rem;
+  }
+
+  .auth-form-panel {
+    padding: 3rem;
+  }
+
+  .workspace-frame {
+    padding: 3rem 0;
+  }
+}
+
+@media (min-width: 1024px) {
+  .auth-frame {
+    grid-template-columns: minmax(18rem, 0.82fr) minmax(25rem, 1.18fr);
+  }
+
+  .auth-brand-panel {
+    min-height: calc(100svh - 4rem);
+  }
+
+  .auth-form-panel {
+    padding: 4rem;
+  }
+}
