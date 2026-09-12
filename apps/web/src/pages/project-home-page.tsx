@@ -9,7 +9,9 @@ import {
 import {
   ActivityIcon,
   BellIcon,
+  CheckIcon,
   ChevronDownIcon,
+  CopyIcon,
   DatabaseIcon,
   FileTextIcon,
   GitBranchIcon,
@@ -28,16 +30,23 @@ import {
 import { useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { getProject } from "@/lib/projects"
-import type { Project, Workspace } from "@/lib/types"
+import { listPostgresResources } from "@/lib/resources"
+import type {
+  PostgresResource,
+  PostgresResourceStatus,
+  Project,
+  Workspace,
+} from "@/lib/types"
 
 import "./project-home.css"
 
-type TopologyNodeId = "postgres" | "redis" | "project"
-type ConnectorId = "project-postgres" | "project-redis"
+type TopologyNodeId = "postgres" | "project"
+type ConnectorId = "project-postgres"
 type Environment = "production" | "staging"
 
 type TopologyNode = {
@@ -46,6 +55,8 @@ type TopologyNode = {
   subtitle?: string
   type: string
   volume: string
+  status: string
+  resource?: PostgresResource
   position: { left: number; top: number }
 }
 
@@ -107,7 +118,14 @@ export function ProjectHomePage() {
     )
   }
 
-  return <TopologyDashboard project={project} workspace={session.workspace} />
+  return (
+    <TopologyDashboard
+      project={project}
+      workspace={session.workspace}
+      workspaceSlug={workspaceSlug}
+      projectSlug={projectSlug}
+    />
+  )
 }
 
 function ProjectLoadError({
@@ -140,39 +158,52 @@ function ProjectLoadError({
 function TopologyDashboard({
   project,
   workspace,
+  workspaceSlug,
+  projectSlug,
 }: {
   project: Project
   workspace: Workspace
+  workspaceSlug: string
+  projectSlug: string
 }) {
   const navigate = useNavigate()
   const { session, signOut } = useAuth()
-  const nodes = useMemo<TopologyNode[]>(
-    () => [
+  const [postgresResource, setPostgresResource] =
+    useState<PostgresResource | null>(null)
+  const [resourcesLoading, setResourcesLoading] = useState(true)
+  const [resourceError, setResourceError] = useState<string | null>(null)
+  const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
+  const [copiedConnectionString, setCopiedConnectionString] = useState(false)
+  const nodes = useMemo<TopologyNode[]>(() => {
+    const projectNode: TopologyNode = {
+      id: "project",
+      title: project.name,
+      subtitle: project.slug,
+      type: "Project service",
+      volume: `${project.slug}-volume`,
+      status: "Ready",
+      position: postgresResource
+        ? { left: 42, top: 53 }
+        : { left: 50, top: 35 },
+    }
+    if (!postgresResource) {
+      return [projectNode]
+    }
+
+    return [
       {
         id: "postgres",
-        title: "Postgres",
-        type: "Database",
-        volume: `${project.slug}-postgres-volume`,
+        title: postgresResource.name,
+        subtitle: postgresResource.databaseName,
+        type: "PostgreSQL database",
+        volume: postgresResource.databaseName,
+        status: resourceStatusLabel(postgresResource.status),
+        resource: postgresResource,
         position: { left: 42, top: 20 },
       },
-      {
-        id: "redis",
-        title: "Redis",
-        type: "Cache",
-        volume: `${project.slug}-redis-volume`,
-        position: { left: 67, top: 20 },
-      },
-      {
-        id: "project",
-        title: project.name,
-        subtitle: project.slug,
-        type: "Project service",
-        volume: `${project.slug}-volume`,
-        position: { left: 42, top: 53 },
-      },
-    ],
-    [project.name, project.slug]
-  )
+      projectNode,
+    ]
+  }, [postgresResource, project.name, project.slug])
   const stateKey = `project-topology-dashboard-state:${project.id}`
   const initialState = useMemo(() => readPersistedState(stateKey), [stateKey])
   const [zoom, setZoom] = useState(initialState.zoom)
@@ -186,9 +217,37 @@ function TopologyDashboard({
   const [environmentMenuOpen, setEnvironmentMenuOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+  const copyTimer = useRef<number | null>(null)
   const addMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
   const environmentMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let active = true
+    void listPostgresResources(workspaceSlug, projectSlug)
+      .then((resources) => {
+        if (!active) {
+          return
+        }
+        setPostgresResource(resources[0] ?? null)
+        setResourcesLoading(false)
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return
+        }
+        setResourcesLoading(false)
+        setResourceError(
+          error instanceof ApiError
+            ? error.message
+            : "The API is currently unavailable. Please try again."
+        )
+      })
+
+    return () => {
+      active = false
+    }
+  }, [projectSlug, workspaceSlug])
 
   const showToast = useCallback((message: string) => {
     if (toastTimer.current !== null) {
@@ -212,6 +271,9 @@ function TopologyDashboard({
     return () => {
       if (toastTimer.current !== null) {
         window.clearTimeout(toastTimer.current)
+      }
+      if (copyTimer.current !== null) {
+        window.clearTimeout(copyTimer.current)
       }
     }
   }, [])
@@ -258,6 +320,45 @@ function TopologyDashboard({
 
   function selectNode(nodeId: TopologyNodeId) {
     setSelectedNode(nodeId)
+  }
+
+  function handlePostgresAdd() {
+    setAddMenuOpen(false)
+    if (postgresResource?.status === "ready") {
+      setSelectedNode("postgres")
+      showToast("Postgres is already provisioned")
+      return
+    }
+    setPostgresDialogOpen(true)
+  }
+
+  function handlePostgresCreated(resource: PostgresResource) {
+    setPostgresResource(resource)
+    setResourceError(null)
+    setPostgresDialogOpen(false)
+    setSelectedNode("postgres")
+    showToast("Postgres database is ready")
+  }
+
+  async function handleCopyConnectionString(value: string) {
+    if (!navigator.clipboard) {
+      showToast("Copy is unavailable in this browser")
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedConnectionString(true)
+      showToast("Connection string copied")
+      if (copyTimer.current !== null) {
+        window.clearTimeout(copyTimer.current)
+      }
+      copyTimer.current = window.setTimeout(() => {
+        setCopiedConnectionString(false)
+        copyTimer.current = null
+      }, 2200)
+    } catch {
+      showToast("Could not copy the connection string")
+    }
   }
 
   function closeMenus() {
@@ -496,18 +597,19 @@ function TopologyDashboard({
                 <div className="project-menu-heading">Add resource</div>
                 <ProjectAddOption
                   mark="P"
-                  label="Postgres"
-                  onClick={() => {
-                    setAddMenuOpen(false)
-                    showToast("Postgres is ready to configure")
-                  }}
+                  label={
+                    postgresResource?.status === "ready"
+                      ? "Postgres (ready)"
+                      : "Postgres database"
+                  }
+                  onClick={handlePostgresAdd}
                 />
                 <ProjectAddOption
                   mark="R"
                   label="Redis"
                   onClick={() => {
                     setAddMenuOpen(false)
-                    showToast("Redis is ready to configure")
+                    showToast("Redis provisioning is coming soon")
                   }}
                 />
                 <ProjectAddOption
@@ -553,27 +655,51 @@ function TopologyDashboard({
                 <path d="M0 0 5 2.5 0 5z" fill="var(--project-accent)" />
               </marker>
             </defs>
-            <path
-              className={connectorClassName("project-postgres", selectedNode)}
-              data-connector="project-postgres"
-              d="M42 53 V46 H42 V44"
-              markerEnd={
-                selectedNode === "postgres"
-                  ? "url(#project-arrowhead-accent)"
-                  : "url(#project-arrowhead)"
-              }
-            />
-            <path
-              className={connectorClassName("project-redis", selectedNode)}
-              data-connector="project-redis"
-              d="M42 53 V46 H67 V44"
-              markerEnd={
-                selectedNode === "redis"
-                  ? "url(#project-arrowhead-accent)"
-                  : "url(#project-arrowhead)"
-              }
-            />
+            {postgresResource && (
+              <path
+                className={connectorClassName("project-postgres", selectedNode)}
+                data-connector="project-postgres"
+                d="M42 53 V46 H42 V44"
+                markerEnd={
+                  selectedNode === "postgres"
+                    ? "url(#project-arrowhead-accent)"
+                    : "url(#project-arrowhead)"
+                }
+              />
+            )}
           </svg>
+
+          {resourcesLoading && (
+            <div className="project-canvas-message" role="status">
+              <Spinner />
+              <span>Loading resources</span>
+            </div>
+          )}
+          {!resourcesLoading && resourceError && (
+            <div className="project-canvas-message project-canvas-message-error">
+              <strong>Resources unavailable</strong>
+              <span>{resourceError}</span>
+            </div>
+          )}
+          {!resourcesLoading && !resourceError && !postgresResource && (
+            <div className="project-canvas-empty">
+              <span className="project-canvas-empty-icon" aria-hidden="true">
+                <DatabaseIcon />
+              </span>
+              <strong>Create your first database</strong>
+              <span>
+                Add a real PostgreSQL database to give this project a durable
+                data store.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setPostgresDialogOpen(true)}
+              >
+                Create database
+              </Button>
+            </div>
+          )}
 
           <div
             className="project-canvas-world"
@@ -590,7 +716,7 @@ function TopologyDashboard({
                 tabIndex={0}
                 role="button"
                 aria-pressed={selectedNode === node.id}
-                aria-label={`${node.title} resource, online`}
+                aria-label={`${node.title} resource, ${node.status.toLowerCase()}`}
                 onClick={() => selectNode(node.id)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -612,8 +738,11 @@ function TopologyDashboard({
                     </div>
                   </div>
                   <div className="project-node-status">
-                    <span className="project-status-dot" aria-hidden="true" />
-                    <span>Online</span>
+                    <span
+                      className={`project-status-dot project-status-dot-${node.status.toLowerCase()}`}
+                      aria-hidden="true"
+                    />
+                    <span>{node.status}</span>
                   </div>
                 </div>
                 <div className="project-node-footer">
@@ -728,17 +857,75 @@ function TopologyDashboard({
                 </div>
                 <div className="project-inspect-row">
                   <dt>Status</dt>
-                  <dd>Online</dd>
+                  <dd>{selectedNodeData.status}</dd>
                 </div>
                 <div className="project-inspect-row">
-                  <dt>Volume</dt>
+                  <dt>Database</dt>
                   <dd>{selectedNodeData.volume}</dd>
                 </div>
+                {selectedNodeData.resource && (
+                  <>
+                    <div className="project-inspect-row">
+                      <dt>Host</dt>
+                      <dd>{selectedNodeData.resource.host}</dd>
+                    </div>
+                    <div className="project-inspect-row">
+                      <dt>Port</dt>
+                      <dd>{selectedNodeData.resource.port}</dd>
+                    </div>
+                    <div className="project-inspect-row">
+                      <dt>Username</dt>
+                      <dd>{selectedNodeData.resource.username}</dd>
+                    </div>
+                  </>
+                )}
               </dl>
+              {selectedNodeData.resource?.connectionString && (
+                <div className="project-connection-block">
+                  <div className="project-connection-heading">
+                    <span>Connection string</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        void handleCopyConnectionString(
+                          selectedNodeData.resource?.connectionString ?? ""
+                        )
+                      }
+                    >
+                      {copiedConnectionString ? (
+                        <CheckIcon data-icon="inline-start" />
+                      ) : (
+                        <CopyIcon data-icon="inline-start" />
+                      )}
+                      {copiedConnectionString ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                  <code className="project-connection-value">
+                    {selectedNodeData.resource.connectionString}
+                  </code>
+                  <p className="project-connection-warning">
+                    Treat this like a password. Anyone with it can connect to
+                    this database.
+                  </p>
+                </div>
+              )}
             </aside>
           )}
         </section>
       </main>
+
+      <PostgresCreateDialog
+        key={
+          postgresDialogOpen ? "postgres-dialog-open" : "postgres-dialog-closed"
+        }
+        workspaceSlug={workspaceSlug}
+        projectSlug={projectSlug}
+        open={postgresDialogOpen}
+        onOpenChange={setPostgresDialogOpen}
+        onCreated={handlePostgresCreated}
+      />
 
       {toast && (
         <div className="project-toast" role="status" aria-live="polite">
@@ -796,9 +983,6 @@ function NodeIcon({ nodeId }: { nodeId: TopologyNodeId }) {
   if (nodeId === "postgres") {
     return <DatabaseIcon aria-hidden="true" />
   }
-  if (nodeId === "redis") {
-    return <Layers3Icon aria-hidden="true" />
-  }
   return <GitBranchIcon aria-hidden="true" />
 }
 
@@ -807,9 +991,18 @@ function connectorClassName(
   selectedNode: TopologyNodeId | null
 ) {
   const highlighted =
-    (connector === "project-postgres" && selectedNode === "postgres") ||
-    (connector === "project-redis" && selectedNode === "redis")
+    connector === "project-postgres" && selectedNode === "postgres"
   return `project-connector${highlighted ? " is-highlighted" : ""}`
+}
+
+function resourceStatusLabel(status: PostgresResourceStatus) {
+  if (status === "ready") {
+    return "Online"
+  }
+  if (status === "provisioning") {
+    return "Creating"
+  }
+  return "Needs attention"
 }
 
 function readPersistedState(key: string): Required<PersistedDashboardState> {
@@ -838,7 +1031,7 @@ function readPersistedState(key: string): Required<PersistedDashboardState> {
 }
 
 function isTopologyNodeId(value: unknown): value is TopologyNodeId {
-  return value === "postgres" || value === "redis" || value === "project"
+  return value === "postgres" || value === "project"
 }
 
 function getInitial(value: string) {

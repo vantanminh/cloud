@@ -101,6 +101,25 @@ describe("AuthPage", () => {
             slug: "knotree-study",
           })
         }
+        if (
+          path === "/workspaces/acme-studio/projects/knotree-study/resources"
+        ) {
+          if (options?.method === "POST") {
+            return Promise.resolve({
+              id: "postgres-resource-id",
+              name: "Postgres",
+              resourceType: "postgres",
+              status: "ready",
+              databaseName: "knotree_db_project",
+              username: "knotree_role_project",
+              host: "localhost",
+              port: 5432,
+              connectionString:
+                "postgres://knotree_role_project:secret@localhost:5432/knotree_db_project",
+            })
+          }
+          return Promise.resolve([])
+        }
         return Promise.reject(new Error(`Unexpected request: ${path}`))
       }
     )
@@ -235,13 +254,30 @@ describe("AuthPage", () => {
       "H2"
     )
 
+    expect(
+      await screen.findByText("Create your first database")
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("button", { name: "Postgres database" }))
+    const databaseName = await screen.findByLabelText("Database name")
+    await user.clear(databaseName)
+    await user.type(databaseName, "Analytics")
     await user.click(
-      screen.getByRole("button", { name: "Postgres resource, online" })
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Create database",
+      })
+    )
+
+    await user.click(
+      await screen.findByRole("button", { name: "Postgres resource, online" })
     )
     expect(screen.getByText("Resource details")).toBeInTheDocument()
+    expect(screen.getAllByText("knotree_db_project").length).toBeGreaterThan(0)
     expect(
-      screen.getAllByText("knotree-study-postgres-volume").length
-    ).toBeGreaterThan(0)
+      screen.getByText(
+        "postgres://knotree_role_project:secret@localhost:5432/knotree_db_project"
+      )
+    ).toBeInTheDocument()
     await user.click(
       screen.getByRole("button", { name: "Close resource details" })
     )
@@ -250,7 +286,7 @@ describe("AuthPage", () => {
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("button", { name: "Redis" }))
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Redis is ready to configure"
+      "Redis provisioning is coming soon"
     )
 
     await user.click(screen.getByRole("button", { name: "Zoom in" }))

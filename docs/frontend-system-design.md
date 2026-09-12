@@ -33,8 +33,9 @@ session should feel quick, calm, and trustworthy:
 - Session loading, field validation, API errors, sign out, and protected routes.
 - Project creation with an editable project URL slug.
 - Workspace project index with empty, loading, error, and populated states.
-- Project topology home with resource cards, inspector, add menu, zoom/history
-  controls, environment context, responsive navigation, and transient feedback.
+- Project topology home with a real PostgreSQL creation flow, resource cards,
+  connection details inspector, add menu, zoom/history controls, environment
+  context, responsive navigation, and transient feedback.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
 ### Not in the current slice
@@ -43,15 +44,14 @@ session should feel quick, calm, and trustworthy:
 - OAuth or social login.
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing, or settings.
-- Resource provisioning, deployment execution, metrics data, logs data, or
-  persistent topology editing.
+- Redis/app-service provisioning, deployment execution, metrics data, logs data,
+  or persistent topology editing.
 - Active dark-mode UI. A theme provider scaffold exists, but it is not mounted
   in the current application and the MVP is intentionally light-only.
 
-These omissions are deliberate. The topology home is a faithful product shell
-with starter resource cards until resource CRUD and runtime status APIs exist.
-New UI should not imply that any omitted capability exists until the
-corresponding API and product contract exists.
+The topology home now owns one real PostgreSQL resource per project. Other
+resource types remain placeholders until their provisioning APIs and product
+contracts exist. New UI should not imply that an omitted capability exists.
 
 ## 2. Experience principles
 
@@ -92,15 +92,15 @@ keyboard and screen-reader affordances.
 
 ### Route map
 
-| Route | Access | Screen | Redirect rule |
-| --- | --- | --- | --- |
-| `/` | Any | Session destination | Anonymous → `/login`; authenticated without workspace → `/new/workspace`; authenticated with workspace → `/workspace/:slug` |
-| `/login` | Public only | Sign-in form | Authenticated users are sent to their workspace destination |
-| `/register` | Public only | Registration form | Authenticated users are sent to their workspace destination |
-| `/new/workspace` | Authenticated | First-workspace form or creation confirmation | An account that already has a workspace is sent to `/workspace/:slug` |
-| `/workspace/:slug` | Authenticated | Workspace project index | No workspace → `/new/workspace`; a non-matching slug → the account's own workspace |
-| `/workspace/:workspaceSlug/project/:projectSlug` | Authenticated | Project topology home | Workspace mismatch → the account's own workspace; missing project → unavailable state |
-| Any other route | Any | None | Redirect to `/` |
+| Route                                            | Access        | Screen                                        | Redirect rule                                                                                                               |
+| ------------------------------------------------ | ------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `/`                                              | Any           | Session destination                           | Anonymous → `/login`; authenticated without workspace → `/new/workspace`; authenticated with workspace → `/workspace/:slug` |
+| `/login`                                         | Public only   | Sign-in form                                  | Authenticated users are sent to their workspace destination                                                                 |
+| `/register`                                      | Public only   | Registration form                             | Authenticated users are sent to their workspace destination                                                                 |
+| `/new/workspace`                                 | Authenticated | First-workspace form or creation confirmation | An account that already has a workspace is sent to `/workspace/:slug`                                                       |
+| `/workspace/:slug`                               | Authenticated | Workspace project index                       | No workspace → `/new/workspace`; a non-matching slug → the account's own workspace                                          |
+| `/workspace/:workspaceSlug/project/:projectSlug` | Authenticated | Project topology home                         | Workspace mismatch → the account's own workspace; missing project → unavailable state                                       |
+| Any other route                                  | Any           | None                                          | Redirect to `/`                                                                                                             |
 
 The route guards live in `apps/web/src/App.tsx`. The workspace page also
 protects against revisiting the creation route after the account already has a
@@ -113,7 +113,7 @@ Navigation is intentionally small at the workspace boundary:
 - Brand mark identifies the product on auth/onboarding screens.
 - Auth screens link only to the alternate auth mode.
 - Workspace project index exposes the signed-in email, project list, `New
-  project`, and `Sign out`.
+project`, and `Sign out`.
 - Project home provides the topology rail, workspace/environment context, and a
   clear route back to the workspace project index.
 - The workspace success state provides the first forward transition into the
@@ -193,12 +193,18 @@ Click Sign out
   → navigate to /workspace/:slug/project/:projectSlug
   → GET /workspaces/:slug/projects/:projectSlug
   → topology dashboard
+  → Add → Postgres database
+  → database display name
+  → POST /workspaces/:slug/projects/:projectSlug/resources
+  → real database + login role + connectivity check
+  → ready Postgres card + connection details inspector
 ```
 
 Project creation is scoped to the current workspace. The API owns slug
 normalization and uniqueness; the client mirrors the normalization for fast
-feedback. The first dashboard uses starter topology nodes while resource
-provisioning is still outside this slice.
+feedback. PostgreSQL creation is scoped to the project and is idempotent: a
+retry resumes a `provisioning`/`error` resource, while a ready resource is
+returned without creating a second database.
 
 ## 5. Screen specifications
 
@@ -241,10 +247,10 @@ Supporting text: `Sign in to your workspace`
 
 Fields:
 
-| Order | Label | Input behavior | Browser autocomplete |
-| --- | --- | --- | --- |
-| 1 | Email | Email input, trimmed before submit | `email` |
-| 2 | Password | Password input with show/hide toggle | `current-password` |
+| Order | Label    | Input behavior                       | Browser autocomplete |
+| ----- | -------- | ------------------------------------ | -------------------- |
+| 1     | Email    | Email input, trimmed before submit   | `email`              |
+| 2     | Password | Password input with show/hide toggle | `current-password`   |
 
 CTA: `Sign in`  
 Secondary route: `Don't have an account? Create one`
@@ -259,11 +265,11 @@ Supporting text: `Start with a workspace for your ideas.`
 
 Fields:
 
-| Order | Label | Input behavior | Browser autocomplete |
-| --- | --- | --- | --- |
-| 1 | Full name | Trimmed before submit | `name` |
-| 2 | Work email | Lowercase normalization occurs at the API boundary | `email` |
-| 3 | Password | Hidden by default with show/hide toggle | `new-password` |
+| Order | Label      | Input behavior                                     | Browser autocomplete |
+| ----- | ---------- | -------------------------------------------------- | -------------------- |
+| 1     | Full name  | Trimmed before submit                              | `name`               |
+| 2     | Work email | Lowercase normalization occurs at the API boundary | `email`              |
+| 3     | Password   | Hidden by default with show/hide toggle            | `new-password`       |
 
 CTA: `Create account`  
 Secondary route: `Already have an account? Sign in`
@@ -290,10 +296,10 @@ Supporting text: `A workspace is where your ideas come together.`
 
 Fields:
 
-| Field | Behavior |
-| --- | --- |
-| Workspace name | Required, 1–80 characters; changing it auto-generates a slug until the user edits the slug manually |
-| Workspace URL | Lowercase editable slug; shows the prefix `cloud.knotree.com/workspace/`; must be kebab-case and at most 48 characters |
+| Field          | Behavior                                                                                                               |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Workspace name | Required, 1–80 characters; changing it auto-generates a slug until the user edits the slug manually                    |
+| Workspace URL  | Lowercase editable slug; shows the prefix `cloud.knotree.com/workspace/`; must be kebab-case and at most 48 characters |
 
 CTA: `Create workspace`  
 Helper text: `You can update these details later.`
@@ -351,13 +357,18 @@ a 64px desktop rail, and a dotted topology work area.
   notification affordances, current project badge, and Agent affordance.
 - Side rail: Topology (active), Metrics, Logs, Resources, Settings, and the
   account/sign-out control.
-- Canvas: blue `Add` button, three starter cards (Postgres, Redis, and the
-  project service), dashed connectors, and zoom/history/layers controls.
-- Resource cards expose name, status, and volume label. Clicking a card opens
-  a resource details inspector with Type, Status, and Volume.
-- Add menu exposes Postgres, Redis, and App service choices. Until resource
-  CRUD exists, choices confirm readiness with a toast and do not persist a
-  resource.
+- Canvas: blue `Add` button, the project service card, an optional real
+  PostgreSQL card, a dashed connector when the database exists, and
+  zoom/history/layers controls.
+- Resource cards expose name, status, and database name. Clicking a card opens
+  a resource details inspector with Type, Status, Database, Host, Port, and
+  Username.
+- Add → `Postgres database` opens the creation dialog. The API generates the
+  database identifier, login role, and strong password, provisions the database
+  on the configured PostgreSQL cluster, and returns a connection string after
+  a successful connectivity check.
+- Redis and App service remain explicit coming-soon choices and do not create
+  fake topology nodes.
 
 #### Context and transient state
 
@@ -366,10 +377,12 @@ a 64px desktop rail, and a dotted topology work area.
   the current page.
 - Zoom is clamped from 80% to 125%; fit returns to 100%. Zoom and selected
   resource are persisted per project in local storage as view preferences.
+- Resource loading and provisioning failures keep the Add action available and
+  show a safe, page-level message; raw database errors never reach the browser.
 - Activity, notifications, Agent, non-topology rail items, undo/redo, and
   layers provide explicit placeholder feedback until their APIs exist.
 - Direct project lookup failures show `Project unavailable` and a `Back to
-  workspace` action.
+workspace` action.
 
 #### Mobile composition
 
@@ -381,9 +394,9 @@ a 64px desktop rail, and a dotted topology work area.
 - Inspector becomes a bottom sheet-like panel above the navigation bar.
 - The layout must remain within the viewport width at 320px and 390px.
 
-Starter topology data is intentionally derived from the project slug and is
-not a claim that those resources exist in the runtime environment. Replace it
-with a typed resource query when the backend contract is ready.
+The project card is a logical project node. PostgreSQL topology data comes only
+from the typed resource API; a missing resource is represented by the empty
+state `Create your first database`, not by a fabricated online card.
 
 ### 5.8 Loading and unavailable states
 
@@ -419,21 +432,21 @@ chrome in this product area.
 Tokens are defined in `apps/web/src/index.css` using OKLCH so components use
 semantic roles instead of hard-coded colors.
 
-| Token | Current value | Role |
-| --- | --- | --- |
-| `background` | `oklch(1 0 0)` | Page and input background |
-| `foreground` | `oklch(0.19 0.025 255)` | Primary text |
-| `primary` | `oklch(0.31 0.075 165)` | Main CTA, success mark, active step |
-| `primary-foreground` | `oklch(0.985 0.01 165)` | Text/icon on primary |
-| `secondary` | `oklch(0.965 0.012 255)` | Secondary surfaces |
-| `muted` | `oklch(0.972 0.008 255)` | Hover and quiet surfaces |
-| `muted-foreground` | `oklch(0.52 0.025 255)` | Supporting text |
-| `accent` | `oklch(0.965 0.02 260)` | Accent surface |
-| `link` | `oklch(0.42 0.13 275)` | Text links |
-| `destructive` | `oklch(0.58 0.19 26)` | Validation and API error |
-| `border` | `oklch(0.90 0.018 255)` | Dividers and frames |
-| `input` | `oklch(0.86 0.025 255)` | Input border |
-| `ring` | `oklch(0.45 0.09 165)` | Keyboard focus ring |
+| Token                | Current value            | Role                                |
+| -------------------- | ------------------------ | ----------------------------------- |
+| `background`         | `oklch(1 0 0)`           | Page and input background           |
+| `foreground`         | `oklch(0.19 0.025 255)`  | Primary text                        |
+| `primary`            | `oklch(0.31 0.075 165)`  | Main CTA, success mark, active step |
+| `primary-foreground` | `oklch(0.985 0.01 165)`  | Text/icon on primary                |
+| `secondary`          | `oklch(0.965 0.012 255)` | Secondary surfaces                  |
+| `muted`              | `oklch(0.972 0.008 255)` | Hover and quiet surfaces            |
+| `muted-foreground`   | `oklch(0.52 0.025 255)`  | Supporting text                     |
+| `accent`             | `oklch(0.965 0.02 260)`  | Accent surface                      |
+| `link`               | `oklch(0.42 0.13 275)`   | Text links                          |
+| `destructive`        | `oklch(0.58 0.19 26)`    | Validation and API error            |
+| `border`             | `oklch(0.90 0.018 255)`  | Dividers and frames                 |
+| `input`              | `oklch(0.86 0.025 255)`  | Input border                        |
+| `ring`               | `oklch(0.45 0.09 165)`   | Keyboard focus ring                 |
 
 Rules:
 
@@ -483,14 +496,14 @@ The topology dashboard is a denser product surface than auth/onboarding, but
 it keeps the same restraint. Its page-local tokens live in
 `apps/web/src/pages/project-home.css`:
 
-| Token | Value | Role |
-| --- | --- | --- |
-| `--project-bg` | `#ffffff` | Canvas and card background |
-| `--project-fg` | `#111111` | Node titles and primary controls |
-| `--project-accent` | `#1677ff` | Add CTA, selected node, active rail |
+| Token               | Value     | Role                                |
+| ------------------- | --------- | ----------------------------------- |
+| `--project-bg`      | `#ffffff` | Canvas and card background          |
+| `--project-fg`      | `#111111` | Node titles and primary controls    |
+| `--project-accent`  | `#1677ff` | Add CTA, selected node, active rail |
 | `--project-surface` | `#f7f8fa` | Card footers, hover, quiet surfaces |
-| `--project-muted` | `#6b7280` | Supporting text and connector lines |
-| `--project-border` | `#d9dee7` | Shell, card, and control borders |
+| `--project-muted`   | `#6b7280` | Supporting text and connector lines |
+| `--project-border`  | `#d9dee7` | Shell, card, and control borders    |
 
 Topology layout constants are a 64px topbar, a 64px desktop rail, 8px shell
 inset, 8px card radius, and 360px desktop node cards. The canvas uses a
@@ -519,25 +532,27 @@ StrictMode
               └─ WorkspacePage
                   ├─ ProjectCreateDialog
                   └─ ProjectHomePage
+                      ├─ PostgresCreateDialog
                       └─ TopologyDashboard
 ```
 
 ### Component inventory
 
-| Component | Responsibility | Reuse rule |
-| --- | --- | --- |
-| `AuthProvider` | Bootstrap session, expose auth/workspace commands | Keep auth mutations here; pages should not own session synchronization |
-| `AuthShell` | Shared auth composition and brand panel | Use for public auth entry screens only |
-| `BrandMark` | Product identity, compact or full size | Keep `alt=""` because adjacent text carries the name |
-| `PasswordField` | Password input plus visibility toggle | Always provide correct `autocomplete` and field error |
-| `LoadingScreen` | Auth bootstrap loading state | Use before protected/public route decisions are known |
-| `AuthPage` | Login/register form and local validation | Mode is explicit: `login` or `register` |
-| `NewWorkspacePage` | First workspace form and success state | Must not become a general workspace CRUD screen without a new contract |
-| `WorkspacePage` | Project index, empty state, project list, and sign out | Keep workspace-level project selection here |
-| `ProjectCreateDialog` | Create and validate a project name and slug | Use for project creation; API remains authoritative |
-| `ProjectHomePage` | Load one project and render unavailable/loading states | Keep route data fetching typed and scoped to the current workspace |
-| `TopologyDashboard` | Topbar, rail, topology canvas, inspector, controls, menus, and feedback | Keep resource actions explicit until backend resource APIs exist |
-| `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives | Prefer composition and variants over bespoke controls |
+| Component                                                    | Responsibility                                                                   | Reuse rule                                                                     |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `AuthProvider`                                               | Bootstrap session, expose auth/workspace commands                                | Keep auth mutations here; pages should not own session synchronization         |
+| `AuthShell`                                                  | Shared auth composition and brand panel                                          | Use for public auth entry screens only                                         |
+| `BrandMark`                                                  | Product identity, compact or full size                                           | Keep `alt=""` because adjacent text carries the name                           |
+| `PasswordField`                                              | Password input plus visibility toggle                                            | Always provide correct `autocomplete` and field error                          |
+| `LoadingScreen`                                              | Auth bootstrap loading state                                                     | Use before protected/public route decisions are known                          |
+| `AuthPage`                                                   | Login/register form and local validation                                         | Mode is explicit: `login` or `register`                                        |
+| `NewWorkspacePage`                                           | First workspace form and success state                                           | Must not become a general workspace CRUD screen without a new contract         |
+| `WorkspacePage`                                              | Project index, empty state, project list, and sign out                           | Keep workspace-level project selection here                                    |
+| `ProjectCreateDialog`                                        | Create and validate a project name and slug                                      | Use for project creation; API remains authoritative                            |
+| `PostgresCreateDialog`                                       | Request one real PostgreSQL resource and show pending/error states               | Never collect or persist database passwords in the browser                     |
+| `ProjectHomePage`                                            | Load one project and render unavailable/loading states                           | Keep route data fetching typed and scoped to the current workspace             |
+| `TopologyDashboard`                                          | Topbar, rail, topology canvas, resource inspector, controls, menus, and feedback | Keep unsupported resource actions explicit until their provisioning APIs exist |
+| `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives                                                        | Prefer composition and variants over bespoke controls                          |
 
 UI primitives are generated/configured through shadcn and backed by Base UI.
 Keep behavior accessible at the primitive layer; page code should supply
@@ -563,6 +578,9 @@ Keep server/API concerns in `lib/api.ts` and typed models. Do not call
 `fetch` directly from a page when the request changes session or CSRF state.
 Project requests are grouped in `lib/projects.ts`; pages consume those typed
 functions rather than constructing project URLs inline.
+PostgreSQL resource requests are grouped in `lib/resources.ts`; connection
+details are rendered from the authenticated API response and are not written to
+local storage.
 
 ## 8. Frontend state and data flow
 
@@ -600,26 +618,33 @@ project route
   └─ getProject failure → project unavailable + back action
 
 topology dashboard
+  ├─ listPostgresResources pending → resource loading state
+  ├─ listPostgresResources success + [] → empty database state
+  ├─ listPostgresResources success + resource → real Postgres node
+  ├─ listPostgresResources failure → resource error + Add remains available
+  ├─ createPostgresResource pending → disabled dialog + spinner
+  ├─ createPostgresResource success → ready node + inspector + connection string
+  ├─ createPostgresResource failure → safe dialog/page error
   ├─ select node → selected card + resource inspector
-  ├─ Add resource → readiness toast (not persisted in this slice)
   └─ zoom/menu/control action → local view state + toast where useful
 ```
 
 ### State ownership
 
-| State | Owner | Persistence |
-| --- | --- | --- |
-| `status` (`loading`/`ready`) | `AuthProvider` | Memory only |
-| `session` | `AuthProvider` | Memory; server cookie is authoritative |
-| `bootstrapError` | `AuthProvider` | Memory only |
-| CSRF token cache | `lib/api.ts` | Memory only; CSRF cookie is server-managed |
-| Form values/errors/loading | Route page | Reset on page mount/navigation |
-| `createdWorkspace` confirmation | `NewWorkspacePage` | Memory only; session is updated by provider |
-| `projects` and project-list error | `WorkspacePage` | Memory only; refetched on workspace page mount |
-| Project create form | `ProjectCreateDialog` | Reset when dialog closes/reopens |
-| `project`, load error, selected node, menus, toast | `ProjectHomePage` / `TopologyDashboard` | Project data is API-backed; view preferences persist locally |
-| Zoom and selected resource | `TopologyDashboard` | `localStorage` keyed by project id |
-| Theme selection | Reserved `ThemeProvider` | Local storage only when theme provider is mounted |
+| State                                                                 | Owner                                   | Persistence                                                                                         |
+| --------------------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `status` (`loading`/`ready`)                                          | `AuthProvider`                          | Memory only                                                                                         |
+| `session`                                                             | `AuthProvider`                          | Memory; server cookie is authoritative                                                              |
+| `bootstrapError`                                                      | `AuthProvider`                          | Memory only                                                                                         |
+| CSRF token cache                                                      | `lib/api.ts`                            | Memory only; CSRF cookie is server-managed                                                          |
+| Form values/errors/loading                                            | Route page                              | Reset on page mount/navigation                                                                      |
+| `createdWorkspace` confirmation                                       | `NewWorkspacePage`                      | Memory only; session is updated by provider                                                         |
+| `projects` and project-list error                                     | `WorkspacePage`                         | Memory only; refetched on workspace page mount                                                      |
+| Project create form                                                   | `ProjectCreateDialog`                   | Reset when dialog closes/reopens                                                                    |
+| `project`, load error, selected node, menus, toast                    | `ProjectHomePage` / `TopologyDashboard` | Project data is API-backed; view preferences persist locally                                        |
+| `postgresResource`, resource loading/error, create dialog, copy state | `TopologyDashboard`                     | Database metadata and credentials are API-backed; connection string is held in component state only |
+| Zoom and selected resource                                            | `TopologyDashboard`                     | `localStorage` keyed by project id                                                                  |
+| Theme selection                                                       | Reserved `ThemeProvider`                | Local storage only when theme provider is mounted                                                   |
 
 The frontend does not store the session token, password, or workspace
 membership in local storage.
@@ -642,28 +667,30 @@ browser storage.
 
 ### Base URL
 
-| Environment | Value |
-| --- | --- |
-| Local development | `http://localhost:8080/api/v1` |
-| Production | `https://cloudapi.knotree.com/api/v1` |
+| Environment       | Value                                 |
+| ----------------- | ------------------------------------- |
+| Local development | `http://localhost:8080/api/v1`        |
+| Production        | `https://cloudapi.knotree.com/api/v1` |
 
 `VITE_API_BASE_URL` overrides the default. The production fallback is explicit
 so a production build cannot silently point at localhost.
 
 ### Endpoints
 
-| Method | Path | Auth | Frontend use |
-| --- | --- | --- | --- |
-| `GET` | `/auth/csrf` | No | Seed CSRF cookie and return `{ csrfToken }` |
-| `POST` | `/auth/register` | CSRF | Create user and start session |
-| `POST` | `/auth/login` | CSRF | Authenticate and return current workspace if any |
-| `GET` | `/auth/me` | Session cookie | Restore session on boot |
-| `POST` | `/auth/logout` | Session + CSRF | Revoke session and clear cookies |
-| `POST` | `/workspaces` | Session + CSRF | Create the account's first workspace |
-| `GET` | `/workspaces/:slug` | Session | Reserved for future workspace data loading |
-| `GET` | `/workspaces/:workspaceSlug/projects` | Session + membership | List projects in the current workspace |
-| `POST` | `/workspaces/:workspaceSlug/projects` | Session + membership + CSRF | Create a project |
-| `GET` | `/workspaces/:workspaceSlug/projects/:projectSlug` | Session + membership | Load one project for topology home |
+| Method | Path                                                         | Auth                        | Frontend use                                       |
+| ------ | ------------------------------------------------------------ | --------------------------- | -------------------------------------------------- |
+| `GET`  | `/auth/csrf`                                                 | No                          | Seed CSRF cookie and return `{ csrfToken }`        |
+| `POST` | `/auth/register`                                             | CSRF                        | Create user and start session                      |
+| `POST` | `/auth/login`                                                | CSRF                        | Authenticate and return current workspace if any   |
+| `GET`  | `/auth/me`                                                   | Session cookie              | Restore session on boot                            |
+| `POST` | `/auth/logout`                                               | Session + CSRF              | Revoke session and clear cookies                   |
+| `POST` | `/workspaces`                                                | Session + CSRF              | Create the account's first workspace               |
+| `GET`  | `/workspaces/:slug`                                          | Session                     | Reserved for future workspace data loading         |
+| `GET`  | `/workspaces/:workspaceSlug/projects`                        | Session + membership        | List projects in the current workspace             |
+| `POST` | `/workspaces/:workspaceSlug/projects`                        | Session + membership + CSRF | Create a project                                   |
+| `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug`           | Session + membership        | Load one project for topology home                 |
+| `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership        | Load persisted PostgreSQL resources                |
+| `POST` | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership + CSRF | Provision or retry the project PostgreSQL resource |
 
 ### Shared success shape
 
@@ -700,6 +727,28 @@ Project list and detail endpoints return the compact project shape:
 workspace. A duplicate returns `PROJECT_SLUG_TAKEN`; an inaccessible workspace
 or project returns the corresponding not-found envelope.
 
+The resource list returns zero or one PostgreSQL resource for the project:
+
+```json
+{
+  "id": "uuid",
+  "name": "Postgres",
+  "resourceType": "postgres",
+  "status": "ready",
+  "databaseName": "knotree_db_<project-id>",
+  "username": "knotree_role_<project-id>",
+  "host": "localhost",
+  "port": 5432,
+  "connectionString": "postgres://..."
+}
+```
+
+`POST /workspaces/:workspaceSlug/projects/:projectSlug/resources` accepts
+`{ "resourceType": "postgres", "name": "Postgres" }`. The database and role
+are created on the PostgreSQL cluster configured by `DATABASE_URL`; the API
+database role therefore needs `CREATEDB` and `CREATEROLE`. A repeated request
+is idempotent for the project and returns the existing ready resource.
+
 ### Error envelope
 
 ```json
@@ -718,29 +767,33 @@ The UI maps `fields` by field name and uses `message` for the page-level alert.
 Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
 `SLUG_TAKEN`, `WORKSPACE_EXISTS`, `AUTHENTICATION_REQUIRED`, and
 `EMAIL_NOT_VERIFIED`, `PROJECT_SLUG_TAKEN`, `PROJECT_NOT_FOUND`, and
-`WORKSPACE_NOT_FOUND`.
+`WORKSPACE_NOT_FOUND`, `DATABASE_PROVISIONING_DISABLED`, and
+`DATABASE_PROVISIONING_FAILED`.
 
 ## 10. Validation and interaction matrix
 
-| Screen | Condition | UI response |
-| --- | --- | --- |
-| Login | Invalid email | Field error: `Enter a valid email address.` |
-| Login | Empty password | Field error: `Password is required.` |
-| Login | Wrong credentials | Generic page alert; do not reveal whether email exists |
-| Register | Empty/too-long name | Field error for full name |
-| Register | Invalid email | Field error for email |
-| Register | Password outside 8–128 characters | Field error: `Use 8 to 128 characters.` |
-| Register | Existing email | API field error/page alert for `EMAIL_IN_USE` |
-| Workspace | Empty/too-long name | Field error for name |
-| Workspace | Invalid slug | Field error for lowercase URL slug |
-| Workspace | Slug already used | API field error/page alert for `SLUG_TAKEN` |
-| Workspace | Second creation attempt | API conflict `WORKSPACE_EXISTS`; route normally redirects existing users away |
-| Project | Empty/too-long name | Field error for project name |
-| Project | Invalid slug | Field error for lowercase project URL slug |
-| Project | Slug already used in workspace | API conflict `PROJECT_SLUG_TAKEN` mapped to the slug field/page alert |
-| Project home | Missing or inaccessible project | `Project unavailable` state with a back-to-workspace action |
-| Any submit | Request pending | Disable CTA and show spinner |
-| Any API call | Network/unknown failure | Page-level unavailable message |
+| Screen       | Condition                                   | UI response                                                                   |
+| ------------ | ------------------------------------------- | ----------------------------------------------------------------------------- |
+| Login        | Invalid email                               | Field error: `Enter a valid email address.`                                   |
+| Login        | Empty password                              | Field error: `Password is required.`                                          |
+| Login        | Wrong credentials                           | Generic page alert; do not reveal whether email exists                        |
+| Register     | Empty/too-long name                         | Field error for full name                                                     |
+| Register     | Invalid email                               | Field error for email                                                         |
+| Register     | Password outside 8–128 characters           | Field error: `Use 8 to 128 characters.`                                       |
+| Register     | Existing email                              | API field error/page alert for `EMAIL_IN_USE`                                 |
+| Workspace    | Empty/too-long name                         | Field error for name                                                          |
+| Workspace    | Invalid slug                                | Field error for lowercase URL slug                                            |
+| Workspace    | Slug already used                           | API field error/page alert for `SLUG_TAKEN`                                   |
+| Workspace    | Second creation attempt                     | API conflict `WORKSPACE_EXISTS`; route normally redirects existing users away |
+| Project      | Empty/too-long name                         | Field error for project name                                                  |
+| Project      | Invalid slug                                | Field error for lowercase project URL slug                                    |
+| Project      | Slug already used in workspace              | API conflict `PROJECT_SLUG_TAKEN` mapped to the slug field/page alert         |
+| Project home | Missing or inaccessible project             | `Project unavailable` state with a back-to-workspace action                   |
+| Database     | Empty/too-long name                         | Field error for database name                                                 |
+| Database     | Provisioning permissions or cluster failure | Safe API error; retain dialog action and never show raw SQL                   |
+| Database     | Successful provisioning                     | Ready card, inspector, and copyable connection string                         |
+| Any submit   | Request pending                             | Disable CTA and show spinner                                                  |
+| Any API call | Network/unknown failure                     | Page-level unavailable message                                                |
 
 Validation is duplicated intentionally at the client and API boundaries:
 client validation gives immediate feedback, while the Rust API remains the
@@ -846,8 +899,8 @@ to the React application.
 
 ### Environment contract
 
-| Variable | Local default | Production expectation |
-| --- | --- | --- |
+| Variable            | Local default                  | Production expectation                |
+| ------------------- | ------------------------------ | ------------------------------------- |
 | `VITE_API_BASE_URL` | `http://localhost:8080/api/v1` | `https://cloudapi.knotree.com/api/v1` |
 
 Only `VITE_*` values are embedded in the browser bundle. Secrets belong to the
@@ -891,8 +944,9 @@ Every new route or meaningful interaction should add:
 - Verify errors are readable and do not shift the primary CTA unpredictably.
 - Refresh `/new/workspace` and `/workspace/:slug` while authenticated.
 - Refresh a project deep link while authenticated and verify the project reloads.
-- Check topology selection, inspector close, Add menu, environment menu, zoom,
-  and sign-out actions with keyboard and pointer input.
+- Check topology selection, inspector close, Add → Postgres database, pending and
+  error states, connection-string copy, environment menu, zoom, and sign-out
+  actions with keyboard and pointer input.
 - Open direct deep links through the Cloudflare SPA fallback.
 - Verify production bundles point to `cloudapi.knotree.com`, not localhost.
 
@@ -912,8 +966,8 @@ When adding a feature to this frontend:
 
 ### Planned evolution points
 
-- Replace starter topology cards with resource API data and real provisioning
-  flows.
+- Extend the resource API and provisioning abstraction to Redis and app
+  services, with explicit lifecycle and deletion contracts.
 - Add persistent topology editing only with an explicit graph/resource model.
 - Add a workspace selector only when multiple memberships are supported by the
   API and data model.
@@ -927,18 +981,20 @@ When adding a feature to this frontend:
 
 ## 17. Source map
 
-| Concern | Source |
-| --- | --- |
-| Routes and guards | `apps/web/src/App.tsx` |
-| Auth/session state | `apps/web/src/auth/auth-context.tsx` |
-| API and CSRF client | `apps/web/src/lib/api.ts` |
-| Shared types | `apps/web/src/lib/types.ts`, `apps/web/src/lib/auth-types.ts` |
-| Auth screens | `apps/web/src/pages/auth-page.tsx` |
-| Workspace screens | `apps/web/src/pages/workspace-page.tsx` |
-| Project API boundary | `apps/web/src/lib/projects.ts` |
-| Project creation dialog | `apps/web/src/components/project-create-dialog.tsx` |
-| Project topology home | `apps/web/src/pages/project-home-page.tsx`, `apps/web/src/pages/project-home.css` |
-| Product composition | `apps/web/src/components/` |
-| Design tokens and layout CSS | `apps/web/src/index.css` |
-| Frontend deployment | `apps/web/wrangler.jsonc` |
-| Browser-facing API contract | `apps/api/src/auth.rs`, `apps/api/src/workspaces.rs`, `apps/api/src/projects.rs`, `apps/api/src/models.rs` |
+| Concern                          | Source                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Routes and guards                | `apps/web/src/App.tsx`                                                                                     |
+| Auth/session state               | `apps/web/src/auth/auth-context.tsx`                                                                       |
+| API and CSRF client              | `apps/web/src/lib/api.ts`                                                                                  |
+| Shared types                     | `apps/web/src/lib/types.ts`, `apps/web/src/lib/auth-types.ts`                                              |
+| Auth screens                     | `apps/web/src/pages/auth-page.tsx`                                                                         |
+| Workspace screens                | `apps/web/src/pages/workspace-page.tsx`                                                                    |
+| Project API boundary             | `apps/web/src/lib/projects.ts`                                                                             |
+| PostgreSQL resource API boundary | `apps/web/src/lib/resources.ts`                                                                            |
+| Project creation dialog          | `apps/web/src/components/project-create-dialog.tsx`                                                        |
+| PostgreSQL creation dialog       | `apps/web/src/components/postgres-create-dialog.tsx`                                                       |
+| Project topology home            | `apps/web/src/pages/project-home-page.tsx`, `apps/web/src/pages/project-home.css`                          |
+| Product composition              | `apps/web/src/components/`                                                                                 |
+| Design tokens and layout CSS     | `apps/web/src/index.css`                                                                                   |
+| Frontend deployment              | `apps/web/wrangler.jsonc`                                                                                  |
+| Browser-facing API contract      | `apps/api/src/auth.rs`, `apps/api/src/workspaces.rs`, `apps/api/src/projects.rs`, `apps/api/src/models.rs` |

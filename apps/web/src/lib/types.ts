@@ -17,6 +17,21 @@ export type Project = {
   slug: string
 }
 
+export type PostgresResourceStatus = "provisioning" | "ready" | "error"
+
+export type PostgresResource = {
+  id: string
+  name: string
+  resourceType: "postgres"
+  status: PostgresResourceStatus
+  databaseName: string
+  username: string
+  host: string
+  port: number
+  connectionString: string | null
+  errorMessage?: string
+}
+
 export type AuthResponse = {
   user: User
   workspace: Workspace | null
