@@ -61,6 +61,21 @@ describe("AuthPage", () => {
           workspace: null,
         })
       }
+      if (path === "/auth/login") {
+        return Promise.resolve({
+          user: {
+            id: "existing-user-id",
+            fullName: "Existing User",
+            email: "existing@example.com",
+            emailVerified: false,
+          },
+          workspace: {
+            id: "existing-workspace-id",
+            name: "Existing Workspace",
+            slug: "existing-workspace",
+          },
+        })
+      }
       if (path === "/workspaces") {
         return Promise.resolve({
           id: "workspace-id",
@@ -126,6 +141,26 @@ describe("AuthPage", () => {
     )
     expect(
       await screen.findByRole("heading", { name: "Welcome to Acme Studio" })
+    ).toBeInTheDocument()
+  })
+
+  it("routes an existing user's login to its workspace", async () => {
+    const user = userEvent.setup()
+
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </MemoryRouter>
+    )
+
+    await user.type(await screen.findByLabelText("Email"), "existing@example.com")
+    await user.type(screen.getByLabelText("Password"), "correct horse")
+    await user.click(screen.getByRole("button", { name: "Sign in" }))
+
+    expect(
+      await screen.findByRole("heading", { name: "Welcome to Existing Workspace" })
     ).toBeInTheDocument()
   })
 })
