@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react"
 import { CheckIcon, LogOutIcon } from "lucide-react"
-import { useNavigate, useParams } from "react-router-dom"
+import { Navigate, useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { BrandMark } from "@/components/brand-mark"
@@ -26,7 +26,7 @@ import type { Workspace } from "@/lib/types"
 
 export function NewWorkspacePage() {
   const navigate = useNavigate()
-  const { createWorkspace } = useAuth()
+  const { createWorkspace, session } = useAuth()
   const [name, setName] = useState("")
   const [slug, setSlug] = useState("")
   const [slugTouched, setSlugTouched] = useState(false)
@@ -34,6 +34,10 @@ export function NewWorkspacePage() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(null)
+
+  if (session?.workspace && !createdWorkspace) {
+    return <Navigate to={`/workspace/${session.workspace.slug}`} replace />
+  }
 
   function handleNameChange(value: string) {
     setName(value)

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 
 import { AuthProvider } from "@/auth/auth-context"
+import App from "@/App"
 import { AuthPage } from "@/pages/auth-page"
 
 const mocks = vi.hoisted(() => {
@@ -60,6 +61,13 @@ describe("AuthPage", () => {
           workspace: null,
         })
       }
+      if (path === "/workspaces") {
+        return Promise.resolve({
+          id: "workspace-id",
+          name: "Acme Studio",
+          slug: "acme-studio",
+        })
+      }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
   })
@@ -91,5 +99,33 @@ describe("AuthPage", () => {
       "/auth/register",
       expect.objectContaining({ method: "POST" })
     )
+  })
+
+  it("creates the first workspace and routes to its slug", async () => {
+    const user = userEvent.setup()
+
+    render(
+      <MemoryRouter initialEntries={["/register"]}>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </MemoryRouter>
+    )
+
+    await user.type(await screen.findByLabelText("Full name"), "Jane Doe")
+    await user.type(screen.getByLabelText("Work email"), "jane@example.com")
+    await user.type(screen.getByLabelText("Password"), "correct horse")
+    await user.click(screen.getByRole("button", { name: "Create account" }))
+
+    await user.type(await screen.findByLabelText("Workspace name"), "Acme Studio")
+    expect(screen.getByLabelText("Workspace URL")).toHaveValue("acme-studio")
+    await user.click(screen.getByRole("button", { name: "Create workspace" }))
+
+    await user.click(
+      await screen.findByRole("button", { name: "Continue to workspace" })
+    )
+    expect(
+      await screen.findByRole("heading", { name: "Welcome to Acme Studio" })
+    ).toBeInTheDocument()
   })
 })

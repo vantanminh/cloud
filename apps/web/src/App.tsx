@@ -66,10 +66,6 @@ function ProtectedRoute() {
 }
 
 function WorkspaceCreationRoute() {
-  const { session } = useAuth()
-  if (session?.workspace) {
-    return <Navigate to={destinationFor(session.workspace)} replace />
-  }
   return <NewWorkspacePage />
 }
 
