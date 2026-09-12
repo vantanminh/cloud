@@ -225,7 +225,6 @@ describe("AuthPage", () => {
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: "Create project",
-        exact: true,
       })
     )
 

@@ -232,12 +232,14 @@ export function WorkspacePage() {
     return null
   }
 
+  const currentWorkspaceSlug = workspace.slug
+
   function handleProjectCreated(project: Project) {
     setProjects((currentProjects) =>
       currentProjects ? [...currentProjects, project] : [project]
     )
     setIsCreateOpen(false)
-    navigate(`/workspace/${workspace.slug}/project/${project.slug}`)
+    navigate(`/workspace/${currentWorkspaceSlug}/project/${project.slug}`)
   }
 
   return (
@@ -367,7 +369,7 @@ export function WorkspacePage() {
       </section>
       <ProjectCreateDialog
         key={isCreateOpen ? "project-dialog-open" : "project-dialog-closed"}
-        workspaceSlug={workspace.slug}
+        workspaceSlug={currentWorkspaceSlug}
         open={isCreateOpen}
         onOpenChange={setIsCreateOpen}
         onCreated={handleProjectCreated}
