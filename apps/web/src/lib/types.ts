@@ -11,6 +11,12 @@ export type Workspace = {
   slug: string
 }
 
+export type Project = {
+  id: string
+  name: string
+  slug: string
+}
+
 export type AuthResponse = {
   user: User
   workspace: Workspace | null

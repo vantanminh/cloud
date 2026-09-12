@@ -1,9 +1,16 @@
-import { useState, type FormEvent, type ReactNode } from "react"
-import { CheckIcon, LogOutIcon } from "lucide-react"
-import { Navigate, useNavigate, useParams } from "react-router-dom"
+import { useEffect, useState, type FormEvent, type ReactNode } from "react"
+import {
+  ArrowUpRightIcon,
+  CheckIcon,
+  FolderKanbanIcon,
+  LogOutIcon,
+  PlusIcon,
+} from "lucide-react"
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { BrandMark } from "@/components/brand-mark"
+import { ProjectCreateDialog } from "@/components/project-create-dialog"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,8 +28,9 @@ import {
 } from "@/components/ui/input-group"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
+import { listProjects } from "@/lib/projects"
 import { slugifyWorkspaceName } from "@/lib/slug"
-import type { Workspace } from "@/lib/types"
+import type { Project, Workspace } from "@/lib/types"
 
 export function NewWorkspacePage() {
   const navigate = useNavigate()
@@ -33,7 +41,9 @@ export function NewWorkspacePage() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(null)
+  const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(
+    null
+  )
 
   if (session?.workspace && !createdWorkspace) {
     return <Navigate to={`/workspace/${session.workspace.slug}`} replace />
@@ -108,7 +118,11 @@ export function NewWorkspacePage() {
           </Alert>
         )}
 
-        <form className="flex flex-col gap-6" onSubmit={handleSubmit} noValidate>
+        <form
+          className="flex flex-col gap-6"
+          onSubmit={handleSubmit}
+          noValidate
+        >
           <FieldGroup>
             <Field data-invalid={Boolean(errors.name)}>
               <FieldLabel htmlFor="workspaceName">Workspace name</FieldLabel>
@@ -172,6 +186,39 @@ export function WorkspacePage() {
   const { slug } = useParams()
   const navigate = useNavigate()
   const workspace = session?.workspace
+  const [projects, setProjects] = useState<Project[] | null>(null)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const workspaceSlug = workspace?.slug
+
+  useEffect(() => {
+    if (!workspaceSlug) {
+      return undefined
+    }
+
+    let active = true
+    void listProjects(workspaceSlug)
+      .then((nextProjects) => {
+        if (active) {
+          setProjects(nextProjects)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return
+        }
+        setProjects([])
+        setProjectsError(
+          error instanceof ApiError
+            ? error.message
+            : "The API is currently unavailable. Please try again."
+        )
+      })
+
+    return () => {
+      active = false
+    }
+  }, [workspaceSlug])
 
   async function handleSignOut() {
     try {
@@ -185,15 +232,31 @@ export function WorkspacePage() {
     return null
   }
 
+  function handleProjectCreated(project: Project) {
+    setProjects((currentProjects) =>
+      currentProjects ? [...currentProjects, project] : [project]
+    )
+    setIsCreateOpen(false)
+    navigate(`/workspace/${workspace.slug}/project/${project.slug}`)
+  }
+
   return (
-    <main className="min-h-svh bg-background">
-      <header className="border-b border-border/80 bg-background">
+    <main className="workspace-projects-page">
+      <header className="workspace-projects-header">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
           <BrandMark compact />
           <div className="flex items-center gap-4">
             <span className="hidden text-sm text-muted-foreground sm:inline">
               {session.user.email}
             </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsCreateOpen(true)}
+            >
+              <PlusIcon data-icon="inline-start" />
+              New project
+            </Button>
             <Button variant="ghost" size="sm" onClick={handleSignOut}>
               <LogOutIcon data-icon="inline-start" />
               Sign out
@@ -201,22 +264,114 @@ export function WorkspacePage() {
           </div>
         </div>
       </header>
-      <section className="mx-auto flex max-w-6xl flex-col gap-8 px-5 py-16 sm:px-8 sm:py-24">
-        <div className="workspace-ready-mark" aria-hidden="true">
-          <CheckIcon />
+      <section className="workspace-projects-content">
+        <div className="workspace-projects-intro">
+          <div className="flex max-w-xl flex-col gap-3">
+            <p className="workspace-projects-eyebrow">Workspace</p>
+            <h1 className="font-heading text-4xl font-semibold tracking-[-0.04em] text-foreground sm:text-5xl">
+              Welcome to {workspace.name}
+            </h1>
+            <p className="text-lg leading-8 text-muted-foreground">
+              Create a project to map its services, data, and infrastructure in
+              one place.
+            </p>
+          </div>
+          <Button size="lg" onClick={() => setIsCreateOpen(true)}>
+            <PlusIcon data-icon="inline-start" />
+            New project
+          </Button>
         </div>
-        <div className="flex max-w-xl flex-col gap-3">
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-primary">
-            Workspace ready
-          </p>
-          <h1 className="font-heading text-4xl font-semibold tracking-[-0.04em] text-foreground sm:text-5xl">
-            Welcome to {workspace.name}
-          </h1>
-          <p className="text-lg leading-8 text-muted-foreground">
-            Your first Knotree Cloud workspace is ready at cloud.knotree.com/workspace/{workspace.slug}.
-          </p>
-        </div>
+
+        {projectsError && (
+          <Alert variant="destructive">
+            <AlertDescription>{projectsError}</AlertDescription>
+          </Alert>
+        )}
+
+        {projects === null ? (
+          <div className="workspace-projects-loading" role="status">
+            <Spinner />
+            <span>Loading projects</span>
+          </div>
+        ) : projects.length === 0 ? (
+          <section
+            className="workspace-empty-projects"
+            aria-labelledby="empty-projects-title"
+          >
+            <div className="workspace-empty-icon" aria-hidden="true">
+              <FolderKanbanIcon />
+            </div>
+            <div className="flex max-w-md flex-col gap-3">
+              <h2
+                id="empty-projects-title"
+                className="text-2xl font-semibold tracking-[-0.03em]"
+              >
+                Create your first project
+              </h2>
+              <p className="leading-7 text-muted-foreground">
+                Projects give your workspace a focused home for topology,
+                resources, and future deployments.
+              </p>
+            </div>
+            <Button size="lg" onClick={() => setIsCreateOpen(true)}>
+              <PlusIcon data-icon="inline-start" />
+              Create project
+            </Button>
+          </section>
+        ) : (
+          <section aria-labelledby="projects-title">
+            <div className="workspace-projects-list-heading">
+              <div>
+                <h2
+                  id="projects-title"
+                  className="text-2xl font-semibold tracking-[-0.03em]"
+                >
+                  Projects
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Choose a project to open its home.
+                </p>
+              </div>
+              <span className="workspace-project-count">
+                {projects.length}{" "}
+                {projects.length === 1 ? "project" : "projects"}
+              </span>
+            </div>
+            <div className="workspace-project-list">
+              {projects.map((project) => (
+                <Link
+                  key={project.id}
+                  to={`/workspace/${workspace.slug}/project/${project.slug}`}
+                  className="workspace-project-item"
+                >
+                  <span className="workspace-project-icon" aria-hidden="true">
+                    <FolderKanbanIcon />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="truncate font-semibold text-foreground">
+                      {project.name}
+                    </span>
+                    <span className="truncate text-sm text-muted-foreground">
+                      /{project.slug}
+                    </span>
+                  </span>
+                  <ArrowUpRightIcon
+                    className="workspace-project-arrow"
+                    aria-hidden="true"
+                  />
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
       </section>
+      <ProjectCreateDialog
+        key={isCreateOpen ? "project-dialog-open" : "project-dialog-closed"}
+        workspaceSlug={workspace.slug}
+        open={isCreateOpen}
+        onOpenChange={setIsCreateOpen}
+        onCreated={handleProjectCreated}
+      />
     </main>
   )
 }

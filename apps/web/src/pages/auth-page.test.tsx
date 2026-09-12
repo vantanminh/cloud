@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
@@ -40,51 +40,70 @@ vi.mock("@/lib/api", () => ({
 describe("AuthPage", () => {
   beforeEach(() => {
     mocks.getCsrfToken.mockResolvedValue("csrf-token")
-    mocks.apiRequest.mockImplementation((path: string) => {
-      if (path === "/auth/me") {
-        return Promise.reject(
-          new mocks.MockApiError(
-            401,
-            "AUTHENTICATION_REQUIRED",
-            "Authentication is required."
+    mocks.apiRequest.mockImplementation(
+      (path: string, options?: { method?: string }) => {
+        if (path === "/auth/me") {
+          return Promise.reject(
+            new mocks.MockApiError(
+              401,
+              "AUTHENTICATION_REQUIRED",
+              "Authentication is required."
+            )
           )
-        )
+        }
+        if (path === "/auth/register") {
+          return Promise.resolve({
+            user: {
+              id: "user-id",
+              fullName: "Jane Doe",
+              email: "jane@example.com",
+              emailVerified: false,
+            },
+            workspace: null,
+          })
+        }
+        if (path === "/auth/login") {
+          return Promise.resolve({
+            user: {
+              id: "existing-user-id",
+              fullName: "Existing User",
+              email: "existing@example.com",
+              emailVerified: false,
+            },
+            workspace: {
+              id: "existing-workspace-id",
+              name: "Existing Workspace",
+              slug: "existing-workspace",
+            },
+          })
+        }
+        if (path === "/workspaces") {
+          return Promise.resolve({
+            id: "workspace-id",
+            name: "Acme Studio",
+            slug: "acme-studio",
+          })
+        }
+        if (path === "/workspaces/acme-studio/projects") {
+          if (options?.method === "POST") {
+            return Promise.resolve({
+              id: "project-id",
+              name: "Knotree Study",
+              slug: "knotree-study",
+            })
+          }
+          return Promise.resolve([])
+        }
+        if (path === "/workspaces/acme-studio/projects/knotree-study") {
+          return Promise.resolve({
+            id: "project-id",
+            name: "Knotree Study",
+            slug: "knotree-study",
+          })
+        }
+        return Promise.reject(new Error(`Unexpected request: ${path}`))
       }
-      if (path === "/auth/register") {
-        return Promise.resolve({
-          user: {
-            id: "user-id",
-            fullName: "Jane Doe",
-            email: "jane@example.com",
-            emailVerified: false,
-          },
-          workspace: null,
-        })
-      }
-      if (path === "/auth/login") {
-        return Promise.resolve({
-          user: {
-            id: "existing-user-id",
-            fullName: "Existing User",
-            email: "existing@example.com",
-            emailVerified: false,
-          },
-          workspace: {
-            id: "existing-workspace-id",
-            name: "Existing Workspace",
-            slug: "existing-workspace",
-          },
-        })
-      }
-      if (path === "/workspaces") {
-        return Promise.resolve({
-          id: "workspace-id",
-          name: "Acme Studio",
-          slug: "acme-studio",
-        })
-      }
-      return Promise.reject(new Error(`Unexpected request: ${path}`))
-    })
+    )
   })
 
   it("registers a user and routes to first-workspace setup", async () => {
@@ -95,10 +114,7 @@ describe("AuthPage", () => {
         <AuthProvider>
           <Routes>
             <Route path="/register" element={<AuthPage mode="register" />} />
-            <Route
-              path="/new/workspace"
-              element={<p>workspace setup</p>}
-            />
+            <Route path="/new/workspace" element={<p>workspace setup</p>} />
           </Routes>
         </AuthProvider>
       </MemoryRouter>
@@ -132,7 +148,10 @@ describe("AuthPage", () => {
     await user.type(screen.getByLabelText("Password"), "correct horse")
     await user.click(screen.getByRole("button", { name: "Create account" }))
 
-    await user.type(await screen.findByLabelText("Workspace name"), "Acme Studio")
+    await user.type(
+      await screen.findByLabelText("Workspace name"),
+      "Acme Studio"
+    )
     expect(screen.getByLabelText("Workspace URL")).toHaveValue("acme-studio")
     await user.click(screen.getByRole("button", { name: "Create workspace" }))
 
@@ -155,12 +174,87 @@ describe("AuthPage", () => {
       </MemoryRouter>
     )
 
-    await user.type(await screen.findByLabelText("Email"), "existing@example.com")
+    await user.type(
+      await screen.findByLabelText("Email"),
+      "existing@example.com"
+    )
     await user.type(screen.getByLabelText("Password"), "correct horse")
     await user.click(screen.getByRole("button", { name: "Sign in" }))
 
     expect(
-      await screen.findByRole("heading", { name: "Welcome to Existing Workspace" })
+      await screen.findByRole("heading", {
+        name: "Welcome to Existing Workspace",
+      })
     ).toBeInTheDocument()
+  })
+
+  it("creates a project and opens its topology home", async () => {
+    const user = userEvent.setup()
+
+    render(
+      <MemoryRouter initialEntries={["/register"]}>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </MemoryRouter>
+    )
+
+    await user.type(await screen.findByLabelText("Full name"), "Jane Doe")
+    await user.type(screen.getByLabelText("Work email"), "jane@example.com")
+    await user.type(screen.getByLabelText("Password"), "correct horse")
+    await user.click(screen.getByRole("button", { name: "Create account" }))
+
+    await user.type(
+      await screen.findByLabelText("Workspace name"),
+      "Acme Studio"
+    )
+    await user.click(screen.getByRole("button", { name: "Create workspace" }))
+    await user.click(
+      await screen.findByRole("button", { name: "Continue to workspace" })
+    )
+
+    await screen.findByRole("heading", { name: "Create your first project" })
+    await user.click(screen.getAllByRole("button", { name: "New project" })[0])
+    await user.type(
+      await screen.findByLabelText("Project name"),
+      "Knotree Study"
+    )
+    expect(screen.getByLabelText("Project URL slug")).toHaveValue(
+      "knotree-study"
+    )
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Create project",
+        exact: true,
+      })
+    )
+
+    expect(
+      await screen.findByRole("heading", { name: "Knotree Study" })
+    ).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Knotree Study" }).tagName).toBe(
+      "H2"
+    )
+
+    await user.click(
+      screen.getByRole("button", { name: "Postgres resource, online" })
+    )
+    expect(screen.getByText("Resource details")).toBeInTheDocument()
+    expect(
+      screen.getAllByText("knotree-study-postgres-volume").length
+    ).toBeGreaterThan(0)
+    await user.click(
+      screen.getByRole("button", { name: "Close resource details" })
+    )
+    expect(screen.queryByText("Resource details")).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("button", { name: "Redis" }))
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Redis is ready to configure"
+    )
+
+    await user.click(screen.getByRole("button", { name: "Zoom in" }))
+    expect(screen.getByText("110%")).toBeInTheDocument()
   })
 })

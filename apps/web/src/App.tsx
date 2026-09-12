@@ -10,6 +10,7 @@ import {
 import { useAuth } from "@/auth/auth-context"
 import { LoadingScreen } from "@/components/loading-screen"
 import { AuthPage } from "@/pages/auth-page"
+import { ProjectHomePage } from "@/pages/project-home-page"
 import { NewWorkspacePage, WorkspacePage } from "@/pages/workspace-page"
 
 export default function App() {
@@ -22,6 +23,10 @@ export default function App() {
       </Route>
       <Route element={<ProtectedRoute />}>
         <Route path="/new/workspace" element={<WorkspaceCreationRoute />} />
+        <Route
+          path="/workspace/:workspaceSlug/project/:projectSlug"
+          element={<ProjectRoute />}
+        />
         <Route path="/workspace/:slug" element={<WorkspaceRoute />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -79,6 +84,18 @@ function WorkspaceRoute() {
     return <Navigate to={destinationFor(session.workspace)} replace />
   }
   return <WorkspacePage />
+}
+
+function ProjectRoute() {
+  const { session } = useAuth()
+  const { workspaceSlug, projectSlug } = useParams()
+  if (!session?.workspace) {
+    return <Navigate to="/new/workspace" replace />
+  }
+  if (session.workspace.slug !== workspaceSlug) {
+    return <Navigate to={destinationFor(session.workspace)} replace />
+  }
+  return <ProjectHomePage key={`${workspaceSlug}/${projectSlug}`} />
 }
 
 function destinationFor(workspace: { slug: string } | null) {

@@ -1,4 +1,4 @@
-import type { AuthResponse, Workspace } from "@/lib/types"
+import type { AuthResponse, Project, Workspace } from "@/lib/types"
 
 export type LoginRequest = {
   email: string
@@ -11,4 +11,4 @@ export type RegisterRequest = LoginRequest & {
 
 export type CreateWorkspaceResponse = Workspace
 
-export type { AuthResponse, Workspace }
+export type { AuthResponse, Project, Workspace }
