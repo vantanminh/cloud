@@ -1,3 +1,7 @@
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use axum::{
     http::{HeaderMap, HeaderValue, header},
     response::Response,
@@ -8,6 +12,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::{config::Config, error::AppError};
+
+const SECRET_NONCE_LENGTH: usize = 12;
 
 pub fn random_token() -> String {
     let mut bytes = [0_u8; 32];
@@ -38,6 +44,38 @@ pub fn verify_password(password: &str, encoded_hash: &str) -> bool {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok()
+}
+
+pub fn encrypt_secret(secret: &str, key: &[u8; 32]) -> Result<String, AppError> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| AppError::internal("invalid credentials encryption key"))?;
+    let mut nonce_bytes = [0_u8; SECRET_NONCE_LENGTH];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), secret.as_bytes())
+        .map_err(|_| AppError::internal("credential encryption failed"))?;
+    let mut envelope = Vec::with_capacity(SECRET_NONCE_LENGTH + ciphertext.len());
+    envelope.extend_from_slice(&nonce_bytes);
+    envelope.extend_from_slice(&ciphertext);
+    Ok(URL_SAFE_NO_PAD.encode(envelope))
+}
+
+pub fn decrypt_secret(encoded: &str, key: &[u8; 32]) -> Result<String, AppError> {
+    let envelope = URL_SAFE_NO_PAD
+        .decode(encoded.as_bytes())
+        .map_err(|_| AppError::internal("invalid encrypted credentials"))?;
+    let (nonce_bytes, ciphertext) =
+        envelope
+            .split_at_checked(SECRET_NONCE_LENGTH)
+            .ok_or(AppError::Internal(
+                "invalid encrypted credentials".to_owned(),
+            ))?;
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| AppError::internal("invalid credentials encryption key"))?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .map_err(|_| AppError::internal("credential decryption failed"))?;
+    String::from_utf8(plaintext).map_err(|_| AppError::internal("invalid encrypted credentials"))
 }
 
 pub fn get_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -114,4 +152,20 @@ pub fn require_csrf(headers: &HeaderMap, config: &Config) -> Result<(), AppError
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypts_and_decrypts_secrets_with_authenticated_ciphertext() {
+        let key = [7_u8; 32];
+        let first = encrypt_secret("postgres-password", &key).unwrap();
+        let second = encrypt_secret("postgres-password", &key).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(decrypt_secret(&first, &key).unwrap(), "postgres-password");
+        assert!(decrypt_secret(&first, &[8_u8; 32]).is_err());
+    }
 }

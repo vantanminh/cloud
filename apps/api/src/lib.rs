@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod models;
 pub mod projects;
+pub mod resources;
 pub mod security;
 pub mod state;
 pub mod workspaces;
@@ -41,6 +42,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}",
             get(projects::get),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources",
+            get(resources::list).post(resources::create),
         );
 
     Router::new()

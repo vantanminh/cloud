@@ -14,4 +14,5 @@ env:
   corsAllowedOrigins: http://localhost:5173
   cookieSecure: "false"
   authRequireEmailVerification: "false"
+  databaseProvisioningEnabled: "true"
   rustLog: info,knotree_api=debug

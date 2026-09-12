@@ -120,6 +120,26 @@ pub async fn get(
     Ok(Json(ProjectResponse::from(project)))
 }
 
+pub(crate) async fn accessible_project_id(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+) -> Result<Uuid, AppError> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT p.id FROM projects p INNER JOIN workspaces w ON w.id = p.workspace_id INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.slug = $2 AND p.slug = $3",
+    )
+    .bind(user_id)
+    .bind(workspace_slug)
+    .bind(project_slug)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "PROJECT_NOT_FOUND",
+        message: "Project not found.",
+    })
+}
+
 async fn accessible_workspace_id(
     state: &AppState,
     user_id: Uuid,

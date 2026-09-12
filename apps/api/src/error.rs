@@ -29,6 +29,10 @@ pub enum AppError {
         code: &'static str,
         message: &'static str,
     },
+    ServiceUnavailable {
+        code: &'static str,
+        message: &'static str,
+    },
     Validation {
         fields: BTreeMap<String, String>,
     },
@@ -101,6 +105,14 @@ impl IntoResponse for AppError {
             ),
             Self::Conflict { code, message } => (
                 StatusCode::CONFLICT,
+                ErrorBody {
+                    code: code.to_owned(),
+                    message: message.to_owned(),
+                    fields: None,
+                },
+            ),
+            Self::ServiceUnavailable { code, message } => (
+                StatusCode::SERVICE_UNAVAILABLE,
                 ErrorBody {
                     code: code.to_owned(),
                     message: message.to_owned(),

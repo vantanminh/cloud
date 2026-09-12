@@ -57,6 +57,31 @@ pub struct CreateProjectRequest {
     pub slug: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PostgresResourceResponse {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: String,
+    pub status: String,
+    #[serde(rename = "databaseName")]
+    pub database_name: String,
+    pub username: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(rename = "connectionString")]
+    pub connection_string: Option<String>,
+    #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateResourceRequest {
+    #[serde(rename = "resourceType")]
+    pub resource_type: String,
+    pub name: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CsrfResponse {
     #[serde(rename = "csrfToken")]

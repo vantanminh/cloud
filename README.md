@@ -18,6 +18,11 @@ $env:APP_ENV = "development"
 $env:CORS_ALLOWED_ORIGINS = "http://localhost:5173"
 $env:COOKIE_SECURE = "false"
 $env:AUTH_REQUIRE_EMAIL_VERIFICATION = "false"
+$env:DATABASE_PROVISIONING_ENABLED = "true"
+$env:DATABASE_RESOURCE_HOST = "localhost"
+$env:DATABASE_RESOURCE_PORT = "5432"
+# Keep this stable so credentials remain readable after an API restart.
+$env:DATABASE_CREDENTIALS_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
 cargo run --manifest-path apps/api/Cargo.toml
 
 # terminal 2
@@ -39,10 +44,19 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /auth/logout`
 - `POST /workspaces`
 - `GET /workspaces/:slug`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources`
+- `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources`
 
 Sessions are opaque, server-side records in PostgreSQL. The browser receives an
 HttpOnly session cookie plus a short-lived in-memory CSRF token for mutating
 requests. Production enables secure `__Host-` cookies and exact-origin CORS.
+
+The Postgres resource endpoint provisions one isolated database and login role
+per project on the cluster in `DATABASE_URL`. The API database role must have
+`CREATEDB` and `CREATEROLE`. Resource credentials are encrypted at rest with
+`DATABASE_CREDENTIALS_ENCRYPTION_KEY`; production must provide a stable,
+base64url-encoded 32-byte key. Set `DATABASE_RESOURCE_HOST` to the host that
+users can reach; it defaults to the host parsed from `DATABASE_URL`.
 
 ## Checks
 
@@ -78,6 +92,7 @@ runs SQLx migrations as a pre-install/pre-upgrade hook, and exposes
 ```powershell
 kubectl create secret generic knotree-api-secrets `
   --from-literal=DATABASE_URL='postgres://user:password@postgres.example/knotree_cloud' `
+  --from-literal=DATABASE_CREDENTIALS_ENCRYPTION_KEY='replace-with-a-stable-32-byte-base64url-key' `
   --namespace knotree
 helm upgrade --install knotree-api deploy/helm/knotree-api `
   --namespace knotree --create-namespace `

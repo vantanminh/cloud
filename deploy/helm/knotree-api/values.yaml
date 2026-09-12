@@ -53,6 +53,7 @@ certManager:
 secrets:
   existingSecret: knotree-api-secrets
   databaseUrlKey: DATABASE_URL
+  databaseCredentialsEncryptionKey: DATABASE_CREDENTIALS_ENCRYPTION_KEY
 
 env:
   appEnv: production
@@ -61,6 +62,9 @@ env:
   authRequireEmailVerification: "true"
   sessionTtlDays: "30"
   databaseMaxConnections: "10"
+  databaseProvisioningEnabled: "true"
+  databaseResourceHost: ""
+  databaseResourcePort: "5432"
   rustLog: info,knotree_api=debug
 
 resources:

@@ -56,6 +56,18 @@ spec:
               value: {{ .Values.env.sessionTtlDays | quote }}
             - name: DATABASE_MAX_CONNECTIONS
               value: {{ .Values.env.databaseMaxConnections | quote }}
+            - name: DATABASE_PROVISIONING_ENABLED
+              value: {{ .Values.env.databaseProvisioningEnabled | quote }}
+            - name: DATABASE_RESOURCE_HOST
+              value: {{ .Values.env.databaseResourceHost | quote }}
+            - name: DATABASE_RESOURCE_PORT
+              value: {{ .Values.env.databaseResourcePort | quote }}
+            - name: DATABASE_CREDENTIALS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseCredentialsEncryptionKey }}
+                  optional: true
             - name: RUST_LOG
               value: {{ .Values.env.rustLog | quote }}
           readinessProbe:
