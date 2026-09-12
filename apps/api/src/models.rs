@@ -19,6 +19,13 @@ pub struct WorkspaceResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ProjectResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub slug: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AuthResponse {
     pub user: UserResponse,
     pub workspace: Option<WorkspaceResponse>,
@@ -40,6 +47,12 @@ pub struct LoginRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateWorkspaceRequest {
+    pub name: String,
+    pub slug: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectRequest {
     pub name: String,
     pub slug: Option<String>,
 }

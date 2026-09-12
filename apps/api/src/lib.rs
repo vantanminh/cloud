@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod models;
+pub mod projects;
 pub mod security;
 pub mod state;
 pub mod workspaces;
@@ -31,6 +32,16 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/workspaces", post(workspaces::create))
         .route("/workspaces/{slug}", get(workspaces::get));
+
+    let api = api
+        .route(
+            "/workspaces/{workspace_slug}/projects",
+            get(projects::list).post(projects::create),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}",
+            get(projects::get),
+        );
 
     Router::new()
         .route("/healthz", get(healthz))
