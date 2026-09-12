@@ -8,10 +8,10 @@ import {
 } from "react"
 import {
   ActivityIcon,
+  BarChart3Icon,
+  BoxIcon,
   BellIcon,
-  CheckIcon,
   ChevronDownIcon,
-  CopyIcon,
   DatabaseIcon,
   FileTextIcon,
   GitBranchIcon,
@@ -20,17 +20,21 @@ import {
   Maximize2Icon,
   NetworkIcon,
   Redo2Icon,
-  ServerIcon,
+  SearchIcon,
   Settings2Icon,
+  MoonIcon,
+  SunIcon,
   Undo2Icon,
   XIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react"
+import { cn } from "cn"
 import { useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
+import { ResourceWorkspace } from "@/components/resource-workspace"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
@@ -48,6 +52,8 @@ import "./project-home.css"
 type TopologyNodeId = "postgres" | "project"
 type ConnectorId = "project-postgres"
 type Environment = "production" | "staging"
+type Theme = "light" | "dark"
+type WorkspaceView = "topology" | "logs"
 
 type TopologyNode = {
   id: TopologyNodeId
@@ -174,14 +180,21 @@ function TopologyDashboard({
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
   const [copiedConnectionString, setCopiedConnectionString] = useState(false)
+  const [theme, setTheme] = useState<Theme>(() =>
+    readStoredTheme("project-topology-dashboard-theme")
+  )
+  const [canvasTheme, setCanvasTheme] = useState<Theme>(() =>
+    readStoredTheme("project-topology-canvas-theme")
+  )
+  const [activeView, setActiveView] = useState<WorkspaceView>("topology")
   const nodes = useMemo<TopologyNode[]>(() => {
     const projectNode: TopologyNode = {
       id: "project",
       title: project.name,
       subtitle: project.slug,
-      type: "Project service",
+      type: "App service",
       volume: `${project.slug}-volume`,
-      status: "Ready",
+      status: "Online",
       position: postgresResource
         ? { left: 42, top: 53 }
         : { left: 50, top: 35 },
@@ -266,6 +279,14 @@ function TopologyDashboard({
       JSON.stringify({ zoom, selectedNode } satisfies PersistedDashboardState)
     )
   }, [selectedNode, stateKey, zoom])
+
+  useEffect(() => {
+    window.localStorage.setItem("project-topology-dashboard-theme", theme)
+  }, [theme])
+
+  useEffect(() => {
+    window.localStorage.setItem("project-topology-canvas-theme", canvasTheme)
+  }, [canvasTheme])
 
   useEffect(() => {
     return () => {
@@ -361,10 +382,27 @@ function TopologyDashboard({
     }
   }
 
+  const closeResourceWorkspace = useCallback(() => {
+    setSelectedNode(null)
+  }, [])
+
+  const openResourceLogs = useCallback(() => {
+    setSelectedNode(null)
+    setActiveView("logs")
+  }, [])
+
   function closeMenus() {
     setAddMenuOpen(false)
     setWorkspaceMenuOpen(false)
     setEnvironmentMenuOpen(false)
+  }
+
+  function toggleTheme() {
+    setTheme((current) => (current === "dark" ? "light" : "dark"))
+  }
+
+  function toggleCanvasTheme() {
+    setCanvasTheme((current) => (current === "dark" ? "light" : "dark"))
   }
 
   async function handleSignOut() {
@@ -379,7 +417,7 @@ function TopologyDashboard({
   const memberInitial = getInitial(session?.user.fullName ?? workspace.name)
 
   return (
-    <div className="project-home">
+    <div className="project-home" data-theme={theme}>
       <header className="project-topbar">
         <div className="project-topbar-left">
           <button
@@ -473,7 +511,10 @@ function TopologyDashboard({
                 <button
                   key={option}
                   type="button"
-                  className={`project-context-menu-item${option === environment ? " is-current" : ""}`}
+                  className={cn(
+                    "project-context-menu-item",
+                    option === environment && "is-current"
+                  )}
                   onClick={() => {
                     setEnvironment(option)
                     closeMenus()
@@ -492,6 +533,23 @@ function TopologyDashboard({
             <button
               className="project-icon-button"
               type="button"
+              aria-label={
+                theme === "dark"
+                  ? "Switch to light mode"
+                  : "Switch to dark mode"
+              }
+              aria-pressed={theme === "dark"}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? (
+                <MoonIcon aria-hidden="true" />
+              ) : (
+                <SunIcon aria-hidden="true" />
+              )}
+            </button>
+            <button
+              className="project-icon-button"
+              type="button"
               aria-label="Open activity"
               onClick={() => showToast("Activity is coming soon")}
             >
@@ -506,8 +564,8 @@ function TopologyDashboard({
               <BellIcon aria-hidden="true" />
             </button>
           </div>
-          <div className="project-current-badge" aria-label="Current project">
-            <strong>{project.name}</strong>
+          <div className="project-billing-badge" aria-label="Trial status">
+            <strong>30 days</strong>&nbsp;or $4.99 left
           </div>
           <button
             className="project-agent-button"
@@ -525,18 +583,26 @@ function TopologyDashboard({
 
       <aside className="project-side-rail">
         <nav className="project-rail-nav" aria-label="Primary">
-          <ProjectRailButton active label="Topology" onClick={() => undefined}>
+          <ProjectRailButton
+            active={activeView === "topology"}
+            label="Topology"
+            onClick={() => setActiveView("topology")}
+          >
             <NetworkIcon aria-hidden="true" />
           </ProjectRailButton>
           <ProjectRailButton
             label="Metrics"
             onClick={() => showToast("Metrics is available in this workspace")}
           >
-            <ServerIcon aria-hidden="true" />
+            <BarChart3Icon aria-hidden="true" />
           </ProjectRailButton>
           <ProjectRailButton
+            active={activeView === "logs"}
             label="Logs"
-            onClick={() => showToast("Logs is available in this workspace")}
+            onClick={() => {
+              setSelectedNode(null)
+              setActiveView("logs")
+            }}
           >
             <FileTextIcon aria-hidden="true" />
           </ProjectRailButton>
@@ -546,7 +612,7 @@ function TopologyDashboard({
               showToast("Resources is available in this workspace")
             }
           >
-            <Layers3Icon aria-hidden="true" />
+            <BoxIcon aria-hidden="true" />
           </ProjectRailButton>
           <ProjectRailButton
             label="Settings"
@@ -566,355 +632,324 @@ function TopologyDashboard({
       </aside>
 
       <main className="project-dashboard-main">
-        <h1 className="sr-only">{project.name} infrastructure topology</h1>
-        <section
-          className={`project-topology-shell${selectedNode ? " has-selection" : ""}${layersVisible ? " has-layer-guidance" : ""}`}
-          aria-label={`${environment} infrastructure topology for ${project.name}`}
-        >
-          <div className="project-canvas-toolbar">
-            <div ref={addMenuRef} className="project-add-wrap">
-              <button
-                className="project-primary-button"
-                type="button"
-                aria-expanded={addMenuOpen}
-                aria-controls="project-add-menu"
-                onClick={() => {
-                  setAddMenuOpen((current) => !current)
-                  setWorkspaceMenuOpen(false)
-                  setEnvironmentMenuOpen(false)
-                }}
-              >
-                <span className="project-plus" aria-hidden="true">
-                  +
-                </span>
-                <span>Add</span>
-              </button>
-              <div
-                id="project-add-menu"
-                className="project-add-menu"
-                hidden={!addMenuOpen}
-              >
-                <div className="project-menu-heading">Add resource</div>
-                <ProjectAddOption
-                  mark="P"
-                  label={
-                    postgresResource?.status === "ready"
-                      ? "Postgres (ready)"
-                      : "Postgres database"
-                  }
-                  onClick={handlePostgresAdd}
-                />
-                <ProjectAddOption
-                  mark="R"
-                  label="Redis"
-                  onClick={() => {
-                    setAddMenuOpen(false)
-                    showToast("Redis provisioning is coming soon")
-                  }}
-                />
-                <ProjectAddOption
-                  mark="S"
-                  label="App service"
-                  onClick={() => {
-                    setAddMenuOpen(false)
-                    showToast("App service is ready to configure")
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <svg
-            className="project-connector-layer"
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-            aria-hidden="true"
-            style={{ transform: `scale(${zoom})` }}
-          >
-            <defs>
-              <marker
-                id="project-arrowhead"
-                viewBox="0 0 5 5"
-                refX="4.4"
-                refY="2.5"
-                markerWidth="4"
-                markerHeight="4"
-                orient="auto-start-reverse"
-              >
-                <path d="M0 0 5 2.5 0 5z" fill="var(--project-muted)" />
-              </marker>
-              <marker
-                id="project-arrowhead-accent"
-                viewBox="0 0 5 5"
-                refX="4.4"
-                refY="2.5"
-                markerWidth="4"
-                markerHeight="4"
-                orient="auto-start-reverse"
-              >
-                <path d="M0 0 5 2.5 0 5z" fill="var(--project-accent)" />
-              </marker>
-            </defs>
-            {postgresResource && (
-              <path
-                className={connectorClassName("project-postgres", selectedNode)}
-                data-connector="project-postgres"
-                d="M42 53 V46 H42 V44"
-                markerEnd={
-                  selectedNode === "postgres"
-                    ? "url(#project-arrowhead-accent)"
-                    : "url(#project-arrowhead)"
-                }
-              />
-            )}
-          </svg>
-
-          {resourcesLoading && (
-            <div className="project-canvas-message" role="status">
-              <Spinner />
-              <span>Loading resources</span>
-            </div>
-          )}
-          {!resourcesLoading && resourceError && (
-            <div className="project-canvas-message project-canvas-message-error">
-              <strong>Resources unavailable</strong>
-              <span>{resourceError}</span>
-            </div>
-          )}
-          {!resourcesLoading && !resourceError && !postgresResource && (
-            <div className="project-canvas-empty">
-              <span className="project-canvas-empty-icon" aria-hidden="true">
-                <DatabaseIcon />
-              </span>
-              <strong>Create your first database</strong>
-              <span>
-                Add a real PostgreSQL database to give this project a durable
-                data store.
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => setPostgresDialogOpen(true)}
-              >
-                Create database
-              </Button>
-            </div>
-          )}
-
-          <div
-            className="project-canvas-world"
-            style={{ transform: `scale(${zoom})` }}
-          >
-            {nodes.map((node) => (
-              <article
-                key={node.id}
-                className={`project-node-card${selectedNode === node.id ? " is-selected" : ""}`}
-                style={{
-                  left: `${node.position.left}%`,
-                  top: `${node.position.top}%`,
-                }}
-                tabIndex={0}
-                role="button"
-                aria-pressed={selectedNode === node.id}
-                aria-label={`${node.title} resource, ${node.status.toLowerCase()}`}
-                onClick={() => selectNode(node.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault()
-                    selectNode(node.id)
-                  }
-                }}
-              >
-                <div className="project-node-main">
-                  <div className="project-node-title">
-                    <span className="project-node-logo" aria-hidden="true">
-                      <NodeIcon nodeId={node.id} />
-                    </span>
-                    <div>
-                      <h2 className="project-node-heading">{node.title}</h2>
-                      {node.subtitle && (
-                        <p className="project-node-subtitle">{node.subtitle}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="project-node-status">
-                    <span
-                      className={`project-status-dot project-status-dot-${node.status.toLowerCase()}`}
-                      aria-hidden="true"
-                    />
-                    <span>{node.status}</span>
-                  </div>
-                </div>
-                <div className="project-node-footer">
-                  <HardDriveIcon
-                    className="project-storage-icon"
-                    aria-hidden="true"
-                  />
-                  <span>{node.volume}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="project-selection-hint" aria-hidden="true">
-            <kbd>Click</kbd> a resource to inspect
-          </div>
-
-          <div className="project-zoom-dock" aria-label="Canvas controls">
-            <div className="project-zoom-group">
-              <button
-                className="project-zoom-button"
-                type="button"
-                aria-label="Zoom in"
-                onClick={() => updateZoom(zoom + 0.1, "Zoomed in")}
-              >
-                <ZoomInIcon aria-hidden="true" />
-              </button>
-              <button
-                className="project-zoom-button"
-                type="button"
-                aria-label="Zoom out"
-                onClick={() => updateZoom(zoom - 0.1, "Zoomed out")}
-              >
-                <ZoomOutIcon aria-hidden="true" />
-              </button>
-            </div>
-            <div className="project-history-group">
-              <button
-                className="project-zoom-button"
-                type="button"
-                aria-label="Fit topology to view"
-                onClick={() => updateZoom(1, "View fitted")}
-              >
-                <Maximize2Icon aria-hidden="true" />
-              </button>
-              <button
-                className="project-zoom-button"
-                type="button"
-                aria-label="Undo view change"
-                onClick={() => showToast("No earlier view change")}
-              >
-                <Undo2Icon aria-hidden="true" />
-              </button>
-              <button
-                className="project-zoom-button"
-                type="button"
-                aria-label="Redo view change"
-                onClick={() => showToast("No later view change")}
-              >
-                <Redo2Icon aria-hidden="true" />
-              </button>
-            </div>
-            <button
-              className="project-layers-button"
-              type="button"
-              aria-label="Toggle layer guidance"
-              aria-pressed={layersVisible}
-              onClick={() => {
-                setLayersVisible((current) => !current)
-                showToast(
-                  layersVisible
-                    ? "Layer guidance hidden"
-                    : "Layer guidance visible"
-                )
-              }}
+        {activeView === "logs" ? (
+          <LogsWorkspace project={project} environment={environment} />
+        ) : (
+          <>
+            <h1 className="sr-only">{project.name} infrastructure topology</h1>
+            <section
+              className={cn(
+                "project-topology-shell",
+                selectedNode && "has-selection",
+                layersVisible && "has-layer-guidance"
+              )}
+              aria-label={`${environment} infrastructure topology for ${project.name}`}
+              data-canvas-theme={canvasTheme}
             >
-              <Layers3Icon aria-hidden="true" />
-            </button>
-            <span className="project-zoom-readout" aria-live="polite">
-              {Math.round(zoom * 100)}%
-            </span>
-          </div>
-
-          {selectedNodeData && (
-            <aside
-              className="project-inspect-panel"
-              aria-labelledby="project-inspect-title"
-            >
-              <div className="project-inspect-header">
-                <div>
-                  <p className="project-inspect-kicker">Resource details</p>
-                  <h2
-                    className="project-inspect-title"
-                    id="project-inspect-title"
-                  >
-                    {selectedNodeData.title}
-                  </h2>
-                </div>
+              <div className="project-canvas-toolbar">
                 <button
-                  className="project-close-button"
+                  className="project-canvas-theme-toggle"
                   type="button"
-                  aria-label="Close resource details"
-                  onClick={() => setSelectedNode(null)}
+                  aria-label={
+                    canvasTheme === "dark"
+                      ? "Switch canvas to light mode"
+                      : "Switch canvas to dark mode"
+                  }
+                  aria-pressed={canvasTheme === "dark"}
+                  onClick={toggleCanvasTheme}
                 >
-                  <XIcon aria-hidden="true" />
+                  {canvasTheme === "dark" ? (
+                    <MoonIcon aria-hidden="true" />
+                  ) : (
+                    <SunIcon aria-hidden="true" />
+                  )}
                 </button>
-              </div>
-              <dl className="project-inspect-list">
-                <div className="project-inspect-row">
-                  <dt>Type</dt>
-                  <dd>{selectedNodeData.type}</dd>
-                </div>
-                <div className="project-inspect-row">
-                  <dt>Status</dt>
-                  <dd>{selectedNodeData.status}</dd>
-                </div>
-                <div className="project-inspect-row">
-                  <dt>Database</dt>
-                  <dd>{selectedNodeData.volume}</dd>
-                </div>
-                {selectedNodeData.resource && (
-                  <>
-                    <div className="project-inspect-row">
-                      <dt>Host</dt>
-                      <dd>{selectedNodeData.resource.host}</dd>
-                    </div>
-                    <div className="project-inspect-row">
-                      <dt>Port</dt>
-                      <dd>{selectedNodeData.resource.port}</dd>
-                    </div>
-                    <div className="project-inspect-row">
-                      <dt>Username</dt>
-                      <dd>{selectedNodeData.resource.username}</dd>
-                    </div>
-                  </>
-                )}
-              </dl>
-              {selectedNodeData.resource?.connectionString && (
-                <div className="project-connection-block">
-                  <div className="project-connection-heading">
-                    <span>Connection string</span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        void handleCopyConnectionString(
-                          selectedNodeData.resource?.connectionString ?? ""
-                        )
+                <div ref={addMenuRef} className="project-add-wrap">
+                  <button
+                    className="project-primary-button"
+                    type="button"
+                    aria-expanded={addMenuOpen}
+                    aria-controls="project-add-menu"
+                    onClick={() => {
+                      setAddMenuOpen((current) => !current)
+                      setWorkspaceMenuOpen(false)
+                      setEnvironmentMenuOpen(false)
+                    }}
+                  >
+                    <span className="project-plus" aria-hidden="true">
+                      +
+                    </span>
+                    <span>Add</span>
+                  </button>
+                  <div
+                    id="project-add-menu"
+                    className="project-add-menu"
+                    hidden={!addMenuOpen}
+                  >
+                    <div className="project-menu-heading">Add resource</div>
+                    <ProjectAddOption
+                      mark="P"
+                      label={
+                        postgresResource?.status === "ready"
+                          ? "Postgres (ready)"
+                          : "Postgres"
                       }
-                    >
-                      {copiedConnectionString ? (
-                        <CheckIcon data-icon="inline-start" />
-                      ) : (
-                        <CopyIcon data-icon="inline-start" />
-                      )}
-                      {copiedConnectionString ? "Copied" : "Copy"}
-                    </Button>
+                      onClick={handlePostgresAdd}
+                    />
+                    <ProjectAddOption
+                      mark="R"
+                      label="Redis"
+                      onClick={() => {
+                        setAddMenuOpen(false)
+                        showToast("Redis provisioning is coming soon")
+                      }}
+                    />
+                    <ProjectAddOption
+                      mark="S"
+                      label="App service"
+                      onClick={() => {
+                        setAddMenuOpen(false)
+                        showToast("App service is ready to configure")
+                      }}
+                    />
                   </div>
-                  <code className="project-connection-value">
-                    {selectedNodeData.resource.connectionString}
-                  </code>
-                  <p className="project-connection-warning">
-                    Treat this like a password. Anyone with it can connect to
-                    this database.
-                  </p>
+                </div>
+              </div>
+
+              <svg
+                className="project-connector-layer"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                style={{ transform: `scale(${zoom})` }}
+              >
+                <defs>
+                  <marker
+                    id="project-arrowhead"
+                    viewBox="0 0 5 5"
+                    refX="4.4"
+                    refY="2.5"
+                    markerWidth="4"
+                    markerHeight="4"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M0 0 5 2.5 0 5z" fill="var(--project-muted)" />
+                  </marker>
+                  <marker
+                    id="project-arrowhead-accent"
+                    viewBox="0 0 5 5"
+                    refX="4.4"
+                    refY="2.5"
+                    markerWidth="4"
+                    markerHeight="4"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M0 0 5 2.5 0 5z" fill="var(--project-accent)" />
+                  </marker>
+                </defs>
+                {postgresResource && (
+                  <path
+                    className={connectorClassName(
+                      "project-postgres",
+                      selectedNode
+                    )}
+                    data-connector="project-postgres"
+                    d="M42 53 V46 H42 V44"
+                    markerEnd={
+                      selectedNode === "postgres"
+                        ? "url(#project-arrowhead-accent)"
+                        : "url(#project-arrowhead)"
+                    }
+                  />
+                )}
+              </svg>
+
+              {resourcesLoading && (
+                <div className="project-canvas-message" role="status">
+                  <Spinner />
+                  <span>Loading resources</span>
                 </div>
               )}
-            </aside>
-          )}
-        </section>
+              {!resourcesLoading && resourceError && (
+                <div className="project-canvas-message project-canvas-message-error">
+                  <strong>Resources unavailable</strong>
+                  <span>{resourceError}</span>
+                </div>
+              )}
+              {!resourcesLoading && !resourceError && !postgresResource && (
+                <div className="project-canvas-empty">
+                  <span
+                    className="project-canvas-empty-icon"
+                    aria-hidden="true"
+                  >
+                    <DatabaseIcon />
+                  </span>
+                  <strong>Create your first database</strong>
+                  <span>
+                    Add a real PostgreSQL database to give this project a
+                    durable data store.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setPostgresDialogOpen(true)}
+                  >
+                    Create database
+                  </Button>
+                </div>
+              )}
+
+              <div
+                className="project-canvas-world"
+                style={{ transform: `scale(${zoom})` }}
+              >
+                {nodes.map((node) => (
+                  <article
+                    key={node.id}
+                    className={cn(
+                      "project-node-card",
+                      selectedNode === node.id && "is-selected"
+                    )}
+                    style={{
+                      left: `${node.position.left}%`,
+                      top: `${node.position.top}%`,
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={selectedNode === node.id}
+                    aria-label={`${node.title} resource, ${node.status.toLowerCase()}`}
+                    onClick={() => selectNode(node.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        selectNode(node.id)
+                      }
+                    }}
+                  >
+                    <div className="project-node-main">
+                      <div className="project-node-title">
+                        <span className="project-node-logo" aria-hidden="true">
+                          <NodeIcon nodeId={node.id} />
+                        </span>
+                        <div>
+                          <h2 className="project-node-heading">{node.title}</h2>
+                          {node.subtitle && (
+                            <p className="project-node-subtitle">
+                              {node.subtitle}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="project-node-status">
+                        <span
+                          className={cn(
+                            "project-status-dot",
+                            `project-status-dot-${node.status.toLowerCase()}`
+                          )}
+                          aria-hidden="true"
+                        />
+                        <span>{node.status}</span>
+                      </div>
+                    </div>
+                    <div className="project-node-footer">
+                      <HardDriveIcon
+                        className="project-storage-icon"
+                        aria-hidden="true"
+                      />
+                      <span>{node.volume}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="project-selection-hint" aria-hidden="true">
+                <kbd>Click</kbd> a resource to inspect
+              </div>
+
+              <div className="project-zoom-dock" aria-label="Canvas controls">
+                <div className="project-zoom-group">
+                  <button
+                    className="project-zoom-button"
+                    type="button"
+                    aria-label="Zoom in"
+                    onClick={() => updateZoom(zoom + 0.1, "Zoomed in")}
+                  >
+                    <ZoomInIcon aria-hidden="true" />
+                  </button>
+                  <button
+                    className="project-zoom-button"
+                    type="button"
+                    aria-label="Zoom out"
+                    onClick={() => updateZoom(zoom - 0.1, "Zoomed out")}
+                  >
+                    <ZoomOutIcon aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="project-history-group">
+                  <button
+                    className="project-zoom-button"
+                    type="button"
+                    aria-label="Fit topology to view"
+                    onClick={() => updateZoom(1, "View fitted")}
+                  >
+                    <Maximize2Icon aria-hidden="true" />
+                  </button>
+                  <button
+                    className="project-zoom-button"
+                    type="button"
+                    aria-label="Undo view change"
+                    onClick={() => showToast("No earlier view change")}
+                  >
+                    <Undo2Icon aria-hidden="true" />
+                  </button>
+                  <button
+                    className="project-zoom-button"
+                    type="button"
+                    aria-label="Redo view change"
+                    onClick={() => showToast("No later view change")}
+                  >
+                    <Redo2Icon aria-hidden="true" />
+                  </button>
+                </div>
+                <button
+                  className="project-layers-button"
+                  type="button"
+                  aria-label="Toggle layer guidance"
+                  aria-pressed={layersVisible}
+                  onClick={() => {
+                    setLayersVisible((current) => !current)
+                    showToast(
+                      layersVisible
+                        ? "Layer guidance hidden"
+                        : "Layer guidance visible"
+                    )
+                  }}
+                >
+                  <Layers3Icon aria-hidden="true" />
+                </button>
+                <span className="project-zoom-readout" aria-live="polite">
+                  {Math.round(zoom * 100)}%
+                </span>
+              </div>
+            </section>
+          </>
+        )}
       </main>
+
+      {selectedNodeData && (
+        <ResourceWorkspace
+          key={selectedNodeData.id}
+          node={selectedNodeData}
+          environment={environment}
+          onClose={closeResourceWorkspace}
+          onCopyConnectionString={(value) => {
+            void handleCopyConnectionString(value)
+          }}
+          copiedConnectionString={copiedConnectionString}
+          onToast={showToast}
+          onOpenLogs={openResourceLogs}
+        />
+      )}
 
       <PostgresCreateDialog
         key={
@@ -960,6 +995,82 @@ function ProjectRailButton({
   )
 }
 
+function LogsWorkspace({
+  project,
+  environment,
+}: {
+  project: Project
+  environment: string
+}) {
+  const [resourceFilter, setResourceFilter] = useState("all")
+  const [search, setSearch] = useState("")
+  const [live, setLive] = useState(true)
+
+  return (
+    <section className="project-logs-shell" aria-label={`${project.name} logs`}>
+      <div className="project-logs-toolbar">
+        <div className="project-logs-heading">
+          <h1>Logs</h1>
+          <p>
+            Runtime events for {project.name} · {environment}
+          </p>
+        </div>
+        <div className="project-logs-filters">
+          <label>
+            <span className="sr-only">Filter logs by resource</span>
+            <select
+              value={resourceFilter}
+              onChange={(event) => setResourceFilter(event.target.value)}
+            >
+              <option value="all">All resources</option>
+              <option value="postgres">Postgres</option>
+              <option value="project">App service</option>
+            </select>
+          </label>
+          <label className="project-logs-search">
+            <SearchIcon aria-hidden="true" />
+            <span className="sr-only">Search logs</span>
+            <input
+              type="search"
+              value={search}
+              placeholder="Filter messages..."
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <button
+            className="project-logs-live"
+            type="button"
+            aria-pressed={live}
+            onClick={() => setLive((current) => !current)}
+          >
+            <span aria-hidden="true" />
+            {live ? "Live" : "Paused"}
+          </button>
+        </div>
+      </div>
+      <div className="project-logs-stream" role="log" aria-live="polite">
+        <div className="project-logs-empty">
+          <span className="project-logs-empty-icon" aria-hidden="true">
+            <FileTextIcon />
+          </span>
+          <h2>No logs yet</h2>
+          <p>
+            Logs will appear here once{" "}
+            {resourceFilter === "all" ? "a resource" : "this resource"} starts
+            handling traffic.
+          </p>
+          {(search || !live) && (
+            <span className="project-logs-filter-note">
+              {search ? `Filtering for “${search}” · ` : ""}
+              {live ? "Live tail enabled" : "Live tail paused"}
+            </span>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function ProjectAddOption({
   label,
   mark,
@@ -992,7 +1103,7 @@ function connectorClassName(
 ) {
   const highlighted =
     connector === "project-postgres" && selectedNode === "postgres"
-  return `project-connector${highlighted ? " is-highlighted" : ""}`
+  return cn("project-connector", highlighted && "is-highlighted")
 }
 
 function resourceStatusLabel(status: PostgresResourceStatus) {
@@ -1036,4 +1147,12 @@ function isTopologyNodeId(value: unknown): value is TopologyNodeId {
 
 function getInitial(value: string) {
   return value.trim().charAt(0).toUpperCase() || "K"
+}
+
+function readStoredTheme(key: string): Theme {
+  try {
+    return window.localStorage.getItem(key) === "dark" ? "dark" : "light"
+  } catch {
+    return "light"
+  }
 }

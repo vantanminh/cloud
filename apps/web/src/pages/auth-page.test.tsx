@@ -209,6 +209,11 @@ describe("AuthPage", () => {
 
   it("creates a project and opens its topology home", async () => {
     const user = userEvent.setup()
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    })
 
     render(
       <MemoryRouter initialEntries={["/register"]}>
@@ -258,7 +263,7 @@ describe("AuthPage", () => {
       await screen.findByText("Create your first database")
     ).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("button", { name: "Postgres database" }))
+    await user.click(screen.getByRole("button", { name: /^Postgres$/ }))
     const databaseName = await screen.findByLabelText("Database name")
     await user.clear(databaseName)
     await user.type(databaseName, "Analytics")
@@ -268,26 +273,66 @@ describe("AuthPage", () => {
       })
     )
 
+    const resourceDialog = await screen.findByRole("dialog")
+    expect(
+      within(resourceDialog).getByRole("tab", { name: "Deployments" })
+    ).toHaveAttribute("aria-selected", "true")
+    expect(screen.getAllByText("knotree_db_project").length).toBeGreaterThan(0)
+    await user.click(
+      within(resourceDialog).getByRole("tab", { name: "Database" })
+    )
+    expect(await screen.findByText("No tables yet")).toBeInTheDocument()
+    await user.click(
+      within(resourceDialog).getByRole("button", { name: "Connect" })
+    )
+    expect(
+      await screen.findByText("Connection string copied")
+    ).toBeInTheDocument()
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      "postgres://knotree_role_project:secret@localhost:5432/knotree_db_project"
+    )
+    await user.click(
+      within(resourceDialog).getByRole("button", {
+        name: "Close resource workspace",
+      })
+    )
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+
     await user.click(
       await screen.findByRole("button", { name: "Postgres resource, online" })
     )
-    expect(screen.getByText("Resource details")).toBeInTheDocument()
-    expect(screen.getAllByText("knotree_db_project").length).toBeGreaterThan(0)
+    const reopenedResourceDialog = await screen.findByRole("dialog")
+    await user.click(
+      within(reopenedResourceDialog).getByRole("tab", { name: "Database" })
+    )
     expect(
-      screen.getByText(
-        "postgres://knotree_role_project:secret@localhost:5432/knotree_db_project"
-      )
+      within(reopenedResourceDialog).getByRole("button", { name: "Copied" })
     ).toBeInTheDocument()
     await user.click(
-      screen.getByRole("button", { name: "Close resource details" })
+      within(reopenedResourceDialog).getByRole("button", {
+        name: "Close resource workspace",
+      })
     )
-    expect(screen.queryByText("Resource details")).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("button", { name: "Redis" }))
     expect(screen.getByRole("status")).toHaveTextContent(
       "Redis provisioning is coming soon"
     )
+
+    await user.click(screen.getByRole("button", { name: "Logs" }))
+    expect(screen.getByRole("heading", { name: /^Logs$/ })).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Topology" }))
+    expect(
+      screen.getByRole("heading", { name: "Knotree Study" })
+    ).toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch to dark mode" })
+    )
+    expect(
+      screen.getByRole("button", { name: "Switch to light mode" })
+    ).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Zoom in" }))
     expect(screen.getByText("110%")).toBeInTheDocument()
