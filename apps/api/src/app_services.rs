@@ -7,14 +7,15 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
 };
-use futures_util::stream;
+use futures_util::{future::join_all, stream};
+use serde::Deserialize;
 use time::OffsetDateTime;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
@@ -28,10 +29,14 @@ use crate::{
     cluster::{self, PROVIDER_DOCKER},
     error::AppError,
     github::{self, GithubDockerCredentials},
+    metrics::{
+        MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
+        downsample_metric_points, has_system_metrics, parse_metric_range, unix_timestamp,
+    },
     models::{
         AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
-        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceDatabaseRequest,
-        UpdateAppServiceRequest,
+        AppServiceMetricPoint, AppServiceMetricsResponse, AppServiceResponse,
+        CreateAppServiceRequest, UpdateAppServiceDatabaseRequest, UpdateAppServiceRequest,
     },
     projects, security,
     state::AppState,
@@ -77,6 +82,25 @@ struct AppServiceDeploymentRow {
 struct AppServiceLogsTarget {
     container_name: Option<String>,
     status: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AppServiceMetricHistoryRow {
+    sample_timestamp: i64,
+    cpu_percent: Option<f64>,
+    memory_used_bytes: Option<i64>,
+    memory_limit_bytes: Option<i64>,
+    volume_used_bytes: Option<i64>,
+    volume_capacity_bytes: Option<i64>,
+    network_receive_bytes: Option<i64>,
+    network_transmit_bytes: Option<i64>,
+    disk_read_bytes: Option<i64>,
+    disk_write_bytes: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct AppServiceMetricsQuery {
+    pub range: Option<String>,
 }
 
 const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id";
@@ -300,6 +324,105 @@ pub async fn logs(
         running,
         lines: docker_log_lines(&output),
         message: None,
+    }))
+}
+
+pub async fn metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Query(query): Query<AppServiceMetricsQuery>,
+) -> Result<Json<AppServiceMetricsResponse>, AppError> {
+    let range = parse_metric_range(query.range.as_deref())?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    let target = sqlx::query_as::<_, AppServiceLogsTarget>(
+        "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
+    )
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+
+    let Some(container_name) = target.container_name else {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_NOT_READY",
+            message: "Live metrics become available after the app service is deployed.",
+        });
+    };
+    if target.status != STATUS_READY {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_NOT_READY",
+            message: "Live metrics become available after the app service is ready.",
+        });
+    }
+
+    let runtime_metrics =
+        cluster::collect_app_service_runtime_metrics(&state.config, &container_name)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    app_service_id = %app_service_id,
+                    container_name = %container_name,
+                    error = %error,
+                    "could not collect app service runtime metrics"
+                );
+                AppError::ServiceUnavailable {
+                    code: "METRICS_UNAVAILABLE",
+                    message: "Runtime metrics are temporarily unavailable.",
+                }
+            })?;
+    let sample = AppServiceMetricPoint {
+        timestamp: unix_timestamp(),
+        cpu_percent: runtime_metrics.cpu_percent,
+        memory_used_bytes: runtime_metrics.memory_used_bytes,
+        memory_limit_bytes: runtime_metrics.memory_limit_bytes,
+        volume_used_bytes: runtime_metrics.volume_used_bytes,
+        volume_capacity_bytes: runtime_metrics
+            .volume_capacity_bytes
+            .or(Some(cluster::RESOURCE_VOLUME_LIMIT_BYTES)),
+        network_receive_bytes: runtime_metrics.network_receive_bytes,
+        network_transmit_bytes: runtime_metrics.network_transmit_bytes,
+        disk_read_bytes: runtime_metrics.disk_read_bytes,
+        disk_write_bytes: runtime_metrics.disk_write_bytes,
+    };
+    let sample_timestamp = sample.timestamp;
+    persist_app_service_metric_sample(&state, app_service_id, &sample).await?;
+    let system_metrics_available = has_system_metrics(&sample);
+    let system_metrics_message = if system_metrics_available {
+        None
+    } else {
+        Some(
+            "CPU, memory, network, and disk metrics are not available for this app service."
+                .to_owned(),
+        )
+    };
+    let from_timestamp = sample_timestamp.saturating_sub(range.seconds);
+    let points = load_app_service_metric_history(
+        &state,
+        app_service_id,
+        from_timestamp,
+        sample_timestamp,
+        range,
+    )
+    .await?;
+
+    Ok(Json(AppServiceMetricsResponse {
+        provider: PROVIDER_DOCKER.to_owned(),
+        system_metrics_available,
+        system_metrics_message,
+        sample_interval_seconds: METRIC_SAMPLE_INTERVAL_SECONDS as u32,
+        retention_seconds: METRIC_RETENTION_SECONDS as u32,
+        range: range.key.to_owned(),
+        from_timestamp,
+        to_timestamp: sample_timestamp,
+        resolution_seconds: range.bucket_seconds() as u32,
+        points,
     }))
 }
 
@@ -1065,6 +1188,194 @@ async fn run_app_service_deployment(
     }
 }
 
+async fn persist_app_service_metric_sample(
+    state: &AppState,
+    app_service_id: Uuid,
+    sample: &AppServiceMetricPoint,
+) -> Result<(), AppError> {
+    let mut transaction = state.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO app_service_metric_samples (
+            app_service_id, sampled_at, cpu_percent, memory_used_bytes, memory_limit_bytes,
+            volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
+            network_transmit_bytes, disk_read_bytes, disk_write_bytes
+         ) VALUES (
+            $1, to_timestamp($2::double precision), $3, $4, $5, $6, $7, $8, $9, $10, $11
+         )
+         ON CONFLICT (app_service_id, sampled_at) DO UPDATE SET
+            cpu_percent = EXCLUDED.cpu_percent,
+            memory_used_bytes = EXCLUDED.memory_used_bytes,
+            memory_limit_bytes = EXCLUDED.memory_limit_bytes,
+            volume_used_bytes = EXCLUDED.volume_used_bytes,
+            volume_capacity_bytes = EXCLUDED.volume_capacity_bytes,
+            network_receive_bytes = EXCLUDED.network_receive_bytes,
+            network_transmit_bytes = EXCLUDED.network_transmit_bytes,
+            disk_read_bytes = EXCLUDED.disk_read_bytes,
+            disk_write_bytes = EXCLUDED.disk_write_bytes",
+    )
+    .bind(app_service_id)
+    .bind(sample.timestamp)
+    .bind(sample.cpu_percent)
+    .bind(sample.memory_used_bytes)
+    .bind(sample.memory_limit_bytes)
+    .bind(sample.volume_used_bytes)
+    .bind(sample.volume_capacity_bytes)
+    .bind(sample.network_receive_bytes)
+    .bind(sample.network_transmit_bytes)
+    .bind(sample.disk_read_bytes)
+    .bind(sample.disk_write_bytes)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM app_service_metric_samples
+         WHERE app_service_id = $1
+           AND sampled_at < now() - INTERVAL '30 days'",
+    )
+    .bind(app_service_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn load_app_service_metric_history(
+    state: &AppState,
+    app_service_id: Uuid,
+    from_timestamp: i64,
+    to_timestamp: i64,
+    range: crate::metrics::MetricRange,
+) -> Result<Vec<AppServiceMetricPoint>, AppError> {
+    let rows = sqlx::query_as::<_, AppServiceMetricHistoryRow>(
+        "WITH bucketed AS (
+            SELECT
+                EXTRACT(EPOCH FROM sampled_at)::bigint AS sample_timestamp,
+                cpu_percent,
+                memory_used_bytes,
+                memory_limit_bytes,
+                volume_used_bytes,
+                volume_capacity_bytes,
+                network_receive_bytes,
+                network_transmit_bytes,
+                disk_read_bytes,
+                disk_write_bytes,
+                ROW_NUMBER() OVER (
+                    PARTITION BY FLOOR(
+                        EXTRACT(EPOCH FROM sampled_at) / $4::double precision
+                    )
+                    ORDER BY sampled_at DESC
+                ) AS sample_rank
+            FROM app_service_metric_samples
+            WHERE app_service_id = $1
+              AND sampled_at >= to_timestamp($2::double precision)
+              AND sampled_at <= to_timestamp($3::double precision)
+        )
+        SELECT sample_timestamp, cpu_percent, memory_used_bytes, memory_limit_bytes,
+               volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
+               network_transmit_bytes, disk_read_bytes, disk_write_bytes
+        FROM bucketed
+        WHERE sample_rank = 1
+        ORDER BY sample_timestamp ASC",
+    )
+    .bind(app_service_id)
+    .bind(from_timestamp)
+    .bind(to_timestamp)
+    .bind(range.bucket_seconds())
+    .fetch_all(&state.db)
+    .await
+    .map_err(AppError::from)?;
+
+    Ok(downsample_metric_points(
+        rows.into_iter()
+            .map(|row| AppServiceMetricPoint {
+                timestamp: row.sample_timestamp,
+                cpu_percent: row.cpu_percent,
+                memory_used_bytes: row.memory_used_bytes,
+                memory_limit_bytes: row.memory_limit_bytes,
+                volume_used_bytes: row.volume_used_bytes,
+                volume_capacity_bytes: row.volume_capacity_bytes,
+                network_receive_bytes: row.network_receive_bytes,
+                network_transmit_bytes: row.network_transmit_bytes,
+                disk_read_bytes: row.disk_read_bytes,
+                disk_write_bytes: row.disk_write_bytes,
+            })
+            .collect(),
+        MAX_METRIC_RESPONSE_POINTS,
+    ))
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AppServiceMetricSamplerRow {
+    id: Uuid,
+    container_name: String,
+}
+
+pub(crate) async fn sample_ready_app_services(
+    state: &AppState,
+) -> std::result::Result<(), sqlx::Error> {
+    let services = sqlx::query_as::<_, AppServiceMetricSamplerRow>(
+        "SELECT id, container_name
+         FROM project_app_services
+         WHERE status = $1 AND container_name IS NOT NULL",
+    )
+    .bind(STATUS_READY)
+    .fetch_all(&state.db)
+    .await?;
+
+    let results = join_all(
+        services
+            .into_iter()
+            .map(|service| sample_app_service(state, service)),
+    )
+    .await;
+    for result in results {
+        if let Err(error) = result {
+            tracing::warn!(error = ?error, "could not persist app service metric sample");
+        }
+    }
+    Ok(())
+}
+
+async fn sample_app_service(
+    state: &AppState,
+    service: AppServiceMetricSamplerRow,
+) -> Result<(), AppError> {
+    let runtime_metrics =
+        cluster::collect_app_service_runtime_metrics(&state.config, &service.container_name)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    app_service_id = %service.id,
+                    container_name = %service.container_name,
+                    error = %error,
+                    "could not collect app service runtime metrics"
+                );
+                AppError::ServiceUnavailable {
+                    code: "METRICS_UNAVAILABLE",
+                    message: "Runtime metrics are temporarily unavailable.",
+                }
+            })?;
+    persist_app_service_metric_sample(
+        state,
+        service.id,
+        &AppServiceMetricPoint {
+            timestamp: unix_timestamp(),
+            cpu_percent: runtime_metrics.cpu_percent,
+            memory_used_bytes: runtime_metrics.memory_used_bytes,
+            memory_limit_bytes: runtime_metrics.memory_limit_bytes,
+            volume_used_bytes: runtime_metrics.volume_used_bytes,
+            volume_capacity_bytes: runtime_metrics
+                .volume_capacity_bytes
+                .or(Some(cluster::RESOURCE_VOLUME_LIMIT_BYTES)),
+            network_receive_bytes: runtime_metrics.network_receive_bytes,
+            network_transmit_bytes: runtime_metrics.network_transmit_bytes,
+            disk_read_bytes: runtime_metrics.disk_read_bytes,
+            disk_write_bytes: runtime_metrics.disk_write_bytes,
+        },
+    )
+    .await
+}
+
 async fn ready_database_resources(
     state: &AppState,
     project_id: Uuid,
@@ -1194,6 +1505,12 @@ async fn provision_docker(
         docker_pull(state, image, logger).await?;
     }
 
+    let declared_volumes = docker_image_declared_volumes(state, image, logger).await?;
+    if !declared_volumes.is_empty() {
+        bail!(
+            "Docker app images with declared volumes are not supported because their storage cannot be capped at 10 GiB"
+        );
+    }
     let exposed = docker_image_exposed_ports(state, image, logger).await?;
     let app_port = if honor_requested_port {
         app_port
@@ -1243,6 +1560,13 @@ async fn provision_docker(
         "--publish".to_owned(),
         publish,
     ];
+    docker_args.extend(cluster::docker_resource_limit_args());
+    log_deployment(
+        logger,
+        "Apply resource limits",
+        "Capping the service at 1 vCPU, 1 GiB RAM, and 10 GiB writable storage.",
+    )
+    .await?;
     // Keep database credentials inside the container environment. They are
     // never serialized into the API response or Docker labels.
     for variable in database_environment {
@@ -1277,6 +1601,36 @@ async fn provision_docker(
         app_port,
         container_name,
     })
+}
+
+async fn docker_image_declared_volumes(
+    state: &AppState,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<Vec<String>> {
+    log_deployment(logger, "Inspect image", "Checking the image storage paths.").await?;
+    let output = run_docker_for_deployment(
+        state,
+        logger,
+        "Inspect image",
+        vec![
+            "inspect".to_owned(),
+            "--format={{json .Config.Volumes}}".to_owned(),
+            image.to_owned(),
+        ],
+    )
+    .await?;
+    Ok(parse_declared_volumes(&output))
+}
+
+fn parse_declared_volumes(output: &str) -> Vec<String> {
+    let mut volumes = serde_json::from_str::<serde_json::Value>(output)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|volumes| volumes.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    volumes.sort_unstable();
+    volumes
 }
 
 async fn docker_image_exposed_ports(
@@ -1704,6 +2058,15 @@ mod tests {
         assert_eq!(resolve_container_port(3000, &[]), 3000);
         assert_eq!(resolve_container_port(9000, &[8080, 8443]), 8080);
         assert_eq!(resolve_container_port(3000, &[80]), 80);
+    }
+
+    #[test]
+    fn rejects_image_volume_paths_that_would_bypass_the_storage_cap() {
+        assert_eq!(parse_declared_volumes("null"), Vec::<String>::new());
+        assert_eq!(
+            parse_declared_volumes(r#"{"/var/lib/app":{},"/cache":{}}"#),
+            vec!["/cache".to_owned(), "/var/lib/app".to_owned()]
+        );
     }
 
     #[test]

@@ -35,6 +35,7 @@ import { ApiError } from "@/lib/api"
 import {
   createDatabaseTable,
   executeDatabaseQuery,
+  getAppServiceMetrics,
   getDatabaseConfig,
   getDatabaseMetrics,
   getDatabaseStats,
@@ -46,14 +47,14 @@ import {
 } from "@/lib/resources"
 import type {
   DatabaseConfig,
-  DatabaseMetricPoint,
-  DatabaseMetrics,
   DatabaseMetricsRange,
   DatabaseStats,
   DatabaseTable,
   DatabaseTableData,
   DatabaseQueryResult,
   AppService,
+  ResourceMetricPoint,
+  ResourceMetrics,
   PostgresResource,
 } from "@/lib/types"
 
@@ -1556,8 +1557,13 @@ function MetricsPane({
   onToast: (message: string) => void
 }) {
   const resourceId = node.resource?.id
-  const isReady = node.id === "postgres" && node.resource?.status === "ready"
-  const [metrics, setMetrics] = useState<DatabaseMetrics | null>(null)
+  const isDatabase = node.resource?.resourceType === "postgres"
+  const isAppService = node.resource?.resourceType === "app"
+  const isSupportedResource = isDatabase || isAppService
+  const isReady = isSupportedResource && node.resource?.status === "ready"
+  const isError = node.resource?.status === "error"
+  const resourceLabel = isAppService ? "app service" : "project database"
+  const [metrics, setMetrics] = useState<ResourceMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [live, setLive] = useState(true)
@@ -1584,12 +1590,19 @@ function MetricsPane({
         setLoading(true)
       }
       try {
-        const nextMetrics = await getDatabaseMetrics(
-          workspaceSlug,
-          projectSlug,
-          resourceId,
-          range
-        )
+        const nextMetrics = isAppService
+          ? await getAppServiceMetrics(
+              workspaceSlug,
+              projectSlug,
+              resourceId,
+              range
+            )
+          : await getDatabaseMetrics(
+              workspaceSlug,
+              projectSlug,
+              resourceId,
+              range
+            )
         if (sequence === requestSequence.current) {
           setMetrics(nextMetrics)
           setError(null)
@@ -1608,7 +1621,7 @@ function MetricsPane({
         }
       }
     },
-    [isReady, projectSlug, range, resourceId, workspaceSlug]
+    [isAppService, isReady, projectSlug, range, resourceId, workspaceSlug]
   )
 
   useEffect(() => {
@@ -1631,7 +1644,7 @@ function MetricsPane({
     }
   }, [isReady, live, loadMetrics, resourceId])
 
-  if (node.id !== "postgres" || !resourceId) {
+  if (!isSupportedResource || !resourceId) {
     return (
       <section
         className="resource-workspace-pane"
@@ -1641,8 +1654,8 @@ function MetricsPane({
       >
         <ResourceEmptyState
           icon={<ActivityIcon aria-hidden="true" />}
-          title="No database metrics"
-          description="Metrics are available for a dedicated PostgreSQL resource."
+          title="No resource metrics"
+          description="Metrics are available for a ready PostgreSQL or Docker app service resource."
         />
       </section>
     )
@@ -1658,8 +1671,17 @@ function MetricsPane({
       >
         <ResourceEmptyState
           icon={<ActivityIcon aria-hidden="true" />}
-          title="Database is provisioning"
-          description="Live metrics become available as soon as the dedicated PostgreSQL cluster is ready."
+          title={
+            isError
+              ? `${isAppService ? "App service" : "Database"} is unavailable`
+              : `${isAppService ? "App service" : "Database"} is provisioning`
+          }
+          description={
+            isError
+              ? node.resource?.errorMessage ??
+                `Live metrics are unavailable for this ${resourceLabel}.`
+              : `Live metrics become available as soon as the ${resourceLabel} is ready.`
+          }
         />
       </section>
     )
@@ -1758,7 +1780,7 @@ function MetricsPane({
         <ResourceEmptyState
           icon={<ActivityIcon aria-hidden="true" />}
           title="Loading metrics…"
-          description="Reading live runtime metrics from this project database."
+          description={`Reading live runtime metrics from this ${resourceLabel}.`}
         />
       ) : (
         <div className="resource-workspace-metrics-grid">
@@ -1876,9 +1898,9 @@ function MetricsPane({
 type MetricSeries = {
   label: string
   colorClass: "blue" | "violet" | "ink" | "green" | "orange"
-  getValue: (point: DatabaseMetricPoint) => number | null
+  getValue: (point: ResourceMetricPoint) => number | null
   formatValue: (value: number) => string
-  getDisplayValue?: (point: DatabaseMetricPoint) => string
+  getDisplayValue?: (point: ResourceMetricPoint) => string
 }
 
 function MetricCard({
@@ -1894,7 +1916,7 @@ function MetricCard({
   title: string
   legend: string
   accent: "blue" | "violet" | "ink" | "green" | "orange"
-  points: DatabaseMetricPoint[]
+  points: ResourceMetricPoint[]
   series: MetricSeries[]
   rangeLabel: string
   scaleMax?: number
@@ -2061,7 +2083,7 @@ function MetricCard({
 
 function metricSeriesDisplayValue(
   series: MetricSeries,
-  point: DatabaseMetricPoint
+  point: ResourceMetricPoint
 ) {
   const value = series.getValue(point)
   return (
@@ -2080,7 +2102,7 @@ function formatMetricTimestamp(timestamp: number) {
   })
 }
 
-function memoryPercent(point: DatabaseMetricPoint) {
+function memoryPercent(point: ResourceMetricPoint) {
   if (
     point.memoryUsedBytes === null ||
     point.memoryLimitBytes === null ||
@@ -2091,7 +2113,7 @@ function memoryPercent(point: DatabaseMetricPoint) {
   return Math.min(100, (point.memoryUsedBytes / point.memoryLimitBytes) * 100)
 }
 
-function volumePercent(point: DatabaseMetricPoint) {
+function volumePercent(point: ResourceMetricPoint) {
   if (
     point.volumeUsedBytes === null ||
     point.volumeCapacityBytes === null ||
@@ -2410,6 +2432,17 @@ function SettingsPane({
       rows: [
         ["Resource", node.type],
         ["Status", node.status],
+      ],
+    },
+    {
+      id: "limits",
+      title: "Resource limits",
+      description:
+        "Hard limits applied to this resource so it cannot consume the host beyond its allocation.",
+      rows: [
+        ["CPU", "1 vCPU"],
+        ["Memory", "1 GB RAM"],
+        ["Volume", "10 GB (writes stop at the limit)"],
       ],
     },
     {

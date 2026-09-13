@@ -8,6 +8,7 @@ import type {
   DatabaseTable,
   DatabaseTableData,
   AppService,
+  AppServiceMetrics,
   AppServiceLogs,
   GithubConnectionStatus,
   PostgresResource,
@@ -83,6 +84,17 @@ export function getAppServiceLogs(
   return apiRequest<AppServiceLogs>(
     `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/logs`
   )
+}
+
+export function getAppServiceMetrics(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string,
+  range: DatabaseMetricsRange = "24h"
+) {
+  const query = new URLSearchParams({ range })
+  const path = `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/metrics?${query.toString()}`
+  return apiRequest<AppServiceMetrics>(path)
 }
 
 function databasePath(

@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -19,8 +19,13 @@ use sqlx::{
 use uuid::Uuid;
 
 use crate::{
-    auth, cluster,
+    app_services, auth, cluster,
     error::AppError,
+    metrics::{
+        MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
+        MetricRange, downsample_metric_points, has_system_metrics, parse_metric_range,
+        unix_timestamp,
+    },
     models::{DatabaseMetricPoint, DatabaseMetricsResponse},
     projects, security,
     state::AppState,
@@ -34,9 +39,7 @@ const MAX_TABLE_COLUMNS: usize = 50;
 const DATABASE_POOL_MAX_CONNECTIONS: u32 = 4;
 const DATABASE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const DATABASE_POOL_MAX_LIFETIME: Duration = Duration::from_secs(1800);
-const MAX_METRIC_RESPONSE_POINTS: usize = 300;
-const METRIC_SAMPLE_INTERVAL_SECONDS: u64 = 5;
-const METRIC_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+const STORAGE_GUARD_INTERVAL_SECONDS: u64 = 1;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TableListQuery {
@@ -211,20 +214,6 @@ struct TargetDatabase {
     pool: PgPool,
     cluster_provider: String,
     cluster_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MetricRange {
-    key: &'static str,
-    seconds: i64,
-}
-
-impl MetricRange {
-    fn bucket_seconds(self) -> i64 {
-        (self.seconds + MAX_METRIC_RESPONSE_POINTS as i64 - 1)
-            .div_euclid(MAX_METRIC_RESPONSE_POINTS as i64)
-            .max(METRIC_SAMPLE_INTERVAL_SECONDS as i64)
-    }
 }
 
 pub async fn list_tables(
@@ -542,8 +531,150 @@ pub fn spawn_metrics_sampler(state: AppState) -> tokio::task::JoinHandle<()> {
             if let Err(error) = sample_ready_databases(&state).await {
                 tracing::warn!(error = %error, "could not enumerate databases for metric sampling");
             }
+            if let Err(error) = app_services::sample_ready_app_services(&state).await {
+                tracing::warn!(error = %error, "could not enumerate app services for metric sampling");
+            }
         }
     })
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct StorageGuardDatabaseRow {
+    id: Uuid,
+    cluster_name: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct StorageGuardAppServiceRow {
+    id: Uuid,
+    container_name: String,
+}
+
+pub fn spawn_storage_guard(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(STORAGE_GUARD_INTERVAL_SECONDS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            if let Err(error) = guard_ready_resource_storage(&state).await {
+                tracing::warn!(error = %error, "could not enumerate resources for storage guard");
+            }
+        }
+    })
+}
+
+async fn guard_ready_resource_storage(state: &AppState) -> Result<(), sqlx::Error> {
+    let databases = sqlx::query_as::<_, StorageGuardDatabaseRow>(
+        "SELECT id, cluster_name
+         FROM project_postgres_databases
+         WHERE status = $1 AND cluster_provider = $2 AND cluster_name IS NOT NULL",
+    )
+    .bind(STATUS_READY)
+    .bind(cluster::PROVIDER_DOCKER)
+    .fetch_all(&state.db)
+    .await?;
+    let database_results = join_all(databases.into_iter().map(|database| async move {
+        (
+            database.id,
+            cluster::enforce_docker_storage_limit(
+                &state.config,
+                &database.cluster_name,
+                cluster::POSTGRES_VOLUME_PATH,
+            )
+            .await,
+        )
+    }))
+    .await;
+    for (resource_id, result) in database_results {
+        match result {
+            Ok(true) => {
+                mark_database_storage_limit_reached(state, resource_id).await;
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                resource_id = %resource_id,
+                error = %error,
+                "could not enforce database storage limit"
+            ),
+        }
+    }
+
+    let app_services = sqlx::query_as::<_, StorageGuardAppServiceRow>(
+        "SELECT id, container_name
+         FROM project_app_services
+         WHERE status = $1 AND container_name IS NOT NULL",
+    )
+    .bind(STATUS_READY)
+    .fetch_all(&state.db)
+    .await?;
+    let app_service_results = join_all(app_services.into_iter().map(|service| async move {
+        (
+            service.id,
+            cluster::enforce_docker_storage_limit(
+                &state.config,
+                &service.container_name,
+                cluster::APP_SERVICE_VOLUME_PATH,
+            )
+            .await,
+        )
+    }))
+    .await;
+    for (service_id, result) in app_service_results {
+        match result {
+            Ok(true) => {
+                mark_app_service_storage_limit_reached(state, service_id).await;
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                service_id = %service_id,
+                error = %error,
+                "could not enforce app service storage limit"
+            ),
+        }
+    }
+    Ok(())
+}
+
+async fn mark_database_storage_limit_reached(state: &AppState, resource_id: Uuid) {
+    if let Err(error) = sqlx::query(
+        "UPDATE project_postgres_databases
+         SET status = 'error', error_message = $1, updated_at = now()
+         WHERE id = $2 AND status = $3",
+    )
+    .bind(cluster::RESOURCE_STORAGE_LIMIT_MESSAGE)
+    .bind(resource_id)
+    .bind(STATUS_READY)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(
+            resource_id = %resource_id,
+            error = %error,
+            "could not mark database as storage-limited"
+        );
+    }
+}
+
+async fn mark_app_service_storage_limit_reached(state: &AppState, service_id: Uuid) {
+    if let Err(error) = sqlx::query(
+        "UPDATE project_app_services
+         SET status = 'error', error_message = $1, host = NULL, port = NULL, updated_at = now()
+         WHERE id = $2 AND status = $3",
+    )
+    .bind(cluster::RESOURCE_STORAGE_LIMIT_MESSAGE)
+    .bind(service_id)
+    .bind(STATUS_READY)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(
+            service_id = %service_id,
+            error = %error,
+            "could not mark app service as storage-limited"
+        );
+    }
 }
 
 async fn sample_ready_databases(state: &AppState) -> Result<(), sqlx::Error> {
@@ -615,21 +746,14 @@ async fn collect_metric_sample(
         volume_used_bytes: runtime_metrics
             .volume_used_bytes
             .or(Some(database_size_bytes)),
-        volume_capacity_bytes: runtime_metrics.volume_capacity_bytes,
+        volume_capacity_bytes: runtime_metrics
+            .volume_capacity_bytes
+            .or(Some(cluster::RESOURCE_VOLUME_LIMIT_BYTES)),
         network_receive_bytes: runtime_metrics.network_receive_bytes,
         network_transmit_bytes: runtime_metrics.network_transmit_bytes,
         disk_read_bytes: runtime_metrics.disk_read_bytes,
         disk_write_bytes: runtime_metrics.disk_write_bytes,
     })
-}
-
-fn has_system_metrics(sample: &DatabaseMetricPoint) -> bool {
-    sample.cpu_percent.is_some()
-        || sample.memory_used_bytes.is_some()
-        || sample.network_receive_bytes.is_some()
-        || sample.network_transmit_bytes.is_some()
-        || sample.disk_read_bytes.is_some()
-        || sample.disk_write_bytes.is_some()
 }
 
 async fn persist_metric_sample(
@@ -1000,60 +1124,6 @@ async fn target_database_from_resource(
         cluster_provider: resource.cluster_provider,
         cluster_name: resource.cluster_name,
     })
-}
-
-fn parse_metric_range(value: Option<&str>) -> Result<MetricRange, AppError> {
-    match value.unwrap_or("24h").trim() {
-        "1h" => Ok(MetricRange {
-            key: "1h",
-            seconds: 60 * 60,
-        }),
-        "6h" => Ok(MetricRange {
-            key: "6h",
-            seconds: 6 * 60 * 60,
-        }),
-        "24h" | "1d" => Ok(MetricRange {
-            key: "24h",
-            seconds: 24 * 60 * 60,
-        }),
-        "7d" | "1w" => Ok(MetricRange {
-            key: "7d",
-            seconds: 7 * 24 * 60 * 60,
-        }),
-        "30d" | "1m" => Ok(MetricRange {
-            key: "30d",
-            seconds: METRIC_RETENTION_SECONDS,
-        }),
-        _ => Err(AppError::BadRequest {
-            code: "INVALID_METRIC_RANGE",
-            message: "Metric range must be one of 1h, 6h, 24h, 7d, or 30d.",
-        }),
-    }
-}
-
-fn unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .unwrap_or_default()
-}
-
-fn downsample_metric_points(
-    points: Vec<DatabaseMetricPoint>,
-    max_points: usize,
-) -> Vec<DatabaseMetricPoint> {
-    if max_points < 2 || points.len() <= max_points {
-        return points;
-    }
-
-    let last_index = points.len() - 1;
-    (0..max_points)
-        .map(|index| {
-            let source_index = index * last_index / (max_points - 1);
-            points[source_index].clone()
-        })
-        .collect()
 }
 
 async fn ensure_schema_and_table(

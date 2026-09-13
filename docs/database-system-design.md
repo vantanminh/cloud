@@ -21,7 +21,9 @@ six App services, represented by image and runtime metadata in the control plane
 and executed in separate Docker containers. Each service keeps its own
 image/container lifecycle and never shares the PostgreSQL volume or API
 connection pool, but Docker resources join the same project-scoped private
-network when the Docker provider is active.
+network when the Docker provider is active. Both planes apply a hard allocation
+of at most 1 vCPU, 1 GiB RAM, and 10 GiB of writable storage; storage reaching
+the ceiling stops the resource so writes cannot continue consuming the host.
 
 ## Isolation boundary
 
@@ -32,7 +34,9 @@ makes retries safe:
 
 - Docker development: one `postgres:16-alpine` container and one named volume
   per project, bound to a random localhost port and attached to the project's
-  deterministic private network.
+  deterministic private network. The container has the shared CPU, memory,
+  swap, and writable-layer limits; a one-second storage guard also stops the
+  container when its mounted data volume reaches 10 GiB.
 - Kubernetes production: one StatefulSet with one pod, one PVC, one Secret, and
   one Service in the configured namespace. The API service account has only
   namespaced RBAC for those resources.
@@ -89,6 +93,7 @@ the PostgreSQL resource contract:
 | POST | `app-services` | validate an image and deploy a new Docker App service |
 | PATCH | `app-services/{app_service_id}` | redeploy one service with a new container port |
 | PATCH | `app-services/{app_service_id}/database` | assign or remove the service's PostgreSQL connection |
+| GET | `app-services/{app_service_id}/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live App service CPU, memory, volume, network RX/TX, and disk read/write metrics plus retained history |
 | GET | `auth/github/status` | report the signed-in user's package connection |
 | GET | `auth/github/start` | create OAuth state and return the GitHub authorization URL |
 | GET | `auth/github/callback` | exchange the OAuth code and store an encrypted package token |
@@ -115,19 +120,22 @@ The resource workspace reads the tables from the selected project database,
 opens a table to show live rows, creates tables through the table builder,
 runs SQL through the query endpoint, loads stats/config on demand, and polls
 metrics every five seconds while the Metrics tab is live. In Docker
-development, the metrics collector reads the selected container's Docker
-runtime counters and mounted data-path filesystem usage. A background sampler
-records ready dedicated resources every five seconds in the control-plane
-`database_metric_samples` table, prunes samples older than 30 days, and the
-API returns a bounded, bucketed series for the requested `1h`, `6h`, `24h`,
-`7d`, or `30d` range. Hovering a chart selects the nearest real sample and
-shows its timestamp and metric values; providers without a runtime adapter
-expose unavailable fields explicitly. Table search is debounced, identical
-in-flight reads are deduplicated, and stale table responses cannot overwrite
-newer searches. The starter query is `SELECT 1` until a real table is
-available, then it is filled with a safely quoted schema/table name. Loading,
-authorization, unavailable-database, and SQL errors are displayed as safe
-messages; the UI does not fabricate tables, metrics, or configuration values.
+development, the metrics collector reads the selected resource's Docker
+runtime counters; PostgreSQL reads its mounted data path and App services read
+their writable layer. A background sampler records ready databases in
+`database_metric_samples` and ready App services in
+`app_service_metric_samples` every five seconds, prunes both histories older
+than 30 days, and the API returns a bounded, bucketed series for the requested
+`1h`, `6h`, `24h`, `7d`, or `30d` range. A separate one-second guard enforces the
+10 GiB storage ceiling for Docker resources. Hovering a chart selects the
+nearest real sample and shows its timestamp and metric values; providers
+without a runtime adapter expose unavailable fields explicitly. Table search
+is debounced, identical in-flight reads are deduplicated, and stale table
+responses cannot overwrite newer searches. The starter query is `SELECT 1`
+until a real table is available, then it is filled with a safely quoted
+schema/table name. Loading, authorization, unavailable-resource, and SQL
+errors are displayed as safe messages; the UI does not fabricate tables,
+metrics, or configuration values.
 
 The App service API supports public registry images without credentials. Private
 image support is currently limited to `ghcr.io`: the user connects GitHub with
@@ -143,6 +151,12 @@ variables. This Docker implementation is enabled by default only in local
 development; the production Kubernetes chart keeps App service provisioning
 disabled until a Docker runtime integration and public routing layer are
 configured for the API deployment.
+
+The App service Metrics tab uses the same five-second live polling, bounded
+history, and hover detail as the database Metrics tab. Its volume series tracks
+the container writable layer, while the Docker storage guard also handles
+mounted data paths. The resource Settings tab shows the enforced 1 vCPU, 1 GB
+RAM, and 10 GB storage allocation for both resource types.
 
 ## Migration note
 

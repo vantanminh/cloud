@@ -13,6 +13,42 @@ pub const PROVIDER_DOCKER: &str = "docker";
 pub const PROVIDER_KUBERNETES: &str = "kubernetes";
 pub const PROJECT_NETWORK_POSTGRES_ALIAS: &str = "postgres";
 pub const PROJECT_NETWORK_APP_ALIAS: &str = "app";
+pub const POSTGRES_VOLUME_PATH: &str = "/var/lib/postgresql/data";
+pub const APP_SERVICE_VOLUME_PATH: &str = "/";
+
+// These limits are deliberately shared by every Docker resource. The
+// storage option caps the container writable layer; the storage watchdog
+// below also protects mounted project volumes, which Docker otherwise leaves
+// outside the container quota.
+pub const RESOURCE_CPU_LIMIT: &str = "1";
+pub const RESOURCE_MEMORY_LIMIT_DOCKER: &str = "1g";
+pub const RESOURCE_MEMORY_SWAP_LIMIT_DOCKER: &str = "1g";
+pub const RESOURCE_MEMORY_LIMIT_KUBERNETES: &str = "1Gi";
+pub const RESOURCE_VOLUME_LIMIT_DOCKER: &str = "10G";
+pub const RESOURCE_VOLUME_LIMIT_KUBERNETES: &str = "10Gi";
+pub const RESOURCE_VOLUME_LIMIT_BYTES: i64 = 10 * 1024 * 1024 * 1024;
+pub const RESOURCE_STORAGE_LIMIT_MESSAGE: &str =
+    "This resource reached its 10 GiB storage limit and was stopped.";
+
+pub fn docker_runtime_limit_args() -> Vec<String> {
+    vec![
+        "--cpus".to_owned(),
+        RESOURCE_CPU_LIMIT.to_owned(),
+        "--memory".to_owned(),
+        RESOURCE_MEMORY_LIMIT_DOCKER.to_owned(),
+        "--memory-swap".to_owned(),
+        RESOURCE_MEMORY_SWAP_LIMIT_DOCKER.to_owned(),
+    ]
+}
+
+pub fn docker_resource_limit_args() -> Vec<String> {
+    let mut args = docker_runtime_limit_args();
+    args.extend([
+        "--storage-opt".to_owned(),
+        format!("size={RESOURCE_VOLUME_LIMIT_DOCKER}"),
+    ]);
+    args
+}
 
 pub fn project_network_name(project_id: Uuid) -> String {
     format!("knotree-net-{}", project_id.simple())
@@ -70,7 +106,7 @@ pub async fn collect_runtime_metrics(
     match provider {
         PROVIDER_DOCKER => {
             let cluster_name = cluster_name.context("Docker cluster name is missing")?;
-            collect_docker_runtime_metrics(config, cluster_name).await
+            collect_docker_runtime_metrics(config, cluster_name, POSTGRES_VOLUME_PATH).await
         }
         PROVIDER_KUBERNETES => {
             // Kubernetes metrics-server does not expose network or block I/O.
@@ -78,14 +114,23 @@ pub async fn collect_runtime_metrics(
             // metrics adapter is configured instead of returning made-up data.
             Ok(RuntimeMetrics::default())
         }
-        provider => bail!("unsupported database cluster provider: {provider}"),
+        provider => bail!("unsupported resource cluster provider: {provider}"),
     }
+}
+
+pub async fn collect_app_service_runtime_metrics(
+    config: &Config,
+    container_name: &str,
+) -> Result<RuntimeMetrics> {
+    collect_docker_runtime_metrics(config, container_name, APP_SERVICE_VOLUME_PATH).await
 }
 
 async fn collect_docker_runtime_metrics(
     config: &Config,
     cluster_name: &str,
+    volume_path: &str,
 ) -> Result<RuntimeMetrics> {
+    ensure_docker_runtime_limits(config, cluster_name).await?;
     let stats_output = docker_raw(
         config,
         [
@@ -112,15 +157,73 @@ async fn collect_docker_runtime_metrics(
         .context("Docker returned no container metrics")?;
     let mut metrics = parse_docker_stats(stats_line)?;
 
-    if let Ok(volume_metrics) = docker_volume_metrics(config, cluster_name).await {
+    if let Ok(volume_metrics) = docker_volume_metrics(config, cluster_name, volume_path).await {
         metrics.volume_used_bytes = Some(volume_metrics.0);
-        metrics.volume_capacity_bytes = Some(volume_metrics.1);
+        metrics.volume_capacity_bytes = Some(volume_metrics.1.min(RESOURCE_VOLUME_LIMIT_BYTES));
     }
 
     Ok(metrics)
 }
 
-async fn docker_volume_metrics(config: &Config, cluster_name: &str) -> Result<(i64, i64)> {
+pub async fn enforce_docker_storage_limit(
+    config: &Config,
+    container_name: &str,
+    volume_path: &str,
+) -> Result<bool> {
+    let running = docker_raw(
+        config,
+        [
+            "inspect".to_owned(),
+            "--format={{.State.Running}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !running.status.success()
+        || !String::from_utf8_lossy(&running.stdout)
+            .trim()
+            .eq_ignore_ascii_case("true")
+    {
+        return Ok(false);
+    }
+
+    // Reconcile older containers as well as newly provisioned ones. Docker
+    // cannot retrofit a writable-layer quota with `docker update`, so the
+    // storage watchdog below remains the fail-safe for legacy containers.
+    ensure_docker_runtime_limits(config, container_name).await?;
+    let (used_bytes, _) = docker_volume_metrics(config, container_name, volume_path).await?;
+    if used_bytes < RESOURCE_VOLUME_LIMIT_BYTES {
+        return Ok(false);
+    }
+
+    run_docker(
+        config,
+        [
+            "stop".to_owned(),
+            "--time".to_owned(),
+            "10".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    tracing::warn!(
+        container_name,
+        used_bytes,
+        limit_bytes = RESOURCE_VOLUME_LIMIT_BYTES,
+        "Docker resource reached its storage limit and was stopped"
+    );
+    Ok(true)
+}
+
+async fn docker_volume_metrics(
+    config: &Config,
+    cluster_name: &str,
+    volume_path: &str,
+) -> Result<(i64, i64)> {
+    if volume_path == APP_SERVICE_VOLUME_PATH {
+        return docker_app_storage_metrics(config, cluster_name).await;
+    }
+
     let output = docker_raw(
         config,
         [
@@ -128,7 +231,7 @@ async fn docker_volume_metrics(config: &Config, cluster_name: &str) -> Result<(i
             cluster_name.to_owned(),
             "df".to_owned(),
             "-Pk".to_owned(),
-            "/var/lib/postgresql/data".to_owned(),
+            volume_path.to_owned(),
         ],
     )
     .await?;
@@ -149,7 +252,7 @@ async fn docker_volume_metrics(config: &Config, cluster_name: &str) -> Result<(i
             cluster_name.to_owned(),
             "du".to_owned(),
             "-sk".to_owned(),
-            "/var/lib/postgresql/data".to_owned(),
+            volume_path.to_owned(),
         ],
     )
     .await
@@ -158,6 +261,81 @@ async fn docker_volume_metrics(config: &Config, cluster_name: &str) -> Result<(i
     .and_then(|output| parse_docker_du(&String::from_utf8_lossy(&output.stdout)).ok())
     .unwrap_or(filesystem_used_bytes);
     Ok((used_bytes, capacity_bytes))
+}
+
+async fn docker_app_storage_metrics(config: &Config, container_name: &str) -> Result<(i64, i64)> {
+    let output = docker_raw(
+        config,
+        [
+            "inspect".to_owned(),
+            "--size".to_owned(),
+            "--format={{json .}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .next()
+            .unwrap_or("unknown Docker writable layer metrics error");
+        bail!("could not read Docker writable layer metrics: {detail}");
+    }
+
+    let container = serde_json::from_slice::<Value>(&output.stdout)
+        .context("Docker returned invalid container storage data")?;
+    let root_used_bytes = container
+        .get("SizeRw")
+        .and_then(Value::as_i64)
+        .context("Docker returned no writable layer metric")?;
+    if root_used_bytes < 0 {
+        bail!("Docker returned a negative writable layer metric");
+    }
+
+    let mut used_bytes = root_used_bytes;
+    if let Some(mounts) = container.get("Mounts").and_then(Value::as_array) {
+        for destination in mounts.iter().filter_map(|mount| {
+            mount
+                .get("Destination")
+                .and_then(Value::as_str)
+                .filter(|destination| *destination != "/")
+        }) {
+            let mount_usage = docker_raw(
+                config,
+                [
+                    "exec".to_owned(),
+                    container_name.to_owned(),
+                    "du".to_owned(),
+                    "-sk".to_owned(),
+                    destination.to_owned(),
+                ],
+            )
+            .await?;
+            if !mount_usage.status.success() {
+                let detail = String::from_utf8_lossy(&mount_usage.stderr);
+                let detail = detail
+                    .lines()
+                    .next()
+                    .unwrap_or("unknown Docker mounted storage metrics error");
+                bail!("could not read Docker mounted storage metrics: {detail}");
+            }
+            used_bytes = used_bytes
+                .checked_add(parse_docker_du(&String::from_utf8_lossy(
+                    &mount_usage.stdout,
+                ))?)
+                .context("Docker app service storage metric overflowed")?;
+        }
+    }
+
+    Ok((used_bytes, RESOURCE_VOLUME_LIMIT_BYTES))
+}
+
+pub async fn ensure_docker_runtime_limits(config: &Config, container_name: &str) -> Result<()> {
+    let mut args = vec!["update".to_owned()];
+    args.extend(docker_runtime_limit_args());
+    args.push(container_name.to_owned());
+    run_docker(config, args).await.map(|_| ())
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,54 +478,70 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
     ensure_docker_volume(config, &volume_name).await?;
 
     let existing_state = docker_inspect(config, &cluster_name).await?;
-    if existing_state.is_none() {
-        let publish = format!("{}::5432", config.database_cluster_bind_address);
-        let health_command = format!("pg_isready -U {} -d {}", spec.role_name, spec.database_name);
+    let recreate_existing = if existing_state.is_some() {
+        !docker_storage_limit_configured(config, &cluster_name).await?
+    } else {
+        false
+    };
+    if recreate_existing {
+        // The named volume is intentionally kept so an upgrade from an older
+        // unbounded container does not discard the project's database data.
         run_docker(
             config,
-            [
-                "run".to_owned(),
-                "--detach".to_owned(),
-                "--name".to_owned(),
-                cluster_name.clone(),
-                "--label".to_owned(),
-                "com.knotree.managed-by=knotree-api".to_owned(),
-                "--label".to_owned(),
-                format!("com.knotree.project-id={}", spec.project_id),
-                "--label".to_owned(),
-                "com.knotree.resource-type=postgres".to_owned(),
-                "--restart".to_owned(),
-                "unless-stopped".to_owned(),
-                "--network".to_owned(),
-                network_name.clone(),
-                "--network-alias".to_owned(),
-                PROJECT_NETWORK_POSTGRES_ALIAS.to_owned(),
-                "--env".to_owned(),
-                format!("POSTGRES_DB={}", spec.database_name),
-                "--env".to_owned(),
-                format!("POSTGRES_USER={}", spec.role_name),
-                "--env".to_owned(),
-                format!("POSTGRES_PASSWORD={}", spec.password),
-                "--env".to_owned(),
-                "PGDATA=/var/lib/postgresql/data/pgdata".to_owned(),
-                "--health-cmd".to_owned(),
-                health_command,
-                "--health-interval".to_owned(),
-                "2s".to_owned(),
-                "--health-timeout".to_owned(),
-                "5s".to_owned(),
-                "--health-retries".to_owned(),
-                "30".to_owned(),
-                "--publish".to_owned(),
-                publish,
-                "--volume".to_owned(),
-                format!("{volume_name}:/var/lib/postgresql/data"),
-                config.database_cluster_image.clone(),
-            ],
+            ["rm".to_owned(), "--force".to_owned(), cluster_name.clone()],
         )
         .await?;
-    } else if existing_state.as_deref() != Some("true") {
-        run_docker(config, ["start".to_owned(), cluster_name.clone()]).await?;
+    }
+
+    if existing_state.is_none() || recreate_existing {
+        let publish = format!("{}::5432", config.database_cluster_bind_address);
+        let health_command = format!("pg_isready -U {} -d {}", spec.role_name, spec.database_name);
+        let mut docker_args = vec![
+            "run".to_owned(),
+            "--detach".to_owned(),
+            "--name".to_owned(),
+            cluster_name.clone(),
+            "--label".to_owned(),
+            "com.knotree.managed-by=knotree-api".to_owned(),
+            "--label".to_owned(),
+            format!("com.knotree.project-id={}", spec.project_id),
+            "--label".to_owned(),
+            "com.knotree.resource-type=postgres".to_owned(),
+            "--restart".to_owned(),
+            "unless-stopped".to_owned(),
+            "--network".to_owned(),
+            network_name.clone(),
+            "--network-alias".to_owned(),
+            PROJECT_NETWORK_POSTGRES_ALIAS.to_owned(),
+            "--env".to_owned(),
+            format!("POSTGRES_DB={}", spec.database_name),
+            "--env".to_owned(),
+            format!("POSTGRES_USER={}", spec.role_name),
+            "--env".to_owned(),
+            format!("POSTGRES_PASSWORD={}", spec.password),
+            "--env".to_owned(),
+            "PGDATA=/var/lib/postgresql/data/pgdata".to_owned(),
+            "--health-cmd".to_owned(),
+            health_command,
+            "--health-interval".to_owned(),
+            "2s".to_owned(),
+            "--health-timeout".to_owned(),
+            "5s".to_owned(),
+            "--health-retries".to_owned(),
+            "30".to_owned(),
+            "--publish".to_owned(),
+            publish,
+            "--volume".to_owned(),
+            format!("{volume_name}:/var/lib/postgresql/data"),
+        ];
+        docker_args.extend(docker_resource_limit_args());
+        docker_args.push(config.database_cluster_image.clone());
+        run_docker(config, docker_args).await?;
+    } else {
+        ensure_docker_runtime_limits(config, &cluster_name).await?;
+        if existing_state.as_deref() != Some("true") {
+            run_docker(config, ["start".to_owned(), cluster_name.clone()]).await?;
+        }
     }
 
     ensure_docker_network_attachment(
@@ -583,6 +777,28 @@ async fn docker_inspect(config: &Config, cluster_name: &str) -> Result<Option<St
     ))
 }
 
+async fn docker_storage_limit_configured(config: &Config, container_name: &str) -> Result<bool> {
+    let output = docker_raw(
+        config,
+        [
+            "inspect".to_owned(),
+            "--format={{json .HostConfig}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let host_config = serde_json::from_slice::<Value>(&output.stdout).unwrap_or(Value::Null);
+    Ok(host_config
+        .get("StorageOpt")
+        .or_else(|| host_config.get("StorageOpts"))
+        .and_then(|storage_options| storage_options.get("size"))
+        .and_then(Value::as_str)
+        .is_some_and(|size| size.eq_ignore_ascii_case(RESOURCE_VOLUME_LIMIT_DOCKER)))
+}
+
 async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
     let output = run_docker(
         config,
@@ -600,27 +816,30 @@ async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
         .ok_or_else(|| anyhow::anyhow!("Docker did not publish a PostgreSQL port"))
 }
 
-async fn run_docker<const N: usize>(config: &Config, args: [String; N]) -> Result<String> {
+async fn run_docker<I>(config: &Config, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = String>,
+{
     let output = docker_raw(config, args).await?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         let detail = detail.lines().next().unwrap_or("unknown Docker error");
-        bail!("Docker cluster operation failed: {detail}");
+        bail!("Docker resource operation failed: {detail}");
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-async fn docker_raw<const N: usize>(
-    config: &Config,
-    args: [String; N],
-) -> Result<std::process::Output> {
+async fn docker_raw<I>(config: &Config, args: I) -> Result<std::process::Output>
+where
+    I: IntoIterator<Item = String>,
+{
     Command::new(&config.database_cluster_docker_binary)
         .args(args)
         .output()
         .await
         .with_context(|| {
             format!(
-                "could not execute database cluster provider binary `{}`",
+                "could not execute resource provider binary `{}`",
                 config.database_cluster_docker_binary
             )
         })
@@ -741,5 +960,23 @@ mod tests {
             super::parse_docker_du("32768\t/var/lib/postgresql/data\n").unwrap(),
             33_554_432
         );
+    }
+
+    #[test]
+    fn applies_the_same_docker_limits_to_every_resource() {
+        assert_eq!(
+            super::docker_resource_limit_args(),
+            vec![
+                "--cpus",
+                "1",
+                "--memory",
+                "1g",
+                "--memory-swap",
+                "1g",
+                "--storage-opt",
+                "size=10G",
+            ]
+        );
+        assert_eq!(super::RESOURCE_VOLUME_LIMIT_BYTES, 10 * 1024 * 1024 * 1024);
     }
 }

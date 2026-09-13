@@ -170,7 +170,7 @@ pub struct CsrfResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DatabaseMetricPoint {
+pub struct ResourceMetricPoint {
     pub timestamp: i64,
     pub cpu_percent: Option<f64>,
     pub memory_used_bytes: Option<i64>,
@@ -183,9 +183,12 @@ pub struct DatabaseMetricPoint {
     pub disk_write_bytes: Option<i64>,
 }
 
+pub type DatabaseMetricPoint = ResourceMetricPoint;
+pub type AppServiceMetricPoint = ResourceMetricPoint;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DatabaseMetricsResponse {
+pub struct ResourceMetricsResponse {
     pub provider: String,
     pub system_metrics_available: bool,
     pub system_metrics_message: Option<String>,
@@ -197,3 +200,6 @@ pub struct DatabaseMetricsResponse {
     pub resolution_seconds: u32,
     pub points: Vec<DatabaseMetricPoint>,
 }
+
+pub type DatabaseMetricsResponse = ResourceMetricsResponse;
+pub type AppServiceMetricsResponse = ResourceMetricsResponse;

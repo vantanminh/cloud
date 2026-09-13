@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
     let bind_addr = config.bind_addr;
     let state = AppState::new(db, config);
     let metrics_sampler = database::spawn_metrics_sampler(state.clone());
+    let storage_guard = database::spawn_storage_guard(state.clone());
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!(%bind_addr, "knotree api listening");
 
@@ -37,6 +38,7 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     metrics_sampler.abort();
+    storage_guard.abort();
     Ok(())
 }
 

@@ -13,6 +13,7 @@ import { ResourceWorkspace } from "@/components/resource-workspace"
 const mocks = vi.hoisted(() => ({
   createDatabaseTable: vi.fn(),
   executeDatabaseQuery: vi.fn(),
+  getAppServiceMetrics: vi.fn(),
   getDatabaseConfig: vi.fn(),
   getDatabaseMetrics: vi.fn(),
   getDatabaseStats: vi.fn(),
@@ -64,6 +65,31 @@ describe("ResourceWorkspace database pane", () => {
           memoryLimitBytes: 4_169_000_000,
           volumeUsedBytes: 32_000_000,
           volumeCapacityBytes: 400_000_000_000,
+          networkReceiveBytes: 229_000,
+          networkTransmitBytes: 120_000,
+          diskReadBytes: 457_000_000,
+          diskWriteBytes: 56_600_000,
+        },
+      ],
+    })
+    mocks.getAppServiceMetrics.mockResolvedValue({
+      provider: "docker",
+      systemMetricsAvailable: true,
+      systemMetricsMessage: null,
+      sampleIntervalSeconds: 5,
+      retentionSeconds: 2_592_000,
+      range: "24h",
+      fromTimestamp: 1_697_408_000,
+      toTimestamp: 1_700_000_000,
+      resolutionSeconds: 288,
+      points: [
+        {
+          timestamp: 1_700_000_000,
+          cpuPercent: 3.33,
+          memoryUsedBytes: 30_910_000,
+          memoryLimitBytes: 1_000_000_000,
+          volumeUsedBytes: 32_000_000,
+          volumeCapacityBytes: 10_737_418_240,
           networkReceiveBytes: 229_000,
           networkTransmitBytes: 120_000,
           diskReadBytes: 457_000_000,
@@ -221,6 +247,55 @@ describe("ResourceWorkspace database pane", () => {
         "30d"
       )
     })
+  })
+
+  it("renders live app service runtime metrics", async () => {
+    const user = userEvent.setup()
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "app:app-resource-id",
+          title: "Web app",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "Web app",
+            resourceType: "app",
+            status: "ready",
+            image: "nginx:alpine",
+            imageSource: "public",
+            appPort: 80,
+            host: "localhost",
+            port: 49152,
+            serviceUrl: "http://localhost:49152",
+            containerName: "knotree-app-app-resource-id",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={vi.fn()}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Metrics" }))
+
+    expect(await within(dialog).findByText("3.33%")).toBeInTheDocument()
+    expect(within(dialog).getByText("Network I/O")).toBeInTheDocument()
+    expect(within(dialog).getByText("Disk I/O")).toBeInTheDocument()
+    expect(mocks.getAppServiceMetrics).toHaveBeenCalledWith(
+      "mimo-i-tech",
+      "test-2",
+      "app-resource-id",
+      "24h"
+    )
   })
 
   it("shows the manually assigned private database connection", async () => {

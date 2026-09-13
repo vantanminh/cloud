@@ -110,6 +110,14 @@ and variable names, never secret values. Creating the resources in either
 order is supported; creating Postgres after an App service triggers an
 automatic app reconciliation.
 
+Both PostgreSQL and App service containers are hard-capped at 1 vCPU, 1 GB RAM,
+and 10 GB writable storage. Docker runtime limits are applied at creation and
+reconciled for existing containers; a one-second storage guard stops a
+resource at the 10 GB ceiling and marks it with a safe error instead of
+allowing host-wide growth. The Metrics tab and the corresponding
+`app-services/:id/metrics` endpoint expose the same CPU, memory, volume,
+network, and disk counters for App services as for PostgreSQL.
+
 Development uses the local Docker daemon and creates one container plus one
 named volume per project (`knotree-pg-<project-id>` and
 `knotree-pg-data-<project-id>`). Production uses Kubernetes and creates one
@@ -125,14 +133,14 @@ per-connection statement timeout and a configurable result-row limit; cluster
 administration statements such as role/database creation, `COPY`, `SET`, and
 `GRANT` are rejected by the console.
 
-The Metrics endpoint samples the selected project container's Docker runtime
+The Metrics endpoints sample the selected project container's Docker runtime
 stats in development: CPU, memory, network receive/transmit totals, block
-disk read/write totals, and filesystem volume usage/capacity. A background
-sampler persists ready-resource samples in the control-plane PostgreSQL for up
-to 30 days; `?range=1h|6h|24h|7d|30d` returns a bounded bucketed history for
-the charts. Kubernetes providers return explicit unavailable runtime fields
-until a cluster metrics adapter is configured; database volume size remains
-available from PostgreSQL.
+disk read/write totals, and volume usage/capacity. A background sampler
+persists ready database and App service samples in separate control-plane
+tables for up to 30 days; `?range=1h|6h|24h|7d|30d` returns a bounded bucketed
+history for the charts. Kubernetes providers return explicit unavailable
+runtime fields until a cluster metrics adapter is configured; the database PVC
+is still capped at 10Gi and rejects configuration above that ceiling.
 
 Resource credentials are encrypted at rest with
 `DATABASE_CREDENTIALS_ENCRYPTION_KEY`; production must provide a stable,

@@ -145,10 +145,6 @@ pub async fn create(
         });
     }
 
-    if resource.status == STATUS_READY {
-        return Ok((StatusCode::OK, Json(resource_response(&resource, &state)?)).into_response());
-    }
-
     let password = security::decrypt_secret(
         &resource.password_ciphertext,
         &state.config.database_credentials_encryption_key,

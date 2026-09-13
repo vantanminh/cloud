@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use sqlx::postgres::PgConnectOptions;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+const MAX_RESOURCE_STORAGE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
@@ -377,13 +379,41 @@ fn validate_kubernetes_name(key: &str, value: &str) -> Result<()> {
 }
 
 fn validate_storage_size(value: &str) -> Result<()> {
-    let valid_suffix = ["Mi", "Gi", "Ti"].iter().any(|suffix| {
-        value.strip_suffix(suffix).is_some_and(|size| {
-            !size.is_empty() && size.chars().all(|character| character.is_ascii_digit())
-        })
-    });
-    if !valid_suffix {
+    let (number, multiplier) = [
+        ("Mi", 1024_u64 * 1024),
+        ("Gi", 1024_u64 * 1024 * 1024),
+        ("Ti", 1024_u64 * 1024 * 1024 * 1024),
+    ]
+    .iter()
+    .find_map(|(suffix, multiplier)| {
+        let number = value.strip_suffix(suffix)?.parse::<u64>().ok()?;
+        Some((number, *multiplier))
+    })
+    .context("DATABASE_CLUSTER_STORAGE_SIZE must look like 10Gi, 512Mi, or 1Ti")?;
+    let bytes = number
+        .checked_mul(multiplier)
+        .context("DATABASE_CLUSTER_STORAGE_SIZE is too large")?;
+    if number == 0 {
+        bail!("DATABASE_CLUSTER_STORAGE_SIZE must be greater than zero");
+    }
+    if bytes > MAX_RESOURCE_STORAGE_BYTES {
+        bail!("DATABASE_CLUSTER_STORAGE_SIZE cannot exceed 10Gi");
+    }
+    if value.chars().any(char::is_whitespace) {
         bail!("DATABASE_CLUSTER_STORAGE_SIZE must look like 10Gi, 512Mi, or 1Ti");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_storage_size;
+
+    #[test]
+    fn rejects_storage_sizes_above_the_resource_cap() {
+        assert!(validate_storage_size("10Gi").is_ok());
+        assert!(validate_storage_size("512Mi").is_ok());
+        assert!(validate_storage_size("11Gi").is_err());
+        assert!(validate_storage_size("0Gi").is_err());
+    }
 }

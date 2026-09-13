@@ -6,6 +6,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod github;
+pub mod metrics;
 pub mod models;
 pub mod projects;
 pub mod resources;
@@ -63,6 +64,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/logs",
             get(app_services::logs),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/metrics",
+            get(app_services::metrics),
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/database",

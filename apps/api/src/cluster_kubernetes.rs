@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use tokio::time::sleep;
 
 use crate::{
-    cluster::{ClusterSpec, PROVIDER_KUBERNETES, ProvisionedCluster},
+    cluster::{
+        ClusterSpec, PROVIDER_KUBERNETES, ProvisionedCluster, RESOURCE_CPU_LIMIT,
+        RESOURCE_MEMORY_LIMIT_KUBERNETES,
+    },
     config::Config,
 };
 
@@ -201,7 +204,10 @@ fn stateful_set_manifest(
                         },
                         "resources": {
                             "requests": { "cpu": "100m", "memory": "256Mi" },
-                            "limits": { "cpu": "1", "memory": "1Gi" },
+                            "limits": {
+                                "cpu": RESOURCE_CPU_LIMIT,
+                                "memory": RESOURCE_MEMORY_LIMIT_KUBERNETES,
+                            },
                         },
                         "volumeMounts": [{
                             "name": "data",
@@ -383,6 +389,13 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        let container = &manifest["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(container["resources"]["limits"]["cpu"], "1");
+        assert_eq!(container["resources"]["limits"]["memory"], "1Gi");
+        assert_eq!(
+            manifest["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
+            "10Gi"
         );
     }
 }

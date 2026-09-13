@@ -118,7 +118,7 @@ export type DatabaseStats = {
   estimatedRows: number
 }
 
-export type DatabaseMetricPoint = {
+export type ResourceMetricPoint = {
   timestamp: number
   cpuPercent: number | null
   memoryUsedBytes: number | null
@@ -131,9 +131,12 @@ export type DatabaseMetricPoint = {
   diskWriteBytes: number | null
 }
 
+export type DatabaseMetricPoint = ResourceMetricPoint
+export type AppServiceMetricPoint = ResourceMetricPoint
+
 export type DatabaseMetricsRange = "1h" | "6h" | "24h" | "7d" | "30d"
 
-export type DatabaseMetrics = {
+export type ResourceMetrics = {
   provider: string
   systemMetricsAvailable: boolean
   systemMetricsMessage: string | null
@@ -143,8 +146,11 @@ export type DatabaseMetrics = {
   fromTimestamp: number
   toTimestamp: number
   resolutionSeconds: number
-  points: DatabaseMetricPoint[]
+  points: ResourceMetricPoint[]
 }
+
+export type DatabaseMetrics = ResourceMetrics
+export type AppServiceMetrics = ResourceMetrics
 
 export type DatabaseConfig = {
   name: string
