@@ -37,6 +37,8 @@ session should feel quick, calm, and trustworthy:
   resource workspace sheet, add menu, zoom/history controls, environment
   context, responsive navigation, theme toggles, logs placeholder, and
   transient feedback.
+- Docker App service deployment from a pasted image reference. Public images
+  deploy without login; private `ghcr.io` images require a GitHub connection.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
   Metrics, Console, and Settings. The Database section reads and mutates the
   selected project's dedicated PostgreSQL instance through typed API calls;
@@ -47,18 +49,18 @@ session should feel quick, calm, and trustworthy:
 ### Not in the current slice
 
 - Password reset or email delivery.
-- OAuth or social login.
+- Other OAuth or social login providers.
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing data, or settings mutations.
-- Redis/app-service provisioning, deployment execution, log data, backups, and
-  persistent topology editing.
+- Redis provisioning, deployment logs, backups, and persistent topology editing.
 
-The topology home now owns one real PostgreSQL resource per project. Database
-tables, rows, schema creation, SQL results, live stats, runtime metrics, and
-safe configuration settings come from that instance. Other resource types and
-operational sections keep their visual shell but remain explicitly unavailable
-until their APIs and product contracts exist. New UI must not imply that an
-omitted capability exists.
+The topology home owns one real PostgreSQL resource and one Docker App service
+per project in this slice. Database tables, rows, schema creation, SQL results,
+live stats, runtime metrics, and safe configuration settings come from the
+dedicated PostgreSQL instance. The App service card is backed by the API and
+shows the Docker image, source, container status, and returned service URL.
+Redis and unsupported operational sections remain explicitly unavailable until
+their APIs and product contracts exist.
 
 ## 2. Experience principles
 
@@ -205,6 +207,12 @@ Click Sign out
   → POST /workspaces/:slug/projects/:projectSlug/resources
   → dedicated PostgreSQL instance + own volume + login role + connectivity check
   → ready Postgres card + resource workspace
+  → Add → App service
+  → service name + Docker image + public/private image source + container port
+  → GitHub connection when the source is private
+  → POST /workspaces/:slug/projects/:projectSlug/app-services
+  → Docker pull + isolated container + random published port
+  → ready App service card + returned service URL
 ```
 
 Project creation is scoped to the current workspace. The API owns slug
@@ -388,9 +396,17 @@ theme uses the same layout and replaces the page-local surface tokens.
   database identifier, login role, and strong password, provisions a dedicated
   per-project instance, and returns a connection string after a successful
   connectivity check.
-- `Backups`, `Console`, and write-oriented `Settings` controls use explicit
-  empty or unavailable states until their APIs exist. Redis and App service
-  remain explicit coming-soon choices and do not create fake nodes.
+- Add → `App service` opens a Docker deployment dialog with a display name,
+  image reference, image access mode, and container port. Public mode pulls
+  without credentials. Private mode is restricted to `ghcr.io` and exposes a
+  GitHub OAuth connection action; the browser never receives the GitHub token.
+- The project node remains the application entry point. Once deployed it
+  displays the real image/status and opens a service workspace with deployment
+  metadata, URL, variables, and settings. A failed deployment is shown as an
+  error state and can be retried through Add.
+- `Backups`, write-oriented `Settings` controls, and Redis use explicit empty
+  or unavailable states until their APIs exist. The App service Console tab
+  does not expose a shell; container logs remain a follow-up capability.
 
 #### Context and transient state
 
@@ -411,7 +427,8 @@ theme uses the same layout and replaces the page-local surface tokens.
   losing the current project scope. Providers without a runtime metrics
   adapter expose an explicit unavailable message instead of fabricated values.
 - Resource loading and provisioning failures keep the Add action available and
-  show a safe, page-level message; raw database errors never reach the browser.
+  show a safe, page-level message; raw database or Docker errors never reach
+  the browser.
 - Activity, notifications, Agent, Resources, Settings, undo/redo, and
   layers provide explicit placeholder feedback until their APIs exist.
 - Direct project lookup failures show `Project unavailable` and a `Back to
@@ -430,9 +447,9 @@ workspace` action.
   bottom navigation is not visible while the modal is open.
 - The layout must remain within the viewport width at 320px and 390px.
 
-The project card is a logical project node. PostgreSQL topology data comes only
-from the typed resource API; a missing resource is represented by the empty
-state `Create your first database`, not by a fabricated online card.
+The project card is a logical project/App service node. PostgreSQL and App
+service topology data come only from their typed resource APIs; an absent App
+service is shown as `Needs setup`, not as a fabricated online deployment.
 
 ### 5.8 Loading and unavailable states
 

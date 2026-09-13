@@ -34,6 +34,28 @@ export type PostgresResource = {
   errorMessage?: string
 }
 
+export type AppServiceStatus = "provisioning" | "ready" | "error"
+
+export type AppService = {
+  id: string
+  name: string
+  resourceType: "app"
+  status: AppServiceStatus
+  image: string
+  imageSource: "public" | "github"
+  appPort: number
+  host: string | null
+  port: number | null
+  serviceUrl: string | null
+  containerName: string | null
+  errorMessage?: string
+}
+
+export type GithubConnectionStatus = {
+  connected: boolean
+  login: string | null
+}
+
 export type DatabaseTable = {
   schemaName: string
   tableName: string

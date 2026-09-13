@@ -1,8 +1,8 @@
 # Knotree Cloud
 
 Knotree Cloud is a Rust/PostgreSQL control plane with a Vite/React dashboard.
-Each new project can provision and manage its own dedicated PostgreSQL
-instance.
+Each new project can provision and manage its own dedicated PostgreSQL instance
+and one Docker App service.
 
 ## Local development
 
@@ -29,11 +29,18 @@ $env:DATABASE_CLUSTER_DOCKER_BINARY = "docker"
 # A random host port is allocated for each project container.
 $env:DATABASE_CLUSTER_BIND_ADDRESS = "127.0.0.1"
 $env:DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS = "90"
-$env:DATABASE_QUERY_TIMEOUT_MS = "10000"
-$env:DATABASE_QUERY_MAX_ROWS = "500"
-# Keep this stable so credentials remain readable after an API restart.
-$env:DATABASE_CREDENTIALS_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
-cargo run --manifest-path apps/api/Cargo.toml
+  $env:DATABASE_QUERY_TIMEOUT_MS = "10000"
+  $env:DATABASE_QUERY_MAX_ROWS = "500"
+  $env:APP_SERVICE_PROVISIONING_ENABLED = "true"
+  $env:APP_SERVICE_PUBLIC_HOST = "localhost"
+  $env:APP_SERVICE_BIND_ADDRESS = "127.0.0.1"
+  # Keep this stable so credentials remain readable after an API restart.
+  $env:DATABASE_CREDENTIALS_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+  # Optional for private ghcr.io images; public images do not need these.
+  $env:GITHUB_CLIENT_ID = ""
+  $env:GITHUB_CLIENT_SECRET = ""
+  $env:GITHUB_OAUTH_REDIRECT_URI = "http://localhost:8080/api/v1/auth/github/callback"
+  cargo run --manifest-path apps/api/Cargo.toml
 
 # terminal 2
 pnpm dev:web
@@ -52,10 +59,15 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/logout`
+- `GET /auth/github/status`
+- `GET /auth/github/start?returnTo=/workspace/...`
+- `GET /auth/github/callback`
 - `POST /workspaces`
 - `GET /workspaces/:slug`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
+- `POST /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/table-data`
@@ -71,6 +83,16 @@ requests. Production enables secure `__Host-` cookies and exact-origin CORS.
 The Postgres resource endpoint provisions one dedicated PostgreSQL instance per
 project. The control-plane database in `DATABASE_URL` stores only resource
 metadata and encrypted credentials; it is not used as a project database.
+
+The App service endpoint provisions one Docker container per project from the
+submitted image reference. Public images are pulled without credentials. Private
+images are currently restricted to `ghcr.io` and require the signed-in user to
+connect GitHub; the API stores the encrypted OAuth package token only long
+enough to authenticate the Docker pull and then logs out of the registry. The
+response includes the random published port and `serviceUrl`.
+The local Docker implementation is enabled by default in development. The
+production Kubernetes deployment keeps it disabled until the API has an
+available Docker runtime and a public routing layer for app containers.
 
 Development uses the local Docker daemon and creates one container plus one
 named volume per project (`knotree-pg-<project-id>` and

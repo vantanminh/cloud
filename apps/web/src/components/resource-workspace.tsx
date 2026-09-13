@@ -40,6 +40,7 @@ import type {
   DatabaseTable,
   DatabaseTableData,
   DatabaseQueryResult,
+  AppService,
   PostgresResource,
 } from "@/lib/types"
 
@@ -52,7 +53,7 @@ type ResourceWorkspaceNode = {
   type: string
   volume: string
   status: string
-  resource?: PostgresResource
+  resource?: PostgresResource | AppService
 }
 
 type ResourceWorkspaceTab =
@@ -159,7 +160,10 @@ export function ResourceWorkspace({
     setActiveTab(resourceTabs[nextIndex].id)
   }
 
-  const connectionString = node.resource?.connectionString ?? undefined
+  const connectionString =
+    node.resource?.resourceType === "postgres"
+      ? (node.resource.connectionString ?? undefined)
+      : undefined
 
   return (
     <div
@@ -254,7 +258,9 @@ export function ResourceWorkspace({
               onToast={onToast}
             />
           )}
-          {activeTab === "console" && <ConsolePane onToast={onToast} />}
+          {activeTab === "console" && (
+            <ConsolePane node={node} onToast={onToast} />
+          )}
           {activeTab === "settings" && (
             <SettingsPane
               node={node}
@@ -277,10 +283,15 @@ function DeploymentsPane({
   onToast: (message: string) => void
   onOpenLogs: () => void
 }) {
-  const isReady = node.resource?.status === "ready" || node.id === "project"
+  const isReady =
+    node.resource?.status === "ready" || (node.id === "project" && !node.resource)
   const status = isReady
     ? "ACTIVE"
-    : (node.resource?.status.toUpperCase() ?? "PENDING")
+    : (node.resource?.status.toUpperCase() ?? "NOT DEPLOYED")
+  const appService =
+    node.resource?.resourceType === "app" ? node.resource : undefined
+  const postgresResource =
+    node.resource?.resourceType === "postgres" ? node.resource : undefined
 
   return (
     <section
@@ -293,7 +304,9 @@ function DeploymentsPane({
         <p>
           {node.id === "postgres"
             ? "This database is isolated to the current project and ready for application connections."
-            : "This service is the application entry point for the current project."}
+            : appService
+              ? "This Docker image runs as the application entry point for the current project."
+              : "Deploy a Docker image to make this project available as an application service."}
         </p>
         <div className="resource-workspace-banner-actions">
           <button
@@ -314,12 +327,12 @@ function DeploymentsPane({
       </div>
       <div className="resource-workspace-meta-row">
         <span>
-          {node.id === "postgres" ? "Private database" : "Project service"}
+          {node.id === "postgres" ? "Private database" : "Docker app service"}
         </span>
         <span>
-          {node.resource
-            ? `${node.resource.host} · ${node.resource.port}`
-            : "1 replica"}
+          {postgresResource
+            ? `${postgresResource.host} · ${postgresResource.port}`
+            : appService?.serviceUrl ?? "No container deployed"}
         </span>
       </div>
       <article
@@ -340,14 +353,20 @@ function DeploymentsPane({
             </span>
             <div>
               <strong>
-                {node.resource
-                  ? `PostgreSQL · ${node.resource.databaseName}`
-                  : node.title}
+                {postgresResource
+                  ? `PostgreSQL · ${postgresResource.databaseName}`
+                  : appService
+                    ? `${appService.imageSource === "github" ? "Private GitHub" : "Public"} · ${appService.image}`
+                    : node.title}
               </strong>
               <div className="resource-workspace-muted">
                 {isReady
-                  ? "Ready to accept connections"
-                  : "Provisioning resource"}
+                  ? appService
+                    ? "Container is running and ready for traffic"
+                    : "Ready to accept connections"
+                  : appService?.status === "error"
+                    ? (appService.errorMessage ?? "Deployment failed")
+                    : "Deploy an image to start this service"}
               </div>
             </div>
           </div>
@@ -362,7 +381,25 @@ function DeploymentsPane({
           </Button>
         </div>
         <div className="resource-workspace-deploy-bottom">
-          {isReady ? "Deployment successful" : "Deployment in progress"}
+          <span>
+            {isReady
+              ? appService?.serviceUrl
+                ? `Service URL · ${appService.serviceUrl}`
+                : "Deployment successful"
+              : appService?.status === "error"
+                ? "Deployment failed — open Add to retry"
+                : "Deployment not started"}
+          </span>
+          {isReady && appService?.serviceUrl && (
+            <a
+              className="resource-workspace-ghost-link"
+              href={appService.serviceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open service
+            </a>
+          )}
         </div>
       </article>
       <div className="resource-workspace-history-head">
@@ -379,7 +416,11 @@ function DeploymentsPane({
         <HistoryIcon aria-hidden="true" />
         <div>
           <strong>
-            {node.resource ? "Database provisioned" : "Project created"}
+            {postgresResource
+              ? "Database provisioned"
+              : appService
+                ? "App service deployed"
+                : "Project created"}
           </strong>
           <div className="resource-workspace-muted">
             Current environment · Knotree Cloud
@@ -1316,15 +1357,23 @@ function VariablesPane({
   onToast: (message: string) => void
 }) {
   const [search, setSearch] = useState("")
-  const variables = node.resource
-    ? [
-        ["DATABASE_URL", "postgres://••••••••"],
-        ["PGDATABASE", node.resource.databaseName],
-        ["PGHOST", node.resource.host],
-        ["PGPORT", String(node.resource.port)],
-        ["PGUSER", node.resource.username],
-      ]
-    : [["APP_ENV", "development"]]
+  const variables =
+    node.resource?.resourceType === "postgres"
+      ? [
+          ["DATABASE_URL", "postgres://••••••••"],
+          ["PGDATABASE", node.resource.databaseName],
+          ["PGHOST", node.resource.host],
+          ["PGPORT", String(node.resource.port)],
+          ["PGUSER", node.resource.username],
+        ]
+      : node.resource?.resourceType === "app"
+        ? [
+            ["APP_IMAGE", node.resource.image],
+            ["APP_IMAGE_SOURCE", node.resource.imageSource],
+            ["APP_PORT", String(node.resource.appPort)],
+            ["APP_SERVICE_URL", node.resource.serviceUrl ?? "pending"],
+          ]
+        : [["APP_ENV", "development"]]
   const filteredVariables = variables.filter(([name]) =>
     name.toLowerCase().includes(search.toLowerCase())
   )
@@ -1966,7 +2015,14 @@ function volumePercent(point: DatabaseMetricPoint) {
   return Math.min(100, (point.volumeUsedBytes / point.volumeCapacityBytes) * 100)
 }
 
-function ConsolePane({ onToast }: { onToast: (message: string) => void }) {
+function ConsolePane({
+  node,
+  onToast,
+}: {
+  node: ResourceWorkspaceNode
+  onToast: (message: string) => void
+}) {
+  const isAppService = node.resource?.resourceType === "app"
   return (
     <section
       className="resource-workspace-pane"
@@ -1984,16 +2040,26 @@ function ConsolePane({ onToast }: { onToast: (message: string) => void }) {
         </div>
         <ResourceEmptyState
           icon={<ServerIcon aria-hidden="true" />}
-          title="Console is unavailable"
-          description="This managed PostgreSQL resource exposes connection credentials, not a shell."
+          title={isAppService ? "Container console is unavailable" : "Console is unavailable"}
+          description={
+            isAppService
+              ? "App service containers are managed through Docker. Use the service URL to inspect the running application."
+              : "This managed PostgreSQL resource exposes connection credentials, not a shell."
+          }
         />
         <Button
           type="button"
           variant="outline"
-          onClick={() => onToast("Connection details opened")}
+          onClick={() =>
+            onToast(
+              isAppService
+                ? "Container logs opened"
+                : "Connection details opened"
+            )
+          }
         >
           <CopyIcon data-icon="inline-start" />
-          View connection details
+          {isAppService ? "View container details" : "View connection details"}
         </Button>
       </div>
     </section>
@@ -2024,14 +2090,22 @@ function SettingsPane({
       id: "networking",
       title: "Networking",
       description: "Connection endpoint and access scope for this resource.",
-      rows: node.resource
-        ? [
-            ["Host", node.resource.host],
-            ["Port", String(node.resource.port)],
-            ["Database", node.resource.databaseName],
-            ["Username", node.resource.username],
-          ]
-        : [["Access", "Project internal"]],
+      rows:
+        node.resource?.resourceType === "postgres"
+          ? [
+              ["Host", node.resource.host],
+              ["Port", String(node.resource.port)],
+              ["Database", node.resource.databaseName],
+              ["Username", node.resource.username],
+            ]
+          : node.resource?.resourceType === "app"
+            ? [
+                ["Image", node.resource.image],
+                ["Container port", String(node.resource.appPort)],
+                ["Public URL", node.resource.serviceUrl ?? "Pending"],
+                ["Container", node.resource.containerName ?? "Pending"],
+              ]
+            : [["Access", "Project internal"]],
     },
     {
       id: "service",

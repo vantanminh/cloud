@@ -465,6 +465,52 @@
   gap: 1.5rem;
 }
 
+.project-dialog-select {
+  min-height: 2.5rem;
+  width: 100%;
+  padding: 0 0.75rem;
+  border: 1px solid var(--input);
+  border-radius: 0.5rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.project-dialog-select:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.project-github-connect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: color-mix(in oklch, var(--muted) 42%, var(--background));
+}
+
+.project-github-connect > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.project-github-connect strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-github-connect span {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .project-dialog-actions {
   display: flex;
   justify-content: flex-end;

@@ -124,6 +124,27 @@ describe("AuthPage", () => {
         }
         if (
           path ===
+          "/workspaces/acme-studio/projects/knotree-study/app-services"
+        ) {
+          if (options?.method === "POST") {
+            return Promise.resolve({
+              id: "app-service-id",
+              name: "App service",
+              resourceType: "app",
+              status: "ready",
+              image: "nginx:alpine",
+              imageSource: "public",
+              appPort: 80,
+              host: "localhost",
+              port: 32768,
+              serviceUrl: "http://localhost:32768",
+              containerName: "knotree-app-project",
+            })
+          }
+          return Promise.resolve([])
+        }
+        if (
+          path ===
           "/workspaces/acme-studio/projects/knotree-study/resources/postgres-resource-id/database/tables"
         ) {
           return Promise.resolve([])
@@ -326,6 +347,36 @@ describe("AuthPage", () => {
     await user.click(screen.getByRole("button", { name: "Redis" }))
     expect(screen.getByRole("status")).toHaveTextContent(
       "Redis provisioning is coming soon"
+    )
+
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("button", { name: "App service" }))
+    await user.type(
+      await screen.findByLabelText("Docker image"),
+      "nginx:alpine"
+    )
+    await user.clear(screen.getByLabelText("Container port"))
+    await user.type(screen.getByLabelText("Container port"), "80")
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Deploy service",
+      })
+    )
+    const appResourceDialog = await screen.findByRole("dialog")
+    expect(
+      within(appResourceDialog).getByText("Public · nginx:alpine")
+    ).toBeInTheDocument()
+    expect(
+      within(appResourceDialog).getByText("Service URL · http://localhost:32768")
+    ).toBeInTheDocument()
+    expect(mocks.apiRequest).toHaveBeenCalledWith(
+      "/workspaces/acme-studio/projects/knotree-study/app-services",
+      expect.objectContaining({ method: "POST" })
+    )
+    await user.click(
+      within(appResourceDialog).getByRole("button", {
+        name: "Close resource workspace",
+      })
     )
 
     await user.click(screen.getByRole("button", { name: "Logs" }))

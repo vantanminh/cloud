@@ -344,6 +344,13 @@ mod tests {
             database_cluster_startup_timeout_seconds: 90,
             database_query_timeout_ms: 10_000,
             database_query_max_rows: 500,
+            app_service_provisioning_enabled: false,
+            app_service_public_host: "localhost".to_owned(),
+            app_service_bind_address: "127.0.0.1".parse().unwrap(),
+            github_client_id: None,
+            github_client_secret: None,
+            github_oauth_redirect_uri: "http://localhost:8080/api/v1/auth/github/callback"
+                .to_owned(),
             database_credentials_encryption_key: [7; 32],
         };
         let spec = ClusterSpec {

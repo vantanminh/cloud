@@ -54,6 +54,8 @@ secrets:
   existingSecret: knotree-api-secrets
   databaseUrlKey: DATABASE_URL
   databaseCredentialsEncryptionKey: DATABASE_CREDENTIALS_ENCRYPTION_KEY
+  githubClientIdKey: GITHUB_CLIENT_ID
+  githubClientSecretKey: GITHUB_CLIENT_SECRET
 
 env:
   appEnv: production
@@ -75,6 +77,10 @@ env:
   databaseClusterStartupTimeoutSeconds: "180"
   databaseQueryTimeoutMs: "10000"
   databaseQueryMaxRows: "500"
+  appServiceProvisioningEnabled: "false"
+  appServicePublicHost: ""
+  appServiceBindAddress: "127.0.0.1"
+  githubOAuthRedirectUri: https://cloudapi.knotree.com/api/v1/auth/github/callback
   rustLog: info,knotree_api=debug
 
 resources:

@@ -1,9 +1,11 @@
+pub mod app_services;
 pub mod auth;
 pub mod cluster;
 pub mod cluster_kubernetes;
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod github;
 pub mod models;
 pub mod projects;
 pub mod resources;
@@ -34,6 +36,9 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/github/start", get(github::start))
+        .route("/auth/github/callback", get(github::callback))
+        .route("/auth/github/status", get(github::status))
         .route("/workspaces", post(workspaces::create))
         .route("/workspaces/{slug}", get(workspaces::get));
 
@@ -49,6 +54,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/resources",
             get(resources::list).post(resources::create),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services",
+            get(app_services::list).post(app_services::create),
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/tables",

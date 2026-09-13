@@ -82,6 +82,14 @@ spec:
               value: {{ .Values.env.databaseQueryTimeoutMs | quote }}
             - name: DATABASE_QUERY_MAX_ROWS
               value: {{ .Values.env.databaseQueryMaxRows | quote }}
+            - name: APP_SERVICE_PROVISIONING_ENABLED
+              value: {{ .Values.env.appServiceProvisioningEnabled | quote }}
+            - name: APP_SERVICE_PUBLIC_HOST
+              value: {{ .Values.env.appServicePublicHost | quote }}
+            - name: APP_SERVICE_BIND_ADDRESS
+              value: {{ .Values.env.appServiceBindAddress | quote }}
+            - name: GITHUB_OAUTH_REDIRECT_URI
+              value: {{ .Values.env.githubOAuthRedirectUri | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -91,6 +99,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.databaseCredentialsEncryptionKey }}
+                  optional: true
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.githubClientIdKey }}
+                  optional: true
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.githubClientSecretKey }}
                   optional: true
             - name: RUST_LOG
               value: {{ .Values.env.rustLog | quote }}

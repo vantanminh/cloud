@@ -16,6 +16,11 @@ provider/endpoint metadata. The browser receives connection metadata only
 after authorization; the password is never stored in frontend state except as
 part of the copy action's returned connection string.
 
+Docker App services are a separate deployment plane. Each project can own one
+App service, represented by image and runtime metadata in the control plane and
+executed in its own Docker container. It does not share the project PostgreSQL
+container, volume, credentials, or connection pool.
+
 ## Isolation boundary
 
 Creating a PostgreSQL resource is idempotent per project. The first request
@@ -47,6 +52,17 @@ the existing double-submit CSRF token.
 | GET | `database/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live CPU, memory, volume, network RX/TX, and disk read/write metrics plus retained history |
 | GET | `database/config` | read a safe allowlist from `pg_settings` |
 | POST | `database/query` | execute one parsed SQL statement |
+
+App deployment and GitHub package connection endpoints are kept separate from
+the PostgreSQL resource contract:
+
+| Method | Route suffix | Operation |
+| --- | --- | --- |
+| GET | `app-services` | read the project's App service metadata |
+| POST | `app-services` | validate an image and deploy one Docker App service |
+| GET | `auth/github/status` | report the signed-in user's package connection |
+| GET | `auth/github/start` | create OAuth state and return the GitHub authorization URL |
+| GET | `auth/github/callback` | exchange the OAuth code and store an encrypted package token |
 
 The API resolves the resource against the authorized project before reusing a
 process-local connection pool for that dedicated endpoint. Pools keep zero
@@ -83,6 +99,18 @@ newer searches. The starter query is `SELECT 1` until a real table is
 available, then it is filled with a safely quoted schema/table name. Loading,
 authorization, unavailable-database, and SQL errors are displayed as safe
 messages; the UI does not fabricate tables, metrics, or configuration values.
+
+The App service API supports public registry images without credentials. Private
+image support is currently limited to `ghcr.io`: the user connects GitHub with
+OAuth, the API encrypts the returned package token with
+`DATABASE_CREDENTIALS_ENCRYPTION_KEY`, performs a short-lived Docker registry
+login for the pull, then logs out. Tokens are never sent to the browser or
+included in API responses. Docker development publishes the container on a
+random loopback port and returns the configured public host plus that port as
+`serviceUrl`. This Docker implementation is enabled by default only in local
+development; the production Kubernetes chart keeps App service provisioning
+disabled until a Docker runtime integration and public routing layer are
+configured for the API deployment.
 
 ## Migration note
 

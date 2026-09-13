@@ -7,11 +7,20 @@ import type {
   DatabaseStats,
   DatabaseTable,
   DatabaseTableData,
+  AppService,
+  GithubConnectionStatus,
   PostgresResource,
 } from "@/lib/types"
 
 export type CreatePostgresResourceInput = {
   name: string
+}
+
+export type CreateAppServiceInput = {
+  name: string
+  image: string
+  imageSource: "public" | "github"
+  appPort: number
 }
 
 const inFlightDatabaseRequests = new Map<string, Promise<unknown>>()
@@ -43,6 +52,10 @@ function resourcesPath(workspaceSlug: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/resources`
 }
 
+function appServicesPath(workspaceSlug: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/app-services`
+}
+
 function databasePath(
   workspaceSlug: string,
   projectSlug: string,
@@ -72,6 +85,34 @@ export function createPostgresResource(
       method: "POST",
       body: { resourceType: "postgres", name: input.name },
     }
+  )
+}
+
+export function listAppServices(workspaceSlug: string, projectSlug: string) {
+  return apiRequest<AppService[]>(appServicesPath(workspaceSlug, projectSlug))
+}
+
+export function createAppService(
+  workspaceSlug: string,
+  projectSlug: string,
+  input: CreateAppServiceInput
+) {
+  return apiRequest<AppService>(appServicesPath(workspaceSlug, projectSlug), {
+    method: "POST",
+    body: input,
+  })
+}
+
+export function getGithubConnectionStatus() {
+  return apiRequest<GithubConnectionStatus>("/auth/github/status")
+}
+
+export function getGithubAuthorizationUrl(returnTo?: string) {
+  const query = returnTo
+    ? `?returnTo=${encodeURIComponent(returnTo)}`
+    : ""
+  return apiRequest<{ authorizationUrl: string }>(
+    `/auth/github/start${query}`
   )
 }
 

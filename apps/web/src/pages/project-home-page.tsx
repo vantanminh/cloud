@@ -33,14 +33,17 @@ import { cn } from "cn"
 import { useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
 import { ResourceWorkspace } from "@/components/resource-workspace"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { getProject } from "@/lib/projects"
-import { listPostgresResources } from "@/lib/resources"
+import { listAppServices, listPostgresResources } from "@/lib/resources"
 import type {
+  AppService,
+  AppServiceStatus,
   PostgresResource,
   PostgresResourceStatus,
   Project,
@@ -62,7 +65,7 @@ type TopologyNode = {
   type: string
   volume: string
   status: string
-  resource?: PostgresResource
+  resource?: PostgresResource | AppService
   position: { left: number; top: number }
 }
 
@@ -176,9 +179,11 @@ function TopologyDashboard({
   const { session, signOut } = useAuth()
   const [postgresResource, setPostgresResource] =
     useState<PostgresResource | null>(null)
+  const [appService, setAppService] = useState<AppService | null>(null)
   const [resourcesLoading, setResourcesLoading] = useState(true)
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
+  const [appServiceDialogOpen, setAppServiceDialogOpen] = useState(false)
   const [copiedConnectionString, setCopiedConnectionString] = useState(false)
   const [theme, setTheme] = useState<Theme>(() =>
     readStoredTheme("project-topology-dashboard-theme")
@@ -191,10 +196,11 @@ function TopologyDashboard({
     const projectNode: TopologyNode = {
       id: "project",
       title: project.name,
-      subtitle: project.slug,
+      subtitle: appService?.image ?? project.slug,
       type: "App service",
-      volume: `${project.slug}-volume`,
-      status: "Online",
+      volume: appService?.containerName ?? `${project.slug}-volume`,
+      status: appService ? resourceStatusLabel(appService.status) : "Needs setup",
+      resource: appService ?? undefined,
       position: postgresResource
         ? { left: 42, top: 53 }
         : { left: 50, top: 35 },
@@ -216,7 +222,7 @@ function TopologyDashboard({
       },
       projectNode,
     ]
-  }, [postgresResource, project.name, project.slug])
+  }, [appService, postgresResource, project.name, project.slug])
   const stateKey = `project-topology-dashboard-state:${project.id}`
   const initialState = useMemo(() => readPersistedState(stateKey), [stateKey])
   const [zoom, setZoom] = useState(initialState.zoom)
@@ -237,12 +243,16 @@ function TopologyDashboard({
 
   useEffect(() => {
     let active = true
-    void listPostgresResources(workspaceSlug, projectSlug)
-      .then((resources) => {
+    void Promise.all([
+      listPostgresResources(workspaceSlug, projectSlug),
+      listAppServices(workspaceSlug, projectSlug),
+    ])
+      .then(([postgresResources, appServices]) => {
         if (!active) {
           return
         }
-        setPostgresResource(resources[0] ?? null)
+        setPostgresResource(postgresResources[0] ?? null)
+        setAppService(appServices[0] ?? null)
         setResourcesLoading(false)
       })
       .catch((error: unknown) => {
@@ -359,6 +369,24 @@ function TopologyDashboard({
     setPostgresDialogOpen(false)
     setSelectedNode("postgres")
     showToast("Postgres database is ready")
+  }
+
+  function handleAppServiceAdd() {
+    setAddMenuOpen(false)
+    if (appService?.status === "ready") {
+      setSelectedNode("project")
+      showToast("App service is already deployed")
+      return
+    }
+    setAppServiceDialogOpen(true)
+  }
+
+  function handleAppServiceCreated(resource: AppService) {
+    setAppService(resource)
+    setResourceError(null)
+    setAppServiceDialogOpen(false)
+    setSelectedNode("project")
+    showToast("App service is deployed")
   }
 
   async function handleCopyConnectionString(value: string) {
@@ -707,10 +735,7 @@ function TopologyDashboard({
                     <ProjectAddOption
                       mark="S"
                       label="App service"
-                      onClick={() => {
-                        setAddMenuOpen(false)
-                        showToast("App service is ready to configure")
-                      }}
+                      onClick={handleAppServiceAdd}
                     />
                   </div>
                 </div>
@@ -964,6 +989,19 @@ function TopologyDashboard({
         onCreated={handlePostgresCreated}
       />
 
+      <AppServiceCreateDialog
+        key={
+          appServiceDialogOpen
+            ? "app-service-dialog-open"
+            : "app-service-dialog-closed"
+        }
+        workspaceSlug={workspaceSlug}
+        projectSlug={projectSlug}
+        open={appServiceDialogOpen}
+        onOpenChange={setAppServiceDialogOpen}
+        onCreated={handleAppServiceCreated}
+      />
+
       {toast && (
         <div className="project-toast" role="status" aria-live="polite">
           {toast}
@@ -1108,7 +1146,7 @@ function connectorClassName(
   return cn("project-connector", highlighted && "is-highlighted")
 }
 
-function resourceStatusLabel(status: PostgresResourceStatus) {
+function resourceStatusLabel(status: PostgresResourceStatus | AppServiceStatus) {
   if (status === "ready") {
     return "Online"
   }

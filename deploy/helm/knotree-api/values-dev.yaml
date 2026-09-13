@@ -17,4 +17,5 @@ env:
   databaseProvisioningEnabled: "true"
   databaseClusterProvider: kubernetes
   databaseClusterServiceType: ClusterIP
+  appServiceProvisioningEnabled: "false"
   rustLog: info,knotree_api=debug

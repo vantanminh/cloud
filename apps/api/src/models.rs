@@ -86,6 +86,32 @@ pub struct CreateResourceRequest {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppServiceResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub resource_type: String,
+    pub status: String,
+    pub image: String,
+    pub image_source: String,
+    pub app_port: u16,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub service_url: Option<String>,
+    pub container_name: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAppServiceRequest {
+    pub name: Option<String>,
+    pub image: String,
+    pub image_source: String,
+    pub app_port: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CsrfResponse {
     #[serde(rename = "csrfToken")]

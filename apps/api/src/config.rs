@@ -35,6 +35,12 @@ pub struct Config {
     pub database_cluster_startup_timeout_seconds: u32,
     pub database_query_timeout_ms: u32,
     pub database_query_max_rows: u32,
+    pub app_service_provisioning_enabled: bool,
+    pub app_service_public_host: String,
+    pub app_service_bind_address: IpAddr,
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
+    pub github_oauth_redirect_uri: String,
     pub database_credentials_encryption_key: [u8; 32],
 }
 
@@ -126,6 +132,31 @@ impl Config {
             env_u32("DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS", 90)?;
         let database_query_timeout_ms = env_u32("DATABASE_QUERY_TIMEOUT_MS", 10_000)?;
         let database_query_max_rows = env_u32("DATABASE_QUERY_MAX_ROWS", 500)?;
+        let app_service_provisioning_enabled =
+            env_bool("APP_SERVICE_PROVISIONING_ENABLED", app_env != "production")?;
+        let app_service_public_host = env::var("APP_SERVICE_PUBLIC_HOST")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "localhost".to_owned());
+        validate_public_host("APP_SERVICE_PUBLIC_HOST", &app_service_public_host)?;
+        let app_service_bind_address = env::var("APP_SERVICE_BIND_ADDRESS")
+            .unwrap_or_else(|_| "127.0.0.1".to_owned())
+            .parse::<IpAddr>()
+            .context("APP_SERVICE_BIND_ADDRESS must be a valid IP address")?;
+        let github_client_id = optional_env("GITHUB_CLIENT_ID");
+        let github_client_secret = optional_env("GITHUB_CLIENT_SECRET");
+        if github_client_id.is_some() != github_client_secret.is_some() {
+            bail!("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be configured together");
+        }
+        let github_oauth_redirect_uri =
+            env::var("GITHUB_OAUTH_REDIRECT_URI").unwrap_or_else(|_| {
+                if app_env == "production" {
+                    "https://cloudapi.knotree.com/api/v1/auth/github/callback".to_owned()
+                } else {
+                    "http://localhost:8080/api/v1/auth/github/callback".to_owned()
+                }
+            });
+        validate_non_empty_token("GITHUB_OAUTH_REDIRECT_URI", &github_oauth_redirect_uri)?;
 
         Ok(Self {
             database_url,
@@ -155,6 +186,12 @@ impl Config {
             database_cluster_startup_timeout_seconds,
             database_query_timeout_ms,
             database_query_max_rows,
+            app_service_provisioning_enabled,
+            app_service_public_host,
+            app_service_bind_address,
+            github_client_id,
+            github_client_secret,
+            github_oauth_redirect_uri,
             database_credentials_encryption_key: credentials_encryption_key(&app_env)?,
             app_env,
             allowed_origins,
@@ -198,6 +235,10 @@ impl Config {
                 HeaderName::from_static("x-csrf-token"),
             ])
     }
+}
+
+fn optional_env(key: &str) -> Option<String> {
+    env::var(key).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn env_bool(key: &str, default: bool) -> Result<bool> {
@@ -299,6 +340,17 @@ fn credentials_encryption_key(app_env: &str) -> Result<[u8; 32]> {
 fn validate_resource_host(host: &str) -> Result<()> {
     if host.is_empty() || host.chars().any(char::is_whitespace) || host.contains('/') {
         bail!("DATABASE_RESOURCE_HOST must be a hostname or IP address");
+    }
+    Ok(())
+}
+
+fn validate_public_host(key: &str, host: &str) -> Result<()> {
+    if host.is_empty()
+        || host.chars().any(char::is_whitespace)
+        || host.contains('/')
+        || host.contains(':')
+    {
+        bail!("{key} must be a hostname or IP address without a scheme or port");
     }
     Ok(())
 }
