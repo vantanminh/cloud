@@ -29,7 +29,57 @@ export type PostgresResource = {
   host: string
   port: number
   connectionString: string | null
+  clusterProvider: "docker" | "kubernetes" | "legacy_shared"
+  clusterName?: string
   errorMessage?: string
+}
+
+export type DatabaseTable = {
+  schemaName: string
+  tableName: string
+  estimatedRows: number
+  sizeBytes: number
+}
+
+export type DatabaseColumn = {
+  name: string
+  dataType: string
+  nullable: boolean
+}
+
+export type DatabaseTableData = {
+  schemaName: string
+  tableName: string
+  columns: DatabaseColumn[]
+  rows: Array<Record<string, unknown>>
+  limit: number
+  offset: number
+  rowCount: number
+}
+
+export type DatabaseStats = {
+  databaseName: string
+  sizeBytes: number
+  connections: number
+  maxConnections: number
+  tableCount: number
+  estimatedRows: number
+}
+
+export type DatabaseConfig = {
+  name: string
+  setting: string
+  unit: string | null
+  description: string
+}
+
+export type DatabaseQueryResult = {
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  rowCount: number
+  affectedRows: number
+  durationMs: number
+  truncated: boolean
 }
 
 export type AuthResponse = {

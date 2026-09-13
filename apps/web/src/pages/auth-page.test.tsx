@@ -116,8 +116,16 @@ describe("AuthPage", () => {
               port: 5432,
               connectionString:
                 "postgres://knotree_role_project:secret@localhost:5432/knotree_db_project",
+              clusterProvider: "docker",
+              clusterName: "knotree-pg-project",
             })
           }
+          return Promise.resolve([])
+        }
+        if (
+          path ===
+          "/workspaces/acme-studio/projects/knotree-study/resources/postgres-resource-id/database/tables"
+        ) {
           return Promise.resolve([])
         }
         return Promise.reject(new Error(`Unexpected request: ${path}`))

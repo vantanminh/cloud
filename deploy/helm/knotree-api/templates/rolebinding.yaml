@@ -1,0 +1,16 @@
+{{- if eq .Values.env.databaseClusterProvider "kubernetes" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "knotree-api.fullname" . }}-database-clusters
+  labels:
+    {{- include "knotree-api.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "knotree-api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "knotree-api.fullname" . }}-database-clusters
+{{- end }}

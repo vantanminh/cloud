@@ -38,7 +38,8 @@ session should feel quick, calm, and trustworthy:
   context, responsive navigation, theme toggles, logs placeholder, and
   transient feedback.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
-  Metrics, Console, and Settings, with truthful empty/unavailable states.
+  Metrics, Console, and Settings. The Database section reads and mutates the
+  selected project's dedicated PostgreSQL instance through typed API calls.
 - Light and dark dashboard themes persisted as local view preferences.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
@@ -49,12 +50,14 @@ session should feel quick, calm, and trustworthy:
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing data, or settings mutations.
 - Redis/app-service provisioning, deployment execution, metrics data, log data,
-  database schema editing, and persistent topology editing.
+  backups, and persistent topology editing.
 
-The topology home now owns one real PostgreSQL resource per project. Other
-resource types and operational sections keep their visual shell but remain
-explicitly unavailable until their APIs and product contracts exist. New UI
-must not imply that an omitted capability exists.
+The topology home now owns one real PostgreSQL resource per project. Database
+tables, rows, schema creation, SQL results, live stats, and safe configuration
+settings come from that instance. Other resource types and operational
+sections keep their visual shell but remain explicitly unavailable until their
+APIs and product contracts exist. New UI must not imply that an omitted
+capability exists.
 
 ## 2. Experience principles
 
@@ -199,7 +202,7 @@ Click Sign out
   → Add → Postgres
   → database display name
   → POST /workspaces/:slug/projects/:projectSlug/resources
-  → real database + login role + connectivity check
+  → dedicated PostgreSQL instance + own volume + login role + connectivity check
   → ready Postgres card + resource workspace
 ```
 
@@ -369,13 +372,14 @@ theme uses the same layout and replaces the page-local surface tokens.
   `Backups`, `Variables`, `Metrics`, `Console`, and `Settings` tabs.
 - The `Deployments` tab communicates resource status and lifecycle history.
   The `Database` tab has `Data`, `Stats`, and `Config` sub-tabs, search,
-  refresh, SQL preview, and a truthful `No tables yet` state when the API has
-  no schema data. `Connect` copies the real connection string without
-  displaying credentials in the UI.
+  refresh, live table rows, a table builder, bounded SQL execution, and a
+  truthful `No tables yet` state when the dedicated instance has no schema
+  data. `Connect` copies the real connection string without displaying
+  credentials in the UI.
 - Add → `Postgres` opens the creation dialog. The API generates the
-  database identifier, login role, and strong password, provisions the database
-  on the configured PostgreSQL cluster, and returns a connection string after
-  a successful connectivity check.
+  database identifier, login role, and strong password, provisions a dedicated
+  per-project instance, and returns a connection string after a successful
+  connectivity check.
 - `Backups`, `Metrics`, `Console`, and write-oriented `Settings` controls use
   explicit empty or unavailable states until their APIs exist. Redis and App
   service remain explicit coming-soon choices and do not create fake nodes.
@@ -576,7 +580,7 @@ StrictMode
 | `PostgresCreateDialog`                                       | Request one real PostgreSQL resource and show pending/error states               | Never collect or persist database passwords in the browser                     |
 | `ProjectHomePage`                                            | Load one project and render unavailable/loading states                           | Keep route data fetching typed and scoped to the current workspace             |
 | `TopologyDashboard`                                          | Topbar, rail, topology canvas, controls, menus, themes, and feedback             | Keep unsupported resource actions explicit until their provisioning APIs exist |
-| `ResourceWorkspace`                                          | Accessible resource sheet, section tabs, database empty state, and safe copy    | Keep operational data truthful; never fabricate tables, metrics, or logs       |
+| `ResourceWorkspace`                                          | Accessible resource sheet, live database management views, and safe copy        | Keep operational data truthful; never fabricate tables, metrics, or logs       |
 | `LogsWorkspace`                                              | Project-scoped log toolbar and unavailable/empty state                           | Add streaming/query APIs before rendering runtime events                       |
 | `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives                                                        | Prefer composition and variants over bespoke controls                          |
 
@@ -608,7 +612,8 @@ Project requests are grouped in `lib/projects.ts`; pages consume those typed
 functions rather than constructing project URLs inline.
 PostgreSQL resource requests are grouped in `lib/resources.ts`; connection
 details are rendered from the authenticated API response and are not written to
-local storage.
+local storage. Database management requests use the same module and always
+include the workspace, project, and resource scope.
 
 ## 8. Frontend state and data flow
 
@@ -654,7 +659,9 @@ topology dashboard
   ├─ createPostgresResource success → ready node + resource workspace
   ├─ createPostgresResource failure → safe dialog/page error
   ├─ select node → selected card + resource workspace
-  ├─ resource tab action → section-local empty/unavailable state
+  ├─ Database tab → list live tables or truthful empty/error state
+  ├─ select table → column metadata + bounded live rows
+  ├─ create table/query/stats/config action → API result + local feedback
   ├─ copy connection action → clipboard + polite toast
   └─ zoom/menu/theme/log action → local view state + toast where useful
 ```
@@ -722,6 +729,12 @@ so a production build cannot silently point at localhost.
 | `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug`           | Session + membership        | Load one project for topology home                 |
 | `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership        | Load persisted PostgreSQL resources                |
 | `POST` | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership + CSRF | Provision or retry the project PostgreSQL resource |
+| `GET`  | `.../resources/:resourceId/database/tables`                 | Session + membership        | List live project tables                           |
+| `POST` | `.../resources/:resourceId/database/tables`                 | Session + membership + CSRF | Create a validated project table                  |
+| `GET`  | `.../resources/:resourceId/database/table-data`             | Session + membership        | Read paginated rows and column metadata            |
+| `GET`  | `.../resources/:resourceId/database/stats`                  | Session + membership        | Load live database statistics                      |
+| `GET`  | `.../resources/:resourceId/database/config`                 | Session + membership        | Load allowlisted PostgreSQL settings              |
+| `POST` | `.../resources/:resourceId/database/query`                  | Session + membership + CSRF | Run one bounded SQL statement                     |
 
 ### Shared success shape
 
@@ -770,15 +783,23 @@ The resource list returns zero or one PostgreSQL resource for the project:
   "username": "knotree_role_<project-id>",
   "host": "localhost",
   "port": 5432,
+  "clusterProvider": "docker",
+  "clusterName": "knotree-pg-<project-id>",
   "connectionString": "postgres://..."
 }
 ```
 
 `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources` accepts
 `{ "resourceType": "postgres", "name": "Postgres" }`. The database and role
-are created on the PostgreSQL cluster configured by `DATABASE_URL`; the API
-database role therefore needs `CREATEDB` and `CREATEROLE`. A repeated request
-is idempotent for the project and returns the existing ready resource.
+are created inside a dedicated Docker or Kubernetes provider instance selected
+by the API configuration. A repeated request is idempotent for the project and
+returns the existing ready resource.
+
+The database sub-resources are scoped to the resource UUID. `tables` returns
+table metadata, `table-data` returns columns and bounded rows, `POST tables`
+accepts allowlisted PostgreSQL types, `stats` and `config` read live values,
+and `query` returns rows or affected-row counts. The UI maps loading and safe
+API errors to local states and never invents database data.
 
 ### Error envelope
 
@@ -982,7 +1003,8 @@ Every new route or meaningful interaction should add:
 - Refresh `/new/workspace` and `/workspace/:slug` while authenticated.
 - Refresh a project deep link while authenticated and verify the project reloads.
 - Check topology selection, resource workspace close, Add → Postgres, pending
-  and error states, Deployments/Database tabs, no-table empty state,
+  and error states, Deployments/Database tabs, table creation, live rows, SQL
+  query results, stats/config loading, no-table empty state,
   connection-string copy, theme toggles, Logs navigation, environment menu,
   zoom, and sign-out actions with keyboard and pointer input.
 - Check the resource workspace at desktop and mobile widths, including tab

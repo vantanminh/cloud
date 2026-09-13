@@ -1,17 +1,14 @@
-use std::str::FromStr;
-
-use anyhow::{Context, Result, bail};
 use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use uuid::Uuid;
 
 use crate::{
     auth,
+    cluster::{self, ClusterSpec},
     error::AppError,
     models::{CreateResourceRequest, PostgresResourceResponse},
     projects, security,
@@ -22,8 +19,8 @@ const POSTGRES_RESOURCE_TYPE: &str = "postgres";
 const STATUS_READY: &str = "ready";
 const STATUS_PROVISIONING: &str = "provisioning";
 const STATUS_ERROR: &str = "error";
-const PROVISIONING_ERROR_MESSAGE: &str =
-    "PostgreSQL could not be provisioned. Check the API database permissions and try again.";
+const PROVIDER_LEGACY_SHARED: &str = "legacy_shared";
+const PROVISIONING_ERROR_MESSAGE: &str = "A dedicated PostgreSQL cluster could not be provisioned. Check the cluster provider and try again.";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct PostgresResourceRow {
@@ -36,7 +33,13 @@ struct PostgresResourceRow {
     password_ciphertext: String,
     status: String,
     error_message: Option<String>,
+    cluster_provider: String,
+    cluster_name: Option<String>,
+    public_host: Option<String>,
+    public_port: Option<i32>,
 }
+
+const RESOURCE_COLUMNS: &str = "id, name, database_name, role_name, host, port, password_ciphertext, status, error_message, cluster_provider, cluster_name, public_host, public_port";
 
 pub async fn list(
     State(state): State<AppState>,
@@ -46,9 +49,9 @@ pub async fn list(
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
         projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
-    let resources = sqlx::query_as::<_, PostgresResourceRow>(
-        "SELECT id, name, database_name, role_name, host, port, password_ciphertext, status, error_message FROM project_postgres_databases WHERE project_id = $1 ORDER BY created_at ASC, id ASC",
-    )
+    let resources = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+        "SELECT {RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 ORDER BY created_at ASC, id ASC"
+    ))
     .bind(project_id)
     .fetch_all(&state.db)
     .await?;
@@ -88,94 +91,128 @@ pub async fn create(
     }
 
     let name = validate_resource_name(input.name.as_deref().unwrap_or("Postgres"))?;
-    let mut transaction = state.db.begin().await?;
-    let lock_key = advisory_lock_key(project_id);
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(lock_key)
-        .execute(&mut *transaction)
-        .await?;
-
-    let (resource, is_new) = match sqlx::query_as::<_, PostgresResourceRow>(
-        "SELECT id, name, database_name, role_name, host, port, password_ciphertext, status, error_message FROM project_postgres_databases WHERE project_id = $1 FOR UPDATE",
-    )
-    .bind(project_id)
-    .fetch_optional(&mut *transaction)
-    .await?
-    {
-        Some(resource) => (resource, false),
-        None => {
-            let resource_id = Uuid::new_v4();
-            let database_name = format!("knotree_db_{}", project_id.simple());
-            let role_name = format!("knotree_role_{}", project_id.simple());
-            let password = generate_database_password();
-            let password_ciphertext =
-                security::encrypt_secret(&password, &state.config.database_credentials_encryption_key)?;
-            let resource = sqlx::query_as::<_, PostgresResourceRow>(
-                "INSERT INTO project_postgres_databases (id, project_id, name, database_name, role_name, host, port, password_ciphertext, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, name, database_name, role_name, host, port, password_ciphertext, status, error_message",
-            )
-            .bind(resource_id)
-            .bind(project_id)
-            .bind(&name)
-            .bind(database_name)
-            .bind(role_name)
-            .bind(&state.config.database_resource_host)
-            .bind(i32::from(state.config.database_resource_port))
-            .bind(password_ciphertext)
-            .bind(STATUS_PROVISIONING)
-            .fetch_one(&mut *transaction)
+    let (resource, is_new) = {
+        let mut transaction = state.db.begin().await?;
+        let lock_key = advisory_lock_key(project_id);
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *transaction)
             .await?;
-            (resource, true)
-        }
+
+        let resource = match sqlx::query_as::<_, PostgresResourceRow>(&format!(
+            "SELECT {RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 FOR UPDATE"
+        ))
+        .bind(project_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            Some(resource) => (resource, false),
+            None => {
+                let resource_id = Uuid::new_v4();
+                let database_name = format!("knotree_db_{}", project_id.simple());
+                let role_name = format!("knotree_role_{}", project_id.simple());
+                let password = generate_database_password();
+                let password_ciphertext = security::encrypt_secret(
+                    &password,
+                    &state.config.database_credentials_encryption_key,
+                )?;
+                let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+                    "INSERT INTO project_postgres_databases (id, project_id, name, database_name, role_name, host, port, password_ciphertext, status, cluster_provider) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {RESOURCE_COLUMNS}"
+                ))
+                .bind(resource_id)
+                .bind(project_id)
+                .bind(&name)
+                .bind(database_name)
+                .bind(role_name)
+                .bind(&state.config.database_resource_host)
+                .bind(i32::from(state.config.database_resource_port))
+                .bind(password_ciphertext)
+                .bind(STATUS_PROVISIONING)
+                .bind(&state.config.database_cluster_provider)
+                .fetch_one(&mut *transaction)
+                .await?;
+                (resource, true)
+            }
+        };
+        transaction.commit().await?;
+        resource
     };
 
+    if resource.cluster_provider == PROVIDER_LEGACY_SHARED {
+        return Err(AppError::Conflict {
+            code: "LEGACY_SHARED_CLUSTER",
+            message: "This resource was created on a shared cluster and must be migrated before it can be used with dedicated clusters.",
+        });
+    }
+
     if resource.status == STATUS_READY {
-        let response = resource_response(&resource, &state)?;
-        transaction.commit().await?;
-        return Ok((StatusCode::OK, Json(response)).into_response());
+        return Ok((StatusCode::OK, Json(resource_response(&resource, &state)?)).into_response());
     }
 
     let password = security::decrypt_secret(
         &resource.password_ciphertext,
         &state.config.database_credentials_encryption_key,
     )?;
-    if let Err(error) = provision_postgres_database(
-        &state.config.database_url,
-        &resource.database_name,
-        &resource.role_name,
-        &password,
+    let provisioned = cluster::provision_with_provider(
+        &state.config,
+        &resource.cluster_provider,
+        &ClusterSpec {
+            project_id,
+            database_name: resource.database_name.clone(),
+            role_name: resource.role_name.clone(),
+            password,
+        },
     )
-    .await
-    {
-        tracing::error!(
-            project_id = %project_id,
-            resource_id = %resource.id,
-            error = %error,
-            "postgres resource provisioning failed"
-        );
-        sqlx::query(
-            "UPDATE project_postgres_databases SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
-        )
-        .bind(STATUS_ERROR)
-        .bind(PROVISIONING_ERROR_MESSAGE)
-        .bind(resource.id)
-        .execute(&mut *transaction)
-        .await?;
-        transaction.commit().await?;
-        return Err(AppError::ServiceUnavailable {
-            code: "DATABASE_PROVISIONING_FAILED",
-            message: PROVISIONING_ERROR_MESSAGE,
-        });
-    }
+    .await;
+    let provisioned = match provisioned {
+        Ok(provisioned) => provisioned,
+        Err(error) => {
+            tracing::error!(
+                project_id = %project_id,
+                resource_id = %resource.id,
+                error = %error,
+                "postgres resource provisioning failed"
+            );
+            sqlx::query(
+                "UPDATE project_postgres_databases SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
+            )
+            .bind(STATUS_ERROR)
+            .bind(PROVISIONING_ERROR_MESSAGE)
+            .bind(resource.id)
+            .execute(&state.db)
+            .await?;
+            return Err(AppError::ServiceUnavailable {
+                code: "DATABASE_PROVISIONING_FAILED",
+                message: PROVISIONING_ERROR_MESSAGE,
+            });
+        }
+    };
 
-    let resource = sqlx::query_as::<_, PostgresResourceRow>(
-        "UPDATE project_postgres_databases SET status = $1, error_message = NULL, updated_at = now() WHERE id = $2 RETURNING id, name, database_name, role_name, host, port, password_ciphertext, status, error_message",
-    )
+    let internal_host = provisioned.internal_host.clone();
+    let internal_port = i32::from(provisioned.internal_port);
+    let response_host = provisioned
+        .public_host
+        .clone()
+        .unwrap_or_else(|| internal_host.clone());
+    let response_port = i32::from(provisioned.public_port.unwrap_or(provisioned.internal_port));
+    let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+        "UPDATE project_postgres_databases SET status = $1, error_message = NULL, host = $2, port = $3, cluster_provider = $4, cluster_name = $5, cluster_namespace = $6, cluster_volume = $7, cluster_host = $8, cluster_port = $9, public_host = $10, public_port = $11, updated_at = now() WHERE id = $12 RETURNING {RESOURCE_COLUMNS}"
+    ))
     .bind(STATUS_READY)
+    .bind(response_host)
+    .bind(response_port)
+    .bind(provisioned.provider)
+    .bind(provisioned.name)
+    .bind(provisioned.namespace)
+    .bind(provisioned.volume)
+    .bind(internal_host)
+    .bind(internal_port)
+    .bind(provisioned.public_host)
+    .bind(provisioned.public_port.map(i32::from))
     .bind(resource.id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&state.db)
     .await?;
     let response = resource_response(&resource, &state)?;
-    transaction.commit().await?;
 
     let status = if is_new {
         StatusCode::CREATED
@@ -202,7 +239,9 @@ fn resource_response(
     resource: &PostgresResourceRow,
     state: &AppState,
 ) -> Result<PostgresResourceResponse, AppError> {
-    let port = u16::try_from(resource.port)
+    let port_value = resource.public_port.unwrap_or(resource.port);
+    let host = resource.public_host.as_deref().unwrap_or(&resource.host);
+    let port = u16::try_from(port_value)
         .map_err(|_| AppError::internal("invalid postgres resource port"))?;
     let connection_string = if resource.status == STATUS_READY {
         let password = security::decrypt_secret(
@@ -210,7 +249,7 @@ fn resource_response(
             &state.config.database_credentials_encryption_key,
         )?;
         Some(connection_string(
-            &resource.host,
+            host,
             port,
             &resource.database_name,
             &resource.role_name,
@@ -226,104 +265,13 @@ fn resource_response(
         status: resource.status.clone(),
         database_name: resource.database_name.clone(),
         username: resource.role_name.clone(),
-        host: resource.host.clone(),
+        host: host.to_owned(),
         port,
         connection_string,
+        cluster_provider: resource.cluster_provider.clone(),
+        cluster_name: resource.cluster_name.clone(),
         error_message: resource.error_message.clone(),
     })
-}
-
-async fn provision_postgres_database(
-    database_url: &str,
-    database_name: &str,
-    role_name: &str,
-    password: &str,
-) -> Result<()> {
-    let base_options = PgConnectOptions::from_str(database_url)
-        .context("DATABASE_URL is not a valid PostgreSQL connection string")?;
-    let mut connection = PgConnection::connect_with(&base_options)
-        .await
-        .context("could not connect to the PostgreSQL administration database")?;
-
-    let role_exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
-            .bind(role_name)
-            .fetch_one(&mut connection)
-            .await?;
-    let quoted_role = quote_identifier(role_name);
-    let quoted_password = quote_literal(password);
-    if role_exists {
-        sqlx::query(&format!(
-            "ALTER ROLE {quoted_role} LOGIN PASSWORD {quoted_password}"
-        ))
-        .execute(&mut connection)
-        .await?;
-    } else {
-        sqlx::query(&format!(
-            "CREATE ROLE {quoted_role} LOGIN PASSWORD {quoted_password}"
-        ))
-        .execute(&mut connection)
-        .await?;
-    }
-
-    let existing_owner = sqlx::query_scalar::<_, String>(
-        "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = $1",
-    )
-    .bind(database_name)
-    .fetch_optional(&mut connection)
-    .await?;
-    let quoted_database = quote_identifier(database_name);
-    match existing_owner {
-        Some(owner) if owner != role_name => {
-            bail!("database identifier is already owned by another role")
-        }
-        Some(_) => {}
-        None => {
-            sqlx::query(&format!(
-                "CREATE DATABASE {quoted_database} OWNER {quoted_role}"
-            ))
-            .execute(&mut connection)
-            .await?;
-        }
-    }
-
-    sqlx::query(&format!(
-        "ALTER DATABASE {quoted_database} ALLOW_CONNECTIONS true"
-    ))
-    .execute(&mut connection)
-    .await?;
-    sqlx::query(&format!(
-        "REVOKE CONNECT ON DATABASE {quoted_database} FROM PUBLIC"
-    ))
-    .execute(&mut connection)
-    .await?;
-    sqlx::query(&format!(
-        "GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_role}"
-    ))
-    .execute(&mut connection)
-    .await?;
-
-    let resource_options = base_options
-        .username(role_name)
-        .password(password)
-        .database(database_name);
-    let mut resource_connection = PgConnection::connect_with(&resource_options)
-        .await
-        .context("created PostgreSQL database could not accept a connection")?;
-    sqlx::query("SELECT 1")
-        .execute(&mut resource_connection)
-        .await?;
-    resource_connection.close().await?;
-    connection.close().await?;
-    Ok(())
-}
-
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn quote_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn generate_database_password() -> String {

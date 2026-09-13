@@ -941,6 +941,8 @@ function TopologyDashboard({
           key={selectedNodeData.id}
           node={selectedNodeData}
           environment={environment}
+          workspaceSlug={workspaceSlug}
+          projectSlug={projectSlug}
           onClose={closeResourceWorkspace}
           onCopyConnectionString={(value) => {
             void handleCopyConnectionString(value)

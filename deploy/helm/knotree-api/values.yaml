@@ -65,6 +65,16 @@ env:
   databaseProvisioningEnabled: "true"
   databaseResourceHost: ""
   databaseResourcePort: "5432"
+  databaseResourcePublicHost: ""
+  databaseResourcePublicPort: ""
+  databaseClusterProvider: kubernetes
+  databaseClusterImage: postgres:16-alpine
+  databaseClusterNamespace: ""
+  databaseClusterServiceType: ClusterIP
+  databaseClusterStorageSize: 10Gi
+  databaseClusterStartupTimeoutSeconds: "180"
+  databaseQueryTimeoutMs: "10000"
+  databaseQueryMaxRows: "500"
   rustLog: info,knotree_api=debug
 
 resources:

@@ -1,6 +1,8 @@
 # Knotree Cloud
 
-MVP authentication and first-workspace onboarding for Knotree Cloud.
+Knotree Cloud is a Rust/PostgreSQL control plane with a Vite/React dashboard.
+Each new project can provision and manage its own dedicated PostgreSQL
+instance.
 
 ## Local development
 
@@ -21,6 +23,14 @@ $env:AUTH_REQUIRE_EMAIL_VERIFICATION = "false"
 $env:DATABASE_PROVISIONING_ENABLED = "true"
 $env:DATABASE_RESOURCE_HOST = "localhost"
 $env:DATABASE_RESOURCE_PORT = "5432"
+$env:DATABASE_CLUSTER_PROVIDER = "docker"
+$env:DATABASE_CLUSTER_IMAGE = "postgres:16-alpine"
+$env:DATABASE_CLUSTER_DOCKER_BINARY = "docker"
+# A random host port is allocated for each project container.
+$env:DATABASE_CLUSTER_BIND_ADDRESS = "127.0.0.1"
+$env:DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS = "90"
+$env:DATABASE_QUERY_TIMEOUT_MS = "10000"
+$env:DATABASE_QUERY_MAX_ROWS = "500"
 # Keep this stable so credentials remain readable after an API restart.
 $env:DATABASE_CREDENTIALS_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
 cargo run --manifest-path apps/api/Cargo.toml
@@ -46,17 +56,46 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `GET /workspaces/:slug`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
+- `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/table-data`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/stats`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/config`
+- `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/query`
 
 Sessions are opaque, server-side records in PostgreSQL. The browser receives an
 HttpOnly session cookie plus a short-lived in-memory CSRF token for mutating
 requests. Production enables secure `__Host-` cookies and exact-origin CORS.
 
-The Postgres resource endpoint provisions one isolated database and login role
-per project on the cluster in `DATABASE_URL`. The API database role must have
-`CREATEDB` and `CREATEROLE`. Resource credentials are encrypted at rest with
+The Postgres resource endpoint provisions one dedicated PostgreSQL instance per
+project. The control-plane database in `DATABASE_URL` stores only resource
+metadata and encrypted credentials; it is not used as a project database.
+
+Development uses the local Docker daemon and creates one container plus one
+named volume per project (`knotree-pg-<project-id>` and
+`knotree-pg-data-<project-id>`). Production uses Kubernetes and creates one
+StatefulSet, Secret, Service, and PVC per project. The Kubernetes chart grants
+the API service account only namespaced permissions for those resources. A
+single StatefulSet replica is an isolation boundary, not a high-availability
+cluster; replication/failover is a separate provider capability.
+
+The project database API connects to the dedicated instance and supports table
+introspection, paginated table data, table creation, bounded SQL execution,
+live statistics, and selected PostgreSQL settings. SQL requests run with a
+per-connection statement timeout and a configurable result-row limit; cluster
+administration statements such as role/database creation, `COPY`, `SET`, and
+`GRANT` are rejected by the console.
+
+Resource credentials are encrypted at rest with
 `DATABASE_CREDENTIALS_ENCRYPTION_KEY`; production must provide a stable,
-base64url-encoded 32-byte key. Set `DATABASE_RESOURCE_HOST` to the host that
-users can reach; it defaults to the host parsed from `DATABASE_URL`.
+base64url-encoded 32-byte key. In Kubernetes, `ClusterIP` is the safe default:
+the API can manage the database over the cluster network. Set
+`env.databaseClusterServiceType=LoadBalancer` plus
+`env.databaseResourcePublicHost`/`env.databaseResourcePublicPort` when users
+must connect from outside the cluster. Existing resources created by the old
+shared-cluster provider are marked `legacy_shared` and are intentionally not
+silently moved; migrate their data explicitly before using the dedicated
+management endpoints.
 
 ## Checks
 
@@ -101,4 +140,6 @@ helm upgrade --install knotree-api deploy/helm/knotree-api `
 ```
 
 Use `deploy/helm/knotree-api/values-dev.yaml` with local or non-TLS clusters;
-it keeps email verification disabled.
+it keeps email verification disabled and provisions project databases through
+the Kubernetes provider. For host-local development, use the `.env` Docker
+settings above instead of running the API inside Kubernetes.

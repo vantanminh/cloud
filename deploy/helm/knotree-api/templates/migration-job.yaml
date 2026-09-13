@@ -36,6 +36,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.databaseUrlKey }}
+            - name: DATABASE_CREDENTIALS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseCredentialsEncryptionKey }}
             - name: RUST_LOG
               value: {{ .Values.env.rustLog | quote }}
 {{- end }}

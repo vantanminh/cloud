@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import {
   ActivityIcon,
   Clock3Icon,
@@ -20,7 +26,24 @@ import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import type { PostgresResource } from "@/lib/types"
+import { Textarea } from "@/components/ui/textarea"
+import { ApiError } from "@/lib/api"
+import {
+  createDatabaseTable,
+  executeDatabaseQuery,
+  getDatabaseConfig,
+  getDatabaseStats,
+  getDatabaseTableData,
+  listDatabaseTables,
+} from "@/lib/resources"
+import type {
+  DatabaseConfig,
+  DatabaseStats,
+  DatabaseTable,
+  DatabaseTableData,
+  DatabaseQueryResult,
+  PostgresResource,
+} from "@/lib/types"
 
 import "./resource-workspace.css"
 
@@ -59,6 +82,8 @@ const resourceTabs: Array<{
 type ResourceWorkspaceProps = {
   node: ResourceWorkspaceNode
   environment: string
+  workspaceSlug: string
+  projectSlug: string
   onClose: () => void
   onCopyConnectionString: (value: string) => void
   copiedConnectionString: boolean
@@ -69,6 +94,8 @@ type ResourceWorkspaceProps = {
 export function ResourceWorkspace({
   node,
   environment,
+  workspaceSlug,
+  projectSlug,
   onClose,
   onCopyConnectionString,
   copiedConnectionString,
@@ -195,6 +222,8 @@ export function ResourceWorkspace({
           {activeTab === "database" && (
             <DatabasePane
               node={node}
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
               connectionString={connectionString}
               copiedConnectionString={copiedConnectionString}
               onCopyConnectionString={onCopyConnectionString}
@@ -345,12 +374,16 @@ function DeploymentsPane({
 
 function DatabasePane({
   node,
+  workspaceSlug,
+  projectSlug,
   connectionString,
   copiedConnectionString,
   onCopyConnectionString,
   onToast,
 }: {
   node: ResourceWorkspaceNode
+  workspaceSlug: string
+  projectSlug: string
   connectionString?: string
   copiedConnectionString: boolean
   onCopyConnectionString: (value: string) => void
@@ -358,10 +391,218 @@ function DatabasePane({
 }) {
   const [view, setView] = useState<"data" | "stats" | "config">("data")
   const [search, setSearch] = useState("")
-  const visibleTables = [] as string[]
-  const hasTables = visibleTables.some((table) =>
-    table.toLowerCase().includes(search.toLowerCase())
+  const [tables, setTables] = useState<DatabaseTable[]>([])
+  const [selectedTable, setSelectedTable] = useState<DatabaseTable | null>(null)
+  const [tableOffset, setTableOffset] = useState(0)
+  const [tableData, setTableData] = useState<DatabaseTableData | null>(null)
+  const [stats, setStats] = useState<DatabaseStats | null>(null)
+  const [config, setConfig] = useState<DatabaseConfig[]>([])
+  const [query, setQuery] = useState("SELECT * FROM public.your_table LIMIT 50")
+  const [queryResult, setQueryResult] = useState<DatabaseQueryResult | null>(
+    null
   )
+  const [loading, setLoading] = useState(true)
+  const [queryRunning, setQueryRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const resourceId = node.resource?.id
+  const isReady = node.resource?.status === "ready"
+
+  const loadTables = useCallback(async () => {
+    if (!resourceId || !isReady) {
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const nextTables = await listDatabaseTables(
+        workspaceSlug,
+        projectSlug,
+        resourceId,
+        search
+      )
+      setTables(nextTables)
+      setSelectedTable((current) =>
+        current &&
+        nextTables.some(
+          (table) =>
+            table.schemaName === current.schemaName &&
+            table.tableName === current.tableName
+        )
+          ? current
+          : null
+      )
+    } catch (requestError) {
+      setError(databaseErrorMessage(requestError))
+    } finally {
+      setLoading(false)
+    }
+  }, [isReady, projectSlug, resourceId, search, workspaceSlug])
+
+  useEffect(() => {
+    if (!resourceId || !isReady) {
+      return
+    }
+    let active = true
+    void listDatabaseTables(
+      workspaceSlug,
+      projectSlug,
+      resourceId,
+      search
+    )
+      .then((nextTables) => {
+        if (!active) {
+          return
+        }
+        setTables(nextTables)
+        setSelectedTable((current) =>
+          current &&
+          nextTables.some(
+            (table) =>
+              table.schemaName === current.schemaName &&
+              table.tableName === current.tableName
+          )
+            ? current
+            : null
+        )
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setError(databaseErrorMessage(requestError))
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [isReady, projectSlug, resourceId, search, workspaceSlug])
+
+  useEffect(() => {
+    if (!resourceId || !isReady || !selectedTable || view !== "data") {
+      return
+    }
+    let active = true
+    void getDatabaseTableData(
+      workspaceSlug,
+      projectSlug,
+      resourceId,
+      selectedTable.tableName,
+      selectedTable.schemaName,
+      50,
+      tableOffset
+    )
+      .then((nextData) => {
+        if (active) {
+          setTableData(nextData)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setError(databaseErrorMessage(requestError))
+          setTableData(null)
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [isReady, projectSlug, resourceId, selectedTable, tableOffset, view, workspaceSlug])
+
+  useEffect(() => {
+    if (!resourceId || !isReady || view !== "stats") {
+      return
+    }
+    let active = true
+    void getDatabaseStats(workspaceSlug, projectSlug, resourceId)
+      .then((nextStats) => {
+        if (active) {
+          setStats(nextStats)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setError(databaseErrorMessage(requestError))
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [isReady, projectSlug, resourceId, view, workspaceSlug])
+
+  useEffect(() => {
+    if (!resourceId || !isReady || view !== "config") {
+      return
+    }
+    let active = true
+    void getDatabaseConfig(workspaceSlug, projectSlug, resourceId)
+      .then((nextConfig) => {
+        if (active) {
+          setConfig(nextConfig)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setError(databaseErrorMessage(requestError))
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [isReady, projectSlug, resourceId, view, workspaceSlug])
+
+  async function handleRunQuery() {
+    if (!resourceId || !isReady || !query.trim()) {
+      return
+    }
+    setQueryRunning(true)
+    setError(null)
+    try {
+      const result = await executeDatabaseQuery(
+        workspaceSlug,
+        projectSlug,
+        resourceId,
+        query
+      )
+      setQueryResult(result)
+      onToast(
+        result.affectedRows > 0
+          ? `Query completed · ${result.affectedRows} row(s) affected`
+          : `Query completed · ${result.rowCount} row(s)`
+      )
+    } catch (requestError) {
+      setError(databaseErrorMessage(requestError))
+    } finally {
+      setQueryRunning(false)
+    }
+  }
+
+  function handleCreatedTable() {
+    setCreateOpen(false)
+    setSearch("")
+    setSelectedTable(null)
+    setTableOffset(0)
+    setTableData(null)
+    void loadTables()
+    onToast("Table created")
+  }
 
   return (
     <section
@@ -401,6 +642,26 @@ function DatabasePane({
         )}
       </div>
 
+      {node.id !== "postgres" || !resourceId ? (
+        <ResourceEmptyState
+          icon={<DatabaseIcon aria-hidden="true" />}
+          title="No database resource"
+          description="Attach a PostgreSQL resource to this project to manage its database."
+        />
+      ) : !isReady ? (
+        <ResourceEmptyState
+          icon={<ActivityIcon aria-hidden="true" />}
+          title="Database is provisioning"
+          description="Database management becomes available as soon as the dedicated PostgreSQL cluster is ready."
+        />
+      ) : (
+        <>
+          {error && (
+            <div className="resource-workspace-error" role="alert">
+              {error}
+            </div>
+          )}
+
       {view === "data" && (
         <div>
           <div className="resource-workspace-table-toolbar">
@@ -422,7 +683,8 @@ function DatabasePane({
                 variant="outline"
                 size="icon-sm"
                 aria-label="Refresh tables"
-                onClick={() => onToast("Tables refreshed")}
+                onClick={() => void loadTables()}
+                disabled={loading}
               >
                 <RefreshCwIcon />
               </Button>
@@ -430,64 +692,442 @@ function DatabasePane({
                 type="button"
                 variant="outline"
                 className="resource-workspace-accent-button"
-                onClick={() => onToast("New table is coming soon")}
+                onClick={() => setCreateOpen(true)}
               >
                 <PlusIcon data-icon="inline-start" />
                 New Table
               </Button>
             </div>
           </div>
-          <div className="resource-workspace-sql-bar">
-            {node.resource
-              ? "SELECT * FROM your_table"
-              : "SELECT * FROM service_data"}
+          <div className="resource-workspace-query-editor">
+            <Textarea
+              aria-label="SQL query"
+              rows={2}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              spellCheck={false}
+            />
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void handleRunQuery()}
+              disabled={queryRunning || !query.trim()}
+            >
+              <TerminalIcon data-icon="inline-start" />
+              {queryRunning ? "Running…" : "Run query"}
+            </Button>
           </div>
-          {hasTables ? (
+          {queryResult && (
+            <DatabaseQueryResultView result={queryResult} />
+          )}
+          {selectedTable && tableData ? (
+            <DatabaseTableView
+              data={tableData}
+              loading={loading}
+              onPageChange={setTableOffset}
+              onBack={() => {
+                setSelectedTable(null)
+                setTableData(null)
+              }}
+            />
+          ) : tables.length > 0 ? (
             <div className="resource-workspace-table-grid">
-              {visibleTables
-                .filter((table) =>
-                  table.toLowerCase().includes(search.toLowerCase())
-                )
-                .map((table) => (
+              {tables.map((table) => (
                   <button
-                    key={table}
+                    key={`${table.schemaName}.${table.tableName}`}
                     type="button"
                     className="resource-workspace-table-card"
+                    onClick={() => {
+                      setQueryResult(null)
+                      setSelectedTable(table)
+                      setTableOffset(0)
+                    }}
                   >
                     <Table2Icon aria-hidden="true" />
-                    <span>{table}</span>
+                    <span>{table.tableName}</span>
+                    <small>
+                      {table.schemaName} · {formatRowCount(table.estimatedRows)} rows
+                    </small>
                   </button>
                 ))}
             </div>
           ) : (
             <ResourceEmptyState
               icon={<Table2Icon aria-hidden="true" />}
-              title={search ? "No tables match" : "No tables yet"}
+              title={loading ? "Loading tables…" : search ? "No tables match" : "No tables yet"}
               description={
                 search
                   ? "Try a different table name."
-                  : "Create a table from your application or the New Table action when schema editing is enabled."
+                  : "Create a table here or connect your application to this dedicated PostgreSQL cluster."
               }
             />
           )}
         </div>
       )}
       {view === "stats" && (
-        <ResourceEmptyState
+        stats ? <DatabaseStatsView stats={stats} /> : <ResourceEmptyState
           icon={<ActivityIcon aria-hidden="true" />}
-          title="Stats are warming up"
-          description="Connections, cache hit ratio, and table sizes appear after the next metrics scrape."
+          title={loading ? "Loading stats…" : "No stats available"}
+          description="Live statistics are read directly from this project database."
         />
       )}
       {view === "config" && (
-        <ResourceEmptyState
+        config.length > 0 ? <DatabaseConfigView config={config} /> : <ResourceEmptyState
           icon={<Settings2Icon aria-hidden="true" />}
-          title="Managed configuration"
-          description="Connection settings are managed by the project environment and shown in Settings."
+          title={loading ? "Loading config…" : "No config available"}
+          description="The live PostgreSQL settings are read from this project database."
         />
+      )}
+          {createOpen && (
+            <CreateTableForm
+              onCancel={() => setCreateOpen(false)}
+              onCreated={handleCreatedTable}
+              onError={setError}
+              projectSlug={projectSlug}
+              resourceId={resourceId}
+              schemaName="public"
+              workspaceSlug={workspaceSlug}
+            />
+          )}
+        </>
       )}
     </section>
   )
+}
+
+function DatabaseTableView({
+  data,
+  loading,
+  onPageChange,
+  onBack,
+}: {
+  data: DatabaseTableData
+  loading: boolean
+  onPageChange: (offset: number) => void
+  onBack: () => void
+}) {
+  return (
+    <div className="resource-workspace-data-view">
+      <div className="resource-workspace-data-head">
+        <Button type="button" variant="outline" size="sm" onClick={onBack}>
+          Back to tables
+        </Button>
+        <strong>
+          {data.schemaName}.{data.tableName}
+        </strong>
+        <span className="resource-workspace-muted">
+          {loading ? "Refreshing…" : `${data.rowCount} rows`}
+        </span>
+      </div>
+      {data.columns.length === 0 ? (
+        <ResourceEmptyState
+          icon={<Table2Icon aria-hidden="true" />}
+          title="No columns"
+          description="This table has no visible columns."
+        />
+      ) : (
+        <div className="resource-workspace-data-table-wrap">
+          <table className="resource-workspace-data-table">
+            <thead>
+              <tr>
+                {data.columns.map((column) => (
+                  <th key={column.name} scope="col">
+                    <span>{column.name}</span>
+                    <small>{column.dataType}</small>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.length === 0 ? (
+                <tr>
+                  <td colSpan={data.columns.length}>No rows yet.</td>
+                </tr>
+              ) : (
+                data.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {data.columns.map((column) => (
+                      <td key={column.name}>{formatCell(row[column.name])}</td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="resource-workspace-pagination">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={data.offset === 0 || loading}
+          onClick={() => onPageChange(Math.max(0, data.offset - data.limit))}
+        >
+          Previous
+        </Button>
+        <span className="resource-workspace-muted">
+          Rows {data.rowCount === 0 ? 0 : data.offset + 1}–{data.offset + data.rowCount}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={loading || data.rowCount < data.limit}
+          onClick={() => onPageChange(data.offset + data.limit)}
+        >
+          Next
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function DatabaseQueryResultView({ result }: { result: DatabaseQueryResult }) {
+  if (result.columns.length === 0) {
+    return (
+      <div className="resource-workspace-query-result" role="status">
+        Query completed in {result.durationMs}ms · {result.affectedRows} row(s) affected.
+      </div>
+    )
+  }
+  return (
+    <div className="resource-workspace-query-result">
+      <div className="resource-workspace-data-head">
+        <strong>Query result</strong>
+        <span className="resource-workspace-muted">
+          {result.rowCount} rows · {result.durationMs}ms{result.truncated ? " · result truncated" : ""}
+        </span>
+      </div>
+      <div className="resource-workspace-data-table-wrap">
+        <table className="resource-workspace-data-table">
+          <thead>
+            <tr>
+              {result.columns.map((column) => (
+                <th key={column} scope="col">{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {result.columns.map((column) => (
+                  <td key={column}>{formatCell(row[column])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function DatabaseStatsView({ stats }: { stats: DatabaseStats }) {
+  return (
+    <div className="resource-workspace-db-cards">
+      {[
+        ["Database", stats.databaseName],
+        ["Storage", formatBytes(stats.sizeBytes)],
+        ["Connections", `${stats.connections} / ${stats.maxConnections}`],
+        ["Tables", String(stats.tableCount)],
+        ["Estimated rows", formatRowCount(stats.estimatedRows)],
+      ].map(([label, value]) => (
+        <article key={label} className="resource-workspace-db-card">
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function DatabaseConfigView({ config }: { config: DatabaseConfig[] }) {
+  return (
+    <div className="resource-workspace-config-list">
+      {config.map((item) => (
+        <article key={item.name} className="resource-workspace-config-row">
+          <div>
+            <strong>{item.name}</strong>
+            <p>{item.description}</p>
+          </div>
+          <code>
+            {item.setting}
+            {item.unit ? ` ${item.unit}` : ""}
+          </code>
+        </article>
+      ))}
+    </div>
+  )
+}
+
+function CreateTableForm({
+  workspaceSlug,
+  projectSlug,
+  resourceId,
+  schemaName,
+  onCancel,
+  onCreated,
+  onError,
+}: {
+  workspaceSlug: string
+  projectSlug: string
+  resourceId: string
+  schemaName: string
+  onCancel: () => void
+  onCreated: () => void
+  onError: (message: string) => void
+}) {
+  const [name, setName] = useState("")
+  const [columns, setColumns] = useState([
+    { name: "id", dataType: "bigint", primaryKey: true, nullable: false },
+  ])
+  const [saving, setSaving] = useState(false)
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await createDatabaseTable(workspaceSlug, projectSlug, resourceId, {
+        name,
+        schema: schemaName,
+        columns,
+      })
+      onCreated()
+    } catch (requestError) {
+      onError(databaseErrorMessage(requestError))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="resource-workspace-modal-backdrop">
+      <form
+        className="resource-workspace-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-table-title"
+        onSubmit={(event) => void handleSubmit(event)}
+      >
+        <div className="resource-workspace-modal-head">
+          <div>
+            <h3 id="new-table-title">New table</h3>
+            <p>Create a table in the {schemaName} schema.</p>
+          </div>
+          <button type="button" className="resource-workspace-close" aria-label="Close new table" onClick={onCancel}>
+            <XIcon aria-hidden="true" />
+          </button>
+        </div>
+        <label className="resource-workspace-form-field">
+          Table name
+          <Input value={name} onChange={(event) => setName(event.target.value)} required autoFocus />
+        </label>
+        <div className="resource-workspace-form-section">
+          <div className="resource-workspace-form-section-head">
+            <strong>Columns</strong>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setColumns((current) => [
+                  ...current,
+                  { name: `column_${current.length + 1}`, dataType: "text", primaryKey: false, nullable: true },
+                ])
+              }
+              disabled={columns.length >= 50}
+            >
+              <PlusIcon data-icon="inline-start" /> Add column
+            </Button>
+          </div>
+          {columns.map((column, index) => (
+            <div className="resource-workspace-column-row" key={`${index}-${column.name}`}>
+              <Input
+                aria-label={`Column ${index + 1} name`}
+                value={column.name}
+                onChange={(event) =>
+                  setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))
+                }
+                required
+              />
+              <select
+                aria-label={`Column ${index + 1} type`}
+                value={column.dataType}
+                onChange={(event) =>
+                  setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, dataType: event.target.value } : item))
+                }
+              >
+                {["text", "bigint", "integer", "boolean", "numeric", "date", "timestamptz", "uuid", "jsonb", "bytea"].map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <label className="resource-workspace-checkbox">
+                <input
+                  type="checkbox"
+                  checked={column.nullable}
+                  disabled={column.primaryKey}
+                  onChange={(event) =>
+                    setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, nullable: event.target.checked } : item))
+                  }
+                />
+                Nullable
+              </label>
+              <label className="resource-workspace-checkbox">
+                <input
+                  type="checkbox"
+                  checked={column.primaryKey}
+                  onChange={(event) =>
+                    setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, primaryKey: event.target.checked, nullable: event.target.checked ? false : item.nullable } : item))
+                  }
+                />
+                PK
+              </label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove column ${index + 1}`}
+                onClick={() => setColumns((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                disabled={columns.length === 1}
+              >
+                <XIcon />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="resource-workspace-modal-actions">
+          <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button type="submit" disabled={saving || !name.trim()}>{saving ? "Creating…" : "Create table"}</Button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function databaseErrorMessage(error: unknown) {
+  return error instanceof ApiError
+    ? error.message
+    : "The database operation failed. Please try again."
+}
+
+function formatCell(value: unknown) {
+  if (value === null || value === undefined) {
+    return "NULL"
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value)
+  }
+  return String(value)
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+function formatRowCount(value: number) {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)
 }
 
 function BackupsPane({ onToast }: { onToast: (message: string) => void }) {

@@ -71,6 +71,10 @@ pub struct PostgresResourceResponse {
     pub port: u16,
     #[serde(rename = "connectionString")]
     pub connection_string: Option<String>,
+    #[serde(rename = "clusterProvider")]
+    pub cluster_provider: String,
+    #[serde(rename = "clusterName", skip_serializing_if = "Option::is_none")]
+    pub cluster_name: Option<String>,
     #[serde(rename = "errorMessage", skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
 }

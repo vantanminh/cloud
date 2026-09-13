@@ -1,0 +1,19 @@
+{{- if eq .Values.env.databaseClusterProvider "kubernetes" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "knotree-api.fullname" . }}-database-clusters
+  labels:
+    {{- include "knotree-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources:
+      - secrets
+      - services
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - statefulsets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}

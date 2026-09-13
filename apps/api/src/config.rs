@@ -1,4 +1,7 @@
-use std::{env, net::SocketAddr};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+};
 
 use anyhow::{Context, Result, bail};
 use axum::http::{HeaderName, HeaderValue, Method, header};
@@ -20,6 +23,18 @@ pub struct Config {
     pub database_provisioning_enabled: bool,
     pub database_resource_host: String,
     pub database_resource_port: u16,
+    pub database_resource_public_host: Option<String>,
+    pub database_resource_public_port: Option<u16>,
+    pub database_cluster_provider: String,
+    pub database_cluster_image: String,
+    pub database_cluster_docker_binary: String,
+    pub database_cluster_bind_address: IpAddr,
+    pub database_cluster_namespace: String,
+    pub database_cluster_service_type: String,
+    pub database_cluster_storage_size: String,
+    pub database_cluster_startup_timeout_seconds: u32,
+    pub database_query_timeout_ms: u32,
+    pub database_query_max_rows: u32,
     pub database_credentials_encryption_key: [u8; 32],
 }
 
@@ -57,6 +72,60 @@ impl Config {
         validate_resource_host(&database_resource_host)?;
         let database_resource_port =
             env_u16("DATABASE_RESOURCE_PORT", database_options.get_port())?;
+        let database_resource_public_host = optional_host("DATABASE_RESOURCE_PUBLIC_HOST")?;
+        let database_resource_public_port = match database_resource_public_host.as_ref() {
+            Some(_) => Some(env_u16(
+                "DATABASE_RESOURCE_PUBLIC_PORT",
+                database_resource_port,
+            )?),
+            None => optional_u16("DATABASE_RESOURCE_PUBLIC_PORT")?,
+        };
+        let database_cluster_provider = env::var("DATABASE_CLUSTER_PROVIDER")
+            .unwrap_or_else(|_| {
+                if app_env == "production" {
+                    "kubernetes".to_owned()
+                } else {
+                    "docker".to_owned()
+                }
+            })
+            .to_ascii_lowercase();
+        if !matches!(database_cluster_provider.as_str(), "docker" | "kubernetes") {
+            bail!("DATABASE_CLUSTER_PROVIDER must be docker or kubernetes");
+        }
+        let database_cluster_image =
+            env::var("DATABASE_CLUSTER_IMAGE").unwrap_or_else(|_| "postgres:16-alpine".to_owned());
+        validate_non_empty_token("DATABASE_CLUSTER_IMAGE", &database_cluster_image)?;
+        let database_cluster_docker_binary =
+            env::var("DATABASE_CLUSTER_DOCKER_BINARY").unwrap_or_else(|_| "docker".to_owned());
+        validate_non_empty_token(
+            "DATABASE_CLUSTER_DOCKER_BINARY",
+            &database_cluster_docker_binary,
+        )?;
+        let database_cluster_bind_address = env::var("DATABASE_CLUSTER_BIND_ADDRESS")
+            .unwrap_or_else(|_| "127.0.0.1".to_owned())
+            .parse::<IpAddr>()
+            .context("DATABASE_CLUSTER_BIND_ADDRESS must be a valid IP address")?;
+        let database_cluster_namespace = env::var("DATABASE_CLUSTER_NAMESPACE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| env::var("POD_NAMESPACE").ok())
+            .unwrap_or_else(|| "default".to_owned());
+        validate_kubernetes_name("DATABASE_CLUSTER_NAMESPACE", &database_cluster_namespace)?;
+        let database_cluster_service_type =
+            env::var("DATABASE_CLUSTER_SERVICE_TYPE").unwrap_or_else(|_| "ClusterIP".to_owned());
+        if !matches!(
+            database_cluster_service_type.as_str(),
+            "ClusterIP" | "LoadBalancer" | "NodePort"
+        ) {
+            bail!("DATABASE_CLUSTER_SERVICE_TYPE must be ClusterIP, LoadBalancer, or NodePort");
+        }
+        let database_cluster_storage_size =
+            env::var("DATABASE_CLUSTER_STORAGE_SIZE").unwrap_or_else(|_| "10Gi".to_owned());
+        validate_storage_size(&database_cluster_storage_size)?;
+        let database_cluster_startup_timeout_seconds =
+            env_u32("DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS", 90)?;
+        let database_query_timeout_ms = env_u32("DATABASE_QUERY_TIMEOUT_MS", 10_000)?;
+        let database_query_max_rows = env_u32("DATABASE_QUERY_MAX_ROWS", 500)?;
 
         Ok(Self {
             database_url,
@@ -74,6 +143,18 @@ impl Config {
             )?,
             database_resource_host,
             database_resource_port,
+            database_resource_public_host,
+            database_resource_public_port,
+            database_cluster_provider,
+            database_cluster_image,
+            database_cluster_docker_binary,
+            database_cluster_bind_address,
+            database_cluster_namespace,
+            database_cluster_service_type,
+            database_cluster_storage_size,
+            database_cluster_startup_timeout_seconds,
+            database_query_timeout_ms,
+            database_query_max_rows,
             database_credentials_encryption_key: credentials_encryption_key(&app_env)?,
             app_env,
             allowed_origins,
@@ -161,6 +242,31 @@ fn env_u16(key: &str, default: u16) -> Result<u16> {
     Ok(parsed)
 }
 
+fn optional_u16(key: &str) -> Result<Option<u16>> {
+    match env::var(key) {
+        Ok(value) if !value.trim().is_empty() => {
+            let parsed = value
+                .parse()
+                .with_context(|| format!("{key} must be an integer"))?;
+            if parsed == 0 {
+                bail!("{key} must be greater than zero");
+            }
+            Ok(Some(parsed))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn optional_host(key: &str) -> Result<Option<String>> {
+    match env::var(key).ok().filter(|value| !value.trim().is_empty()) {
+        Some(value) => {
+            validate_resource_host(&value)?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
 fn credentials_encryption_key(app_env: &str) -> Result<[u8; 32]> {
     let Some(value) = env::var("DATABASE_CREDENTIALS_ENCRYPTION_KEY")
         .ok()
@@ -193,6 +299,39 @@ fn credentials_encryption_key(app_env: &str) -> Result<[u8; 32]> {
 fn validate_resource_host(host: &str) -> Result<()> {
     if host.is_empty() || host.chars().any(char::is_whitespace) || host.contains('/') {
         bail!("DATABASE_RESOURCE_HOST must be a hostname or IP address");
+    }
+    Ok(())
+}
+
+fn validate_non_empty_token(key: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        bail!("{key} must be non-empty and contain no control characters");
+    }
+    Ok(())
+}
+
+fn validate_kubernetes_name(key: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 63
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || !value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        bail!("{key} must be a lowercase Kubernetes name");
+    }
+    Ok(())
+}
+
+fn validate_storage_size(value: &str) -> Result<()> {
+    let valid_suffix = ["Mi", "Gi", "Ti"].iter().any(|suffix| {
+        value.strip_suffix(suffix).is_some_and(|size| {
+            !size.is_empty() && size.chars().all(|character| character.is_ascii_digit())
+        })
+    });
+    if !valid_suffix {
+        bail!("DATABASE_CLUSTER_STORAGE_SIZE must look like 10Gi, 512Mi, or 1Ti");
     }
     Ok(())
 }

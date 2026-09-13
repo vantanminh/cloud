@@ -1,5 +1,8 @@
 pub mod auth;
+pub mod cluster;
+pub mod cluster_kubernetes;
 pub mod config;
+pub mod database;
 pub mod error;
 pub mod models;
 pub mod projects;
@@ -46,6 +49,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/resources",
             get(resources::list).post(resources::create),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/tables",
+            get(database::list_tables).post(database::create_table),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/table-data",
+            get(database::table_data),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/stats",
+            get(database::stats),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/config",
+            get(database::config),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/query",
+            post(database::execute_query),
         );
 
     Router::new()

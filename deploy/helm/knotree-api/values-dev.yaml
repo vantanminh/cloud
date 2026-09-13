@@ -15,4 +15,6 @@ env:
   cookieSecure: "false"
   authRequireEmailVerification: "false"
   databaseProvisioningEnabled: "true"
+  databaseClusterProvider: kubernetes
+  databaseClusterServiceType: ClusterIP
   rustLog: info,knotree_api=debug
