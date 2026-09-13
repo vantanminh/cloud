@@ -69,6 +69,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/deployments/:deploymentId/events` (SSE deployment progress/log stream)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/table-data`

@@ -34,15 +34,21 @@ import { useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
+import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
 import { ResourceWorkspace } from "@/components/resource-workspace"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { getProject } from "@/lib/projects"
-import { listAppServices, listPostgresResources } from "@/lib/resources"
+import {
+  appServiceDeploymentEventsUrl,
+  listAppServices,
+  listPostgresResources,
+} from "@/lib/resources"
 import type {
   AppService,
+  AppServiceDeployment,
   AppServiceStatus,
   PostgresResource,
   PostgresResourceStatus,
@@ -693,7 +699,13 @@ function TopologyDashboard({
 
       <main className="project-dashboard-main">
         {activeView === "logs" ? (
-          <LogsWorkspace project={project} environment={environment} />
+          <LogsWorkspace
+            project={project}
+            environment={environment}
+            appService={appService}
+            workspaceSlug={workspaceSlug}
+            projectSlug={projectSlug}
+          />
         ) : (
           <>
             <h1 className="sr-only">{project.name} infrastructure topology</h1>
@@ -1074,13 +1086,69 @@ function ProjectRailButton({
 function LogsWorkspace({
   project,
   environment,
+  appService,
+  workspaceSlug,
+  projectSlug,
 }: {
   project: Project
   environment: string
+  appService: AppService | null
+  workspaceSlug: string
+  projectSlug: string
 }) {
   const [resourceFilter, setResourceFilter] = useState("all")
   const [search, setSearch] = useState("")
   const [live, setLive] = useState(true)
+  const deployment = appService?.deployment
+  const [liveDeployment, setLiveDeployment] =
+    useState<AppServiceDeployment | null>(null)
+  const deploymentId = deployment?.id
+  const deploymentIsActive = deployment?.status === "provisioning"
+
+  useEffect(() => {
+    if (
+      !live ||
+      !deploymentId ||
+      !deploymentIsActive ||
+      typeof EventSource === "undefined"
+    ) {
+      return undefined
+    }
+
+    const source = new EventSource(
+      appServiceDeploymentEventsUrl(workspaceSlug, projectSlug, deploymentId),
+      { withCredentials: true }
+    )
+    source.addEventListener("deployment", (event) => {
+      try {
+        const nextDeployment = JSON.parse(
+          (event as MessageEvent<string>).data
+        ) as AppServiceDeployment
+        setLiveDeployment(nextDeployment)
+        if (nextDeployment.status !== "provisioning") {
+          source.close()
+        }
+      } catch {
+        // Keep the saved deployment snapshot when an event cannot be decoded.
+      }
+    })
+    source.onerror = () => source.close()
+    return () => source.close()
+  }, [deploymentId, deploymentIsActive, live, projectSlug, workspaceSlug])
+
+  const deploymentForLogs =
+    liveDeployment?.id === deployment?.id ? liveDeployment : deployment
+  const deploymentLogs = deploymentForLogs?.logs ?? []
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredDeploymentLogs = deploymentLogs.filter((line) =>
+    line.toLowerCase().includes(normalizedSearch)
+  )
+  const showAppServiceLogs =
+    resourceFilter === "all" || resourceFilter === "project"
+  const visibleDeployment =
+    deploymentForLogs && showAppServiceLogs
+      ? { ...deploymentForLogs, logs: filteredDeploymentLogs }
+      : null
 
   return (
     <section className="project-logs-shell" aria-label={`${project.name} logs`}>
@@ -1125,23 +1193,34 @@ function LogsWorkspace({
         </div>
       </div>
       <div className="project-logs-stream" role="log" aria-live="polite">
-        <div className="project-logs-empty">
-          <span className="project-logs-empty-icon" aria-hidden="true">
-            <FileTextIcon />
-          </span>
-          <h2>No logs yet</h2>
-          <p>
-            Logs will appear here once{" "}
-            {resourceFilter === "all" ? "a resource" : "this resource"} starts
-            handling traffic.
-          </p>
-          {(search || !live) && (
-            <span className="project-logs-filter-note">
-              {search ? `Filtering for “${search}” · ` : ""}
-              {live ? "Live tail enabled" : "Live tail paused"}
+        {visibleDeployment ? (
+          <div className="project-logs-deployment">
+            <AppServiceDeploymentLogs deployment={visibleDeployment} compact />
+            {!live && (
+              <span className="project-logs-filter-note">
+                Live tail paused; showing the last saved deployment snapshot.
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="project-logs-empty">
+            <span className="project-logs-empty-icon" aria-hidden="true">
+              <FileTextIcon />
             </span>
-          )}
-        </div>
+            <h2>No logs yet</h2>
+            <p>
+              Logs will appear here once{" "}
+              {resourceFilter === "all" ? "a resource" : "this resource"} starts
+              handling traffic.
+            </p>
+            {(search || !live) && (
+              <span className="project-logs-filter-note">
+                {search ? `Filtering for “${search}” · ` : ""}
+                {live ? "Live tail enabled" : "Live tail paused"}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </section>
   )
