@@ -1,11 +1,15 @@
 import type { ApiErrorPayload } from "@/lib/types"
 
-const API_BASE_URL = (
+export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ??
   (import.meta.env.PROD
     ? "https://cloudapi.knotree.com/api/v1"
     : "http://localhost:8080/api/v1")
 ).replace(/\/$/, "")
+
+export function apiUrl(path: string) {
+  return `${API_BASE_URL}${path}`
+}
 
 let csrfToken: string | null = null
 
@@ -41,7 +45,7 @@ export async function getCsrfToken(): Promise<string> {
     return csrfToken
   }
 
-  const response = await fetch(`${API_BASE_URL}/auth/csrf`, {
+  const response = await fetch(apiUrl("/auth/csrf"), {
     credentials: "include",
     headers: { Accept: "application/json" },
   })
@@ -72,7 +76,7 @@ export async function apiRequest<T>(
     headers.set("X-CSRF-Token", await getCsrfToken())
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(apiUrl(path), {
     ...options,
     body,
     credentials: "include",

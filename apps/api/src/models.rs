@@ -101,6 +101,16 @@ pub struct AppServiceDatabaseConnectionResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppServiceDeploymentResponse {
+    pub id: Uuid,
+    pub status: String,
+    pub current_step: String,
+    pub logs: Vec<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppServiceResponse {
     pub id: Uuid,
     pub name: String,
@@ -116,6 +126,8 @@ pub struct AppServiceResponse {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_connection: Option<AppServiceDatabaseConnectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<AppServiceDeploymentResponse>,
 }
 
 #[derive(Debug, Deserialize)]

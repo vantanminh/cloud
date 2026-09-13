@@ -199,7 +199,9 @@ function TopologyDashboard({
       subtitle: appService?.image ?? project.slug,
       type: "App service",
       volume: appService?.containerName ?? `${project.slug}-volume`,
-      status: appService ? resourceStatusLabel(appService.status) : "Needs setup",
+      status: appService
+        ? resourceStatusLabel(appService.status)
+        : "Needs setup",
       resource: appService ?? undefined,
       position: postgresResource
         ? { left: 42, top: 53 }
@@ -271,6 +273,33 @@ function TopologyDashboard({
       active = false
     }
   }, [projectSlug, workspaceSlug])
+
+  const appServiceIsProvisioning = appService?.status === "provisioning"
+
+  useEffect(() => {
+    if (!appServiceIsProvisioning) {
+      return undefined
+    }
+
+    let active = true
+    const refresh = () => {
+      void listAppServices(workspaceSlug, projectSlug)
+        .then((resources) => {
+          if (active && resources[0]) {
+            setAppService(resources[0])
+          }
+        })
+        .catch(() => {
+          // The deployment stream owns detailed errors; keep the last resource
+          // snapshot visible if a background refresh is temporarily unavailable.
+        })
+    }
+    const intervalId = window.setInterval(refresh, 2000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [appServiceIsProvisioning, projectSlug, workspaceSlug])
 
   const showToast = useCallback((message: string) => {
     if (toastTimer.current !== null) {
@@ -384,9 +413,12 @@ function TopologyDashboard({
   function handleAppServiceCreated(resource: AppService) {
     setAppService(resource)
     setResourceError(null)
-    setAppServiceDialogOpen(false)
     setSelectedNode("project")
-    showToast("App service is deployed")
+    showToast(
+      resource.status === "provisioning"
+        ? "App service deployment started"
+        : "App service is deployed"
+    )
   }
 
   async function handleCopyConnectionString(value: string) {
@@ -1150,7 +1182,9 @@ function connectorClassName(
   return cn("project-connector", highlighted && "is-highlighted")
 }
 
-function resourceStatusLabel(status: PostgresResourceStatus | AppServiceStatus) {
+function resourceStatusLabel(
+  status: PostgresResourceStatus | AppServiceStatus
+) {
   if (status === "ready") {
     return "Online"
   }

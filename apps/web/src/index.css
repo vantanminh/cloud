@@ -738,6 +738,92 @@
   gap: 0.5rem;
 }
 
+.app-service-deployment-logs {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.app-service-deployment-logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.app-service-deployment-logs-header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.app-service-deployment-logs-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-service-deployment-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 1.375rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.app-service-deployment-status.provisioning {
+  background: color-mix(in oklch, var(--primary) 14%, var(--background));
+  color: var(--primary);
+}
+
+.app-service-deployment-status.ready {
+  background: color-mix(in oklch, #15803d 14%, var(--background));
+  color: #15803d;
+}
+
+.app-service-deployment-status.error {
+  background: color-mix(in oklch, #b91c1c 12%, var(--background));
+  color: #b91c1c;
+}
+
+.app-service-deployment-live {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+
+.app-service-deployment-log {
+  max-height: 18rem;
+  min-height: 10rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: #111827;
+  color: #d1fae5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-service-deployment-logs.compact .app-service-deployment-log {
+  max-height: 15rem;
+  min-height: 7rem;
+}
+
+.app-service-deployment-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
 @media (max-width: 767px) {
   .github-integration-header-inner {
     align-items: flex-start;

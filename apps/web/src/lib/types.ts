@@ -36,6 +36,14 @@ export type PostgresResource = {
 
 export type AppServiceStatus = "provisioning" | "ready" | "error"
 
+export type AppServiceDeployment = {
+  id: string
+  status: AppServiceStatus
+  currentStep: string
+  logs: string[]
+  errorMessage?: string
+}
+
 export type AppServiceDatabaseConnection = {
   resourceId: string
   name: string
@@ -61,6 +69,7 @@ export type AppService = {
   containerName: string | null
   errorMessage?: string
   databaseConnection?: AppServiceDatabaseConnection
+  deployment?: AppServiceDeployment
 }
 
 export type GithubConnectionStatus = {

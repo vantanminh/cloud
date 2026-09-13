@@ -26,6 +26,7 @@ import {
 import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
+import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -298,7 +299,8 @@ function DeploymentsPane({
   onOpenLogs: () => void
 }) {
   const isReady =
-    node.resource?.status === "ready" || (node.id === "project" && !node.resource)
+    node.resource?.status === "ready" ||
+    (node.id === "project" && !node.resource)
   const status = isReady
     ? "ACTIVE"
     : (node.resource?.status.toUpperCase() ?? "NOT DEPLOYED")
@@ -346,7 +348,7 @@ function DeploymentsPane({
         <span>
           {postgresResource
             ? `${postgresResource.host} · ${postgresResource.port}`
-            : appService?.serviceUrl ?? "No container deployed"}
+            : (appService?.serviceUrl ?? "No container deployed")}
         </span>
       </div>
       <article
@@ -416,6 +418,9 @@ function DeploymentsPane({
           )}
         </div>
       </article>
+      {appService?.deployment && (
+        <AppServiceDeploymentLogs deployment={appService.deployment} compact />
+      )}
       {appService?.databaseConnection && (
         <article className="resource-workspace-private-link" role="status">
           <span
@@ -1673,7 +1678,11 @@ function MetricsPane({
             {lastUpdated ? ` · updated ${lastUpdated}` : ""}
           </span>
           <span className="resource-workspace-muted">
-            Up to {Math.round((metrics?.retentionSeconds ?? 30 * 24 * 60 * 60) / (24 * 60 * 60))} days
+            Up to{" "}
+            {Math.round(
+              (metrics?.retentionSeconds ?? 30 * 24 * 60 * 60) / (24 * 60 * 60)
+            )}{" "}
+            days
           </span>
           {refreshing && (
             <span className="resource-workspace-muted">Refreshing…</span>
@@ -1893,7 +1902,9 @@ function MetricCard({
   const chartHeight = 140
   const xForIndex = (index: number) =>
     chartLeft +
-    (points.length > 1 ? (index * chartWidth) / (points.length - 1) : chartWidth / 2)
+    (points.length > 1
+      ? (index * chartWidth) / (points.length - 1)
+      : chartWidth / 2)
   const yForValue = (value: number) =>
     chartBottom -
     (Math.max(0, Math.min(value, chartMax)) / chartMax) * chartHeight
@@ -1917,9 +1928,7 @@ function MetricCard({
       Math.min(1, (viewBoxX - chartLeft) / chartWidth)
     )
     const index =
-      points.length === 1
-        ? 0
-        : Math.round(progress * (points.length - 1))
+      points.length === 1 ? 0 : Math.round(progress * (points.length - 1))
     setHoveredIndex(index)
   }
 
@@ -1995,7 +2004,8 @@ function MetricCard({
                 />
               ) : null
             })}
-          {hoveredPoint && hoveredX !== null &&
+          {hoveredPoint &&
+            hoveredX !== null &&
             series.map((item) => {
               const value = item.getValue(hoveredPoint)
               return value === null || !Number.isFinite(value) ? null : (
@@ -2075,7 +2085,10 @@ function volumePercent(point: DatabaseMetricPoint) {
   ) {
     return null
   }
-  return Math.min(100, (point.volumeUsedBytes / point.volumeCapacityBytes) * 100)
+  return Math.min(
+    100,
+    (point.volumeUsedBytes / point.volumeCapacityBytes) * 100
+  )
 }
 
 function ConsolePane({
@@ -2103,7 +2116,11 @@ function ConsolePane({
         </div>
         <ResourceEmptyState
           icon={<ServerIcon aria-hidden="true" />}
-          title={isAppService ? "Container console is unavailable" : "Console is unavailable"}
+          title={
+            isAppService
+              ? "Container console is unavailable"
+              : "Console is unavailable"
+          }
           description={
             isAppService
               ? "App service containers are managed through Docker. Use the service URL to inspect the running application."

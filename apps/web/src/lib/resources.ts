@@ -1,4 +1,4 @@
-import { apiRequest } from "@/lib/api"
+import { apiRequest, apiUrl } from "@/lib/api"
 import type {
   DatabaseConfig,
   DatabaseMetrics,
@@ -58,6 +58,16 @@ function resourcesPath(workspaceSlug: string, projectSlug: string) {
 
 function appServicesPath(workspaceSlug: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/app-services`
+}
+
+export function appServiceDeploymentEventsUrl(
+  workspaceSlug: string,
+  projectSlug: string,
+  deploymentId: string
+) {
+  return apiUrl(
+    `${appServicesPath(workspaceSlug, projectSlug)}/deployments/${encodeURIComponent(deploymentId)}/events`
+  )
 }
 
 function databasePath(
@@ -123,12 +133,8 @@ export function getGithubConnectionStatus() {
 }
 
 export function getGithubAuthorizationUrl(returnTo?: string) {
-  const query = returnTo
-    ? `?returnTo=${encodeURIComponent(returnTo)}`
-    : ""
-  return apiRequest<{ authorizationUrl: string }>(
-    `/auth/github/start${query}`
-  )
+  const query = returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ""
+  return apiRequest<{ authorizationUrl: string }>(`/auth/github/start${query}`)
 }
 
 export function disconnectGithub() {

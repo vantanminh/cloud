@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    convert::Infallible,
     process::{Output, Stdio},
 };
 
@@ -8,9 +9,18 @@ use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response, Sse,
+        sse::{Event, KeepAlive},
+    },
 };
-use tokio::{io::AsyncWriteExt, process::Command};
+use futures_util::stream;
+use time::OffsetDateTime;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
+    process::Command,
+    time::{Duration, sleep},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -19,8 +29,8 @@ use crate::{
     error::AppError,
     github::{self, GithubDockerCredentials},
     models::{
-        AppServiceDatabaseConnectionResponse, AppServiceResponse, CreateAppServiceRequest,
-        UpdateAppServiceRequest,
+        AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceResponse,
+        CreateAppServiceRequest, UpdateAppServiceRequest,
     },
     projects, security,
     state::AppState,
@@ -49,6 +59,16 @@ struct AppServiceRow {
     status: String,
     error_message: Option<String>,
     database_resource_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AppServiceDeploymentRow {
+    id: Uuid,
+    status: String,
+    current_step: String,
+    logs: String,
+    error_message: Option<String>,
+    updated_at: OffsetDateTime,
 }
 
 const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id";
@@ -80,16 +100,109 @@ pub async fn list(
     .await?;
 
     let database = ready_database_resource(&state, project_id).await?;
-    service
-        .map(|service| {
-            app_service_response(
+    let response = match service {
+        Some(service) => {
+            let deployment = latest_deployment(&state.db, service.id).await?;
+            Some(app_service_response(
                 &service,
                 &state.config.app_service_public_host,
                 database.as_ref(),
-            )
-        })
-        .transpose()
-        .map(|service| Json(service.into_iter().collect()))
+                deployment,
+            )?)
+        }
+        None => None,
+    };
+    Ok(Json(response.into_iter().collect()))
+}
+
+pub async fn deployment_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, deployment_id)): Path<(String, String, Uuid)>,
+) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>>, AppError>
+{
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    let deployment_exists = sqlx::query_scalar::<_, Uuid>(
+        "SELECT d.id FROM app_service_deployments d JOIN project_app_services s ON s.id = d.app_service_id WHERE d.id = $1 AND s.project_id = $2",
+    )
+    .bind(deployment_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?;
+    if deployment_exists.is_none() {
+        return Err(AppError::NotFound {
+            code: "APP_SERVICE_DEPLOYMENT_NOT_FOUND",
+            message: "The app service deployment could not be found.",
+        });
+    }
+
+    let stream = stream::unfold(
+        (state.db.clone(), deployment_id, None, false),
+        |(db, deployment_id, last_updated, finished)| async move {
+            if finished {
+                return None;
+            }
+            loop {
+                let deployment = sqlx::query_as::<_, AppServiceDeploymentRow>(
+                    "SELECT id, status, current_step, logs, error_message, updated_at FROM app_service_deployments WHERE id = $1",
+                )
+                .bind(deployment_id)
+                .fetch_optional(&db)
+                .await;
+                match deployment {
+                    Ok(Some(deployment)) => {
+                        let changed =
+                            last_updated.map_or(true, |last| deployment.updated_at > last);
+                        if changed {
+                            let terminal = deployment.status != STATUS_PROVISIONING;
+                            let next_state =
+                                (db, deployment_id, Some(deployment.updated_at), terminal);
+                            let event = Event::default().event("deployment").data(
+                                serde_json::to_string(&deployment_response(&deployment))
+                                    .unwrap_or_else(|_| "{}".to_owned()),
+                            );
+                            return Some((Ok(event), next_state));
+                        }
+                    }
+                    Ok(None) => {
+                        let response = AppServiceDeploymentResponse {
+                            id: deployment_id,
+                            status: STATUS_ERROR.to_owned(),
+                            current_step: "Live log stream".to_owned(),
+                            logs: vec!["The deployment record is no longer available.".to_owned()],
+                            error_message: Some(
+                                "The deployment record is no longer available.".to_owned(),
+                            ),
+                        };
+                        let event = Event::default().event("deployment").data(
+                            serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_owned()),
+                        );
+                        return Some((Ok(event), (db, deployment_id, last_updated, true)));
+                    }
+                    Err(error) => {
+                        tracing::error!(deployment_id = %deployment_id, error = %error, "app service deployment event stream failed");
+                        let response = AppServiceDeploymentResponse {
+                            id: deployment_id,
+                            status: STATUS_ERROR.to_owned(),
+                            current_step: "Live log stream".to_owned(),
+                            logs: vec!["The live deployment log stream failed.".to_owned()],
+                            error_message: Some(
+                                "Reconnect to view the saved deployment logs.".to_owned(),
+                            ),
+                        };
+                        let event = Event::default().event("deployment").data(
+                            serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_owned()),
+                        );
+                        return Some((Ok(event), (db, deployment_id, last_updated, true)));
+                    }
+                }
+                sleep(Duration::from_millis(350)).await;
+            }
+        },
+    );
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 pub async fn create(
@@ -123,7 +236,7 @@ pub async fn create(
     let database = ready_database_resource(&state, project_id).await?;
     let database_resource_id = database.as_ref().map(|database| database.id);
 
-    let (service, is_new) = {
+    let (service, _is_new) = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(advisory_lock_key(project_id))
@@ -190,12 +303,14 @@ pub async fn create(
     };
 
     if service.status == STATUS_READY {
+        let deployment = latest_deployment(&state.db, service.id).await?;
         return Ok((
             StatusCode::OK,
             Json(app_service_response(
                 &service,
                 &state.config.app_service_public_host,
                 database.as_ref(),
+                deployment,
             )?),
         )
             .into_response());
@@ -223,63 +338,42 @@ pub async fn create(
         None
     };
 
-    let provisioned = provision_docker(
-        &state,
-        project_id,
-        &image,
-        app_port,
-        github_credentials.as_ref(),
-        database.as_ref(),
-        false,
+    let deployment_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO app_service_deployments (id, app_service_id, status, current_step, logs) VALUES ($1, $2, $3, $4, $5)",
     )
-    .await;
-    let provisioned = match provisioned {
-        Ok(provisioned) => provisioned,
-        Err(error) => {
-            tracing::error!(
-                project_id = %project_id,
-                service_id = %service.id,
-                error = %error,
-                "app service provisioning failed"
-            );
-            sqlx::query(
-                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
-            )
-            .bind(STATUS_ERROR)
-            .bind(PROVISIONING_ERROR_MESSAGE)
-            .bind(service.id)
-            .execute(&state.db)
-            .await?;
-            return Err(AppError::ServiceUnavailable {
-                code: "APP_SERVICE_PROVISIONING_FAILED",
-                message: PROVISIONING_ERROR_MESSAGE,
-            });
-        }
-    };
-
-    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
-    ))
-    .bind(STATUS_READY)
-    .bind(&provisioned.host)
-    .bind(i32::from(provisioned.port))
-    .bind(i32::from(provisioned.app_port))
-    .bind(&provisioned.container_name)
-    .bind(database_resource_id)
+    .bind(deployment_id)
     .bind(service.id)
-    .fetch_one(&state.db)
+    .bind(STATUS_PROVISIONING)
+    .bind("Queued")
+    .bind("Deployment queued.")
+    .execute(&state.db)
     .await?;
+
     let response = app_service_response(
         &service,
         &state.config.app_service_public_host,
         database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
     )?;
-    let status = if is_new {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(response)).into_response())
+    let deployment_state = state.clone();
+    tokio::spawn(async move {
+        run_app_service_deployment(
+            deployment_state,
+            deployment_id,
+            service.id,
+            project_id,
+            image,
+            app_port,
+            github_credentials,
+            database,
+            database_resource_id,
+            false,
+        )
+        .await;
+    });
+
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
 }
 
 pub async fn update(
@@ -341,6 +435,7 @@ pub async fn update(
                 &existing,
                 &state.config.app_service_public_host,
                 database.as_ref(),
+                latest_deployment(&state.db, existing.id).await?,
             )?));
         }
 
@@ -387,6 +482,7 @@ pub async fn update(
         github_credentials.as_ref(),
         database.as_ref(),
         true,
+        None,
     )
     .await;
     let provisioned = match provisioned {
@@ -429,6 +525,7 @@ pub async fn update(
         &service,
         &state.config.app_service_public_host,
         database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
     )?))
 }
 
@@ -509,6 +606,7 @@ pub async fn reconcile_project_database_connection(
         github_credentials.as_ref(),
         Some(&database),
         true,
+        None,
     )
     .await;
     match provisioned {
@@ -624,6 +722,7 @@ fn app_service_response(
     service: &AppServiceRow,
     public_host: &str,
     database: Option<&DatabaseResourceRow>,
+    deployment: Option<AppServiceDeploymentResponse>,
 ) -> Result<AppServiceResponse, AppError> {
     let app_port = u16::try_from(service.app_port)
         .map_err(|_| AppError::internal("invalid app service container port"))?;
@@ -658,7 +757,31 @@ fn app_service_response(
             .database_resource_id
             .and_then(|resource_id| database.filter(|database| database.id == resource_id))
             .map(|database| database_connection_response(service.project_id, database)),
+        deployment,
     })
+}
+
+async fn latest_deployment(
+    db: &sqlx::PgPool,
+    app_service_id: Uuid,
+) -> std::result::Result<Option<AppServiceDeploymentResponse>, sqlx::Error> {
+    sqlx::query_as::<_, AppServiceDeploymentRow>(
+        "SELECT id, status, current_step, logs, error_message, updated_at FROM app_service_deployments WHERE app_service_id = $1 ORDER BY started_at DESC LIMIT 1",
+    )
+    .bind(app_service_id)
+    .fetch_optional(db)
+    .await
+    .map(|deployment| deployment.map(|deployment| deployment_response(&deployment)))
+}
+
+fn deployment_response(deployment: &AppServiceDeploymentRow) -> AppServiceDeploymentResponse {
+    AppServiceDeploymentResponse {
+        id: deployment.id,
+        status: deployment.status.clone(),
+        current_step: deployment.current_step.clone(),
+        logs: deployment.logs.lines().map(str::to_owned).collect(),
+        error_message: deployment.error_message.clone(),
+    }
 }
 
 fn database_connection_response(
@@ -681,6 +804,141 @@ fn database_connection_response(
             "PGUSER".to_owned(),
             "PGPASSWORD".to_owned(),
         ],
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeploymentLogger {
+    db: sqlx::PgPool,
+    deployment_id: Uuid,
+}
+
+impl DeploymentLogger {
+    async fn append(&self, step: &str, message: &str) -> Result<()> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE app_service_deployments SET current_step = $1, logs = right(CASE WHEN logs = '' THEN $2 ELSE logs || E'\\n' || $2 END, 200000), updated_at = now() WHERE id = $3",
+        )
+        .bind(step)
+        .bind(message)
+        .bind(self.deployment_id)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+
+    async fn finish(&self, status: &str, step: &str, error_message: Option<&str>) -> Result<()> {
+        sqlx::query(
+            "UPDATE app_service_deployments SET status = $1, current_step = $2, error_message = $3, finished_at = now(), updated_at = now() WHERE id = $4",
+        )
+        .bind(status)
+        .bind(step)
+        .bind(error_message)
+        .bind(self.deployment_id)
+        .execute(&self.db)
+        .await?;
+        Ok(())
+    }
+}
+
+async fn log_deployment(
+    logger: Option<&DeploymentLogger>,
+    step: &str,
+    message: &str,
+) -> Result<()> {
+    if let Some(logger) = logger {
+        logger.append(step, message).await?;
+    }
+    Ok(())
+}
+
+async fn run_app_service_deployment(
+    state: AppState,
+    deployment_id: Uuid,
+    service_id: Uuid,
+    project_id: Uuid,
+    image: String,
+    app_port: u16,
+    github_credentials: Option<GithubDockerCredentials>,
+    database: Option<DatabaseResourceRow>,
+    database_resource_id: Option<Uuid>,
+    honor_requested_port: bool,
+) {
+    let logger = DeploymentLogger {
+        db: state.db.clone(),
+        deployment_id,
+    };
+    let result = async {
+        logger
+            .append("Start", "Deployment worker started.")
+            .await?;
+        let provisioned = provision_docker(
+            &state,
+            project_id,
+            &image,
+            app_port,
+            github_credentials.as_ref(),
+            database.as_ref(),
+            honor_requested_port,
+            Some(&logger),
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7",
+        )
+        .bind(STATUS_READY)
+        .bind(&provisioned.host)
+        .bind(i32::from(provisioned.port))
+        .bind(i32::from(provisioned.app_port))
+        .bind(&provisioned.container_name)
+        .bind(database_resource_id)
+        .bind(service_id)
+        .execute(&state.db)
+        .await?;
+        logger
+            .append(
+                "Complete",
+                &format!("Container {} is ready for traffic.", provisioned.container_name),
+            )
+            .await?;
+        logger.finish(STATUS_READY, "Complete", None).await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        tracing::error!(
+            project_id = %project_id,
+            service_id = %service_id,
+            error = %error,
+            "app service provisioning failed"
+        );
+        let detail = format!("Deployment failed: {error:#}");
+        for line in detail.lines() {
+            if let Err(log_error) = logger.append("Failed", line).await {
+                tracing::warn!(error = %log_error, "could not persist app service deployment error log");
+            }
+        }
+        if let Err(update_error) = sqlx::query(
+            "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+        )
+        .bind(STATUS_ERROR)
+        .bind(PROVISIONING_ERROR_MESSAGE)
+        .bind(service_id)
+        .execute(&state.db)
+        .await
+        {
+            tracing::error!(error = %update_error, "could not mark app service deployment as failed");
+        }
+        if let Err(finish_error) = logger
+            .finish(STATUS_ERROR, "Failed", Some(PROVISIONING_ERROR_MESSAGE))
+            .await
+        {
+            tracing::error!(error = %finish_error, "could not finish app service deployment record");
+        }
     }
 }
 
@@ -769,10 +1027,14 @@ async fn provision_docker(
     github_credentials: Option<&GithubDockerCredentials>,
     database: Option<&DatabaseResourceRow>,
     honor_requested_port: bool,
+    logger: Option<&DeploymentLogger>,
 ) -> Result<ProvisionedAppService> {
+    log_deployment(logger, "Prepare", "Preparing the Docker deployment.").await?;
     let database_environment =
         database_environment(&state.config.database_credentials_encryption_key, database)?;
+    log_deployment(logger, "Network", "Ensuring the project network exists.").await?;
     let network_name = cluster::ensure_project_network(&state.config, project_id).await?;
+    log_deployment(logger, "Network", "Project network is ready.").await?;
 
     if let Some(credentials) = github_credentials {
         if !image
@@ -781,23 +1043,37 @@ async fn provision_docker(
         {
             bail!("private app images must be hosted on ghcr.io");
         }
-        docker_login(state, credentials).await?;
-        let pull_result = docker_pull(state, image).await;
-        let _ = docker_logout(state).await;
+        docker_login(state, credentials, logger).await?;
+        let pull_result = docker_pull(state, image, logger).await;
+        let _ = docker_logout(state, logger).await;
         pull_result?;
     } else {
-        docker_pull(state, image).await?;
+        docker_pull(state, image, logger).await?;
     }
 
-    let exposed = docker_image_exposed_ports(state, image).await?;
+    let exposed = docker_image_exposed_ports(state, image, logger).await?;
     let app_port = if honor_requested_port {
         app_port
     } else {
         resolve_container_port(app_port, &exposed)
     };
+    log_deployment(
+        logger,
+        "Configure port",
+        &format!("Using container port {app_port} for the service."),
+    )
+    .await?;
+    if database.is_some() {
+        log_deployment(
+            logger,
+            "Configure environment",
+            "Attaching the private PostgreSQL environment variables.",
+        )
+        .await?;
+    }
 
     let container_name = format!("knotree-app-{}", project_id.simple());
-    remove_existing_container(state, &container_name).await?;
+    remove_existing_container(state, &container_name, logger).await?;
     let publish = format!("{}::{}", state.config.app_service_bind_address, app_port);
     let mut docker_args = vec![
         "run".to_owned(),
@@ -826,17 +1102,23 @@ async fn provision_docker(
         docker_args.push(variable);
     }
     docker_args.push(image.to_owned());
-    run_docker(state, docker_args).await?;
+    log_deployment(
+        logger,
+        "Start container",
+        "Starting the application container.",
+    )
+    .await?;
+    run_docker_for_deployment(state, logger, "Start container", docker_args).await?;
 
-    let running = docker_inspect_running(state, &container_name).await?;
+    let running = docker_inspect_running(state, &container_name, logger).await?;
     if running != "true" {
-        let _ = remove_existing_container(state, &container_name).await;
+        let _ = remove_existing_container(state, &container_name, logger).await;
         bail!("Docker app container exited during startup");
     }
-    let port = match docker_port(state, &container_name, app_port).await {
+    let port = match docker_port(state, &container_name, app_port, logger).await {
         Ok(port) => port,
         Err(error) => {
-            let _ = remove_existing_container(state, &container_name).await;
+            let _ = remove_existing_container(state, &container_name, logger).await;
             return Err(error);
         }
     };
@@ -849,10 +1131,17 @@ async fn provision_docker(
     })
 }
 
-async fn docker_image_exposed_ports(state: &AppState, image: &str) -> Result<Vec<u16>> {
-    let output = run_docker(
+async fn docker_image_exposed_ports(
+    state: &AppState,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<Vec<u16>> {
+    log_deployment(logger, "Inspect image", "Reading the image exposed ports.").await?;
+    let output = run_docker_for_deployment(
         state,
-        [
+        logger,
+        "Inspect image",
+        vec![
             "inspect".to_owned(),
             "--format={{range $port, $_ := .Config.ExposedPorts}}{{$port}} {{end}}".to_owned(),
             image.to_owned(),
@@ -862,13 +1151,51 @@ async fn docker_image_exposed_ports(state: &AppState, image: &str) -> Result<Vec
     Ok(parse_exposed_ports(&output))
 }
 
-async fn docker_pull(state: &AppState, image: &str) -> Result<()> {
-    run_docker(state, ["pull".to_owned(), image.to_owned()])
-        .await
-        .map(|_| ())
+async fn docker_pull(
+    state: &AppState,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<()> {
+    log_deployment(logger, "Pull image", &format!("Pulling image {image}.")).await?;
+    run_docker_for_deployment(
+        state,
+        logger,
+        "Pull image",
+        vec!["pull".to_owned(), image.to_owned()],
+    )
+    .await
+    .map(|_| ())
 }
 
-async fn docker_login(state: &AppState, credentials: &GithubDockerCredentials) -> Result<()> {
+async fn docker_login(
+    state: &AppState,
+    credentials: &GithubDockerCredentials,
+    logger: Option<&DeploymentLogger>,
+) -> Result<()> {
+    log_deployment(
+        logger,
+        "Authenticate registry",
+        &format!("Authenticating to ghcr.io as @{}.", credentials.login),
+    )
+    .await?;
+    if let Some(logger) = logger {
+        run_docker_streaming_with_input(
+            state,
+            logger,
+            "Authenticate registry",
+            vec![
+                "login".to_owned(),
+                "ghcr.io".to_owned(),
+                "--username".to_owned(),
+                credentials.login.clone(),
+                "--password-stdin".to_owned(),
+            ],
+            credentials.access_token.as_bytes(),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let output = docker_raw_with_input(
         state,
         [
@@ -887,20 +1214,38 @@ async fn docker_login(state: &AppState, credentials: &GithubDockerCredentials) -
     Ok(())
 }
 
-async fn docker_logout(state: &AppState) -> Result<()> {
-    run_docker(state, ["logout".to_owned(), "ghcr.io".to_owned()])
-        .await
-        .map(|_| ())
+async fn docker_logout(state: &AppState, logger: Option<&DeploymentLogger>) -> Result<()> {
+    log_deployment(logger, "Sign out registry", "Signing out of ghcr.io.").await?;
+    run_docker_for_deployment(
+        state,
+        logger,
+        "Sign out registry",
+        vec!["logout".to_owned(), "ghcr.io".to_owned()],
+    )
+    .await
+    .map(|_| ())
 }
 
-async fn remove_existing_container(state: &AppState, container_name: &str) -> Result<()> {
+async fn remove_existing_container(
+    state: &AppState,
+    container_name: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<()> {
+    log_deployment(
+        logger,
+        "Replace container",
+        "Checking for an existing container.",
+    )
+    .await?;
     let output = docker_raw(state, ["inspect".to_owned(), container_name.to_owned()]).await?;
     if !output.status.success() {
         return Ok(());
     }
-    run_docker(
+    run_docker_for_deployment(
         state,
-        [
+        logger,
+        "Replace container",
+        vec![
             "rm".to_owned(),
             "--force".to_owned(),
             container_name.to_owned(),
@@ -910,10 +1255,22 @@ async fn remove_existing_container(state: &AppState, container_name: &str) -> Re
     .map(|_| ())
 }
 
-async fn docker_inspect_running(state: &AppState, container_name: &str) -> Result<String> {
-    let output = run_docker(
+async fn docker_inspect_running(
+    state: &AppState,
+    container_name: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<String> {
+    log_deployment(
+        logger,
+        "Verify container",
+        "Checking that the container is running.",
+    )
+    .await?;
+    let output = run_docker_for_deployment(
         state,
-        [
+        logger,
+        "Verify container",
+        vec![
             "inspect".to_owned(),
             "--format={{.State.Running}}".to_owned(),
             container_name.to_owned(),
@@ -923,10 +1280,18 @@ async fn docker_inspect_running(state: &AppState, container_name: &str) -> Resul
     Ok(output.trim().to_owned())
 }
 
-async fn docker_port(state: &AppState, container_name: &str, app_port: u16) -> Result<u16> {
-    let output = run_docker(
+async fn docker_port(
+    state: &AppState,
+    container_name: &str,
+    app_port: u16,
+    logger: Option<&DeploymentLogger>,
+) -> Result<u16> {
+    log_deployment(logger, "Publish port", "Resolving the public service port.").await?;
+    let output = run_docker_for_deployment(
         state,
-        [
+        logger,
+        "Publish port",
+        vec![
             "port".to_owned(),
             container_name.to_owned(),
             format!("{app_port}/tcp"),
@@ -938,6 +1303,122 @@ async fn docker_port(state: &AppState, container_name: &str, app_port: u16) -> R
         .filter_map(|line| line.rsplit(':').next())
         .find_map(|value| value.trim().parse::<u16>().ok())
         .context("Docker did not publish an app service port")
+}
+
+async fn run_docker_for_deployment(
+    state: &AppState,
+    logger: Option<&DeploymentLogger>,
+    step: &str,
+    args: Vec<String>,
+) -> Result<String> {
+    match logger {
+        Some(logger) => run_docker_streaming(state, logger, step, args).await,
+        None => run_docker(state, args).await,
+    }
+}
+
+async fn read_docker_stream<R>(reader: R, logger: &DeploymentLogger, step: &str) -> Result<String>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    let mut output = String::new();
+    while let Some(line) = lines.next_line().await? {
+        if let Err(error) = logger.append(step, &line).await {
+            tracing::warn!(error = %error, "could not persist app service deployment log line");
+        }
+        output.push_str(&line);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+async fn run_docker_streaming(
+    state: &AppState,
+    logger: &DeploymentLogger,
+    step: &str,
+    args: Vec<String>,
+) -> Result<String> {
+    let mut child = Command::new(&state.config.database_cluster_docker_binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "could not execute app service Docker binary `{}`",
+                state.config.database_cluster_docker_binary
+            )
+        })?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Docker stdout was not captured")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Docker stderr was not captured")?;
+    let stdout_lines = read_docker_stream(stdout, logger, step);
+    let stderr_lines = read_docker_stream(stderr, logger, step);
+    let (stdout_result, stderr_result, status_result) =
+        tokio::join!(stdout_lines, stderr_lines, child.wait());
+    let stdout = stdout_result?;
+    let stderr = stderr_result?;
+    let status = status_result?;
+    if !status.success() {
+        let detail = stderr
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unknown Docker error");
+        bail!("Docker app service operation failed: {detail}");
+    }
+    Ok(stdout.trim().to_owned())
+}
+
+async fn run_docker_streaming_with_input(
+    state: &AppState,
+    logger: &DeploymentLogger,
+    step: &str,
+    args: Vec<String>,
+    input: &[u8],
+) -> Result<()> {
+    let mut child = Command::new(&state.config.database_cluster_docker_binary)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "could not execute app service Docker binary `{}`",
+                state.config.database_cluster_docker_binary
+            )
+        })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input).await?;
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .context("Docker stdout was not captured")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Docker stderr was not captured")?;
+    let stdout_lines = read_docker_stream(stdout, logger, step);
+    let stderr_lines = read_docker_stream(stderr, logger, step);
+    let (_, stderr_result, status_result) = tokio::join!(stdout_lines, stderr_lines, child.wait());
+    let stderr = stderr_result?;
+    let status = status_result?;
+    if !status.success() {
+        let detail = stderr
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unknown Docker registry error");
+        bail!("Docker registry login failed: {detail}");
+    }
+    Ok(())
 }
 
 async fn run_docker<I>(state: &AppState, args: I) -> Result<String>
@@ -1062,5 +1543,22 @@ mod tests {
         assert!(variables.contains(&"PGHOST=postgres".to_owned()));
         assert!(variables.contains(&"PGPORT=5432".to_owned()));
         assert!(variables.contains(&"PGPASSWORD=secret".to_owned()));
+    }
+
+    #[test]
+    fn exposes_saved_deployment_log_lines_in_order() {
+        let deployment = AppServiceDeploymentRow {
+            id: Uuid::new_v4(),
+            status: STATUS_PROVISIONING.to_owned(),
+            current_step: "Pull image".to_owned(),
+            logs: "Deployment queued.\nPulling image nginx:alpine.\nlayer complete".to_owned(),
+            error_message: None,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+
+        let response = deployment_response(&deployment);
+        assert_eq!(response.current_step, "Pull image");
+        assert_eq!(response.logs.len(), 3);
+        assert_eq!(response.logs[1], "Pulling image nginx:alpine.");
     }
 }
