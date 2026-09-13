@@ -1323,6 +1323,26 @@
   margin-top: 16px;
 }
 
+.resource-workspace-app-port {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--project-border);
+}
+
+.resource-workspace-app-port-field {
+  display: grid;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.resource-workspace-app-port-error {
+  margin: 0;
+  color: var(--project-danger);
+  font-size: 13px;
+}
+
 .resource-workspace-settings-nav {
   display: grid;
   align-content: start;

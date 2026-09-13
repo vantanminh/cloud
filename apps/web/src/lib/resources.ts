@@ -23,6 +23,10 @@ export type CreateAppServiceInput = {
   appPort: number
 }
 
+export type UpdateAppServiceInput = {
+  appPort: number
+}
+
 const inFlightDatabaseRequests = new Map<string, Promise<unknown>>()
 
 function deduplicateDatabaseRequest<T>(key: string, request: () => Promise<T>) {
@@ -99,6 +103,17 @@ export function createAppService(
 ) {
   return apiRequest<AppService>(appServicesPath(workspaceSlug, projectSlug), {
     method: "POST",
+    body: input,
+  })
+}
+
+export function updateAppService(
+  workspaceSlug: string,
+  projectSlug: string,
+  input: UpdateAppServiceInput
+) {
+  return apiRequest<AppService>(appServicesPath(workspaceSlug, projectSlug), {
+    method: "PATCH",
     body: input,
   })
 }

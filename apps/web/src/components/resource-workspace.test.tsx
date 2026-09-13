@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getDatabaseStats: vi.fn(),
   getDatabaseTableData: vi.fn(),
   listDatabaseTables: vi.fn(),
+  updateAppService: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -262,5 +263,135 @@ describe("ResourceWorkspace database pane", () => {
     await user.click(within(dialog).getByRole("tab", { name: "Variables" }))
     expect(await within(dialog).findByText("PGDATABASE")).toBeInTheDocument()
     expect(within(dialog).getByText("knotree_db_project")).toBeInTheDocument()
+  })
+})
+
+describe("ResourceWorkspace settings pane", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("redeploys the app when the container port is saved", async () => {
+    const user = userEvent.setup()
+    const onAppServiceUpdated = vi.fn()
+    const onToast = vi.fn()
+    mocks.updateAppService.mockResolvedValue({
+      id: "app-resource-id",
+      name: "App service",
+      resourceType: "app",
+      status: "ready",
+      image: "nginxdemos/hello",
+      imageSource: "public",
+      appPort: 80,
+      host: "localhost",
+      port: 59601,
+      serviceUrl: "http://localhost:59601",
+      containerName: "knotree-app-project",
+    })
+
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "project",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "nginxdemos/hello",
+            imageSource: "public",
+            appPort: 8080,
+            host: "localhost",
+            port: 51952,
+            serviceUrl: "http://localhost:51952",
+            containerName: "knotree-app-project",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+        onAppServiceUpdated={onAppServiceUpdated}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    const portInput = within(dialog).getByLabelText("Container port")
+    expect(portInput).toHaveValue(8080)
+    await user.clear(portInput)
+    await user.type(portInput, "80")
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save and redeploy" })
+    )
+
+    await waitFor(() => {
+      expect(mocks.updateAppService).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        { appPort: 80 }
+      )
+    })
+    expect(onAppServiceUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ appPort: 80, port: 59601 })
+    )
+    expect(onToast).toHaveBeenCalledWith(
+      "Container port updated. The app was redeployed."
+    )
+  })
+
+  it("keeps the current port when the value is invalid", async () => {
+    const user = userEvent.setup()
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "project",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "nginxdemos/hello",
+            imageSource: "public",
+            appPort: 80,
+            host: "localhost",
+            port: 59601,
+            serviceUrl: "http://localhost:59601",
+            containerName: "knotree-app-project",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={vi.fn()}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    const portInput = within(dialog).getByLabelText("Container port")
+    fireEvent.change(portInput, { target: { value: "0" } })
+    fireEvent.submit(portInput.closest("form")!)
+
+    expect(mocks.updateAppService).not.toHaveBeenCalled()
+    expect(
+      within(dialog).getByText("Use a container port between 1 and 65535.")
+    ).toBeInTheDocument()
   })
 })

@@ -18,7 +18,10 @@ use crate::{
     cluster::{self, PROVIDER_DOCKER},
     error::AppError,
     github::{self, GithubDockerCredentials},
-    models::{AppServiceDatabaseConnectionResponse, AppServiceResponse, CreateAppServiceRequest},
+    models::{
+        AppServiceDatabaseConnectionResponse, AppServiceResponse, CreateAppServiceRequest,
+        UpdateAppServiceRequest,
+    },
     projects, security,
     state::AppState,
 };
@@ -137,7 +140,10 @@ pub async fn create(
         let result = match existing {
             Some(service)
                 if service.status == STATUS_READY
-                    && service.database_resource_id == database_resource_id =>
+                    && service.database_resource_id == database_resource_id
+                    && service.image == image
+                    && service.image_source == image_source
+                    && service.app_port == i32::from(app_port) =>
             {
                 (service, false)
             }
@@ -224,6 +230,7 @@ pub async fn create(
         app_port,
         github_credentials.as_ref(),
         database.as_ref(),
+        false,
     )
     .await;
     let provisioned = match provisioned {
@@ -273,6 +280,156 @@ pub async fn create(
         StatusCode::OK
     };
     Ok((status, Json(response)).into_response())
+}
+
+pub async fn update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Json(input): Json<UpdateAppServiceRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+
+    if !state.config.app_service_provisioning_enabled {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_PROVISIONING_DISABLED",
+            message: "App service provisioning is not enabled for this environment.",
+        });
+    }
+    if state.config.database_cluster_provider != PROVIDER_DOCKER {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_DOCKER_REQUIRED",
+            message: "App services currently require the Docker provider.",
+        });
+    }
+
+    let app_port = validate_app_port(Some(input.app_port))?;
+    let database = ready_database_resource(&state, project_id).await?;
+    let database_resource_id = database.as_ref().map(|database| database.id);
+
+    let service = {
+        let mut transaction = state.db.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(project_id))
+            .execute(&mut *transaction)
+            .await?;
+
+        let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 FOR UPDATE"
+        ))
+        .bind(project_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(AppError::NotFound {
+            code: "APP_SERVICE_NOT_FOUND",
+            message: "Deploy an app service before changing its container port.",
+        })?;
+
+        if existing.status == STATUS_PROVISIONING {
+            return Err(AppError::Conflict {
+                code: "APP_SERVICE_PROVISIONING",
+                message: "This app service is already being deployed.",
+            });
+        }
+
+        if existing.status == STATUS_READY && existing.app_port == i32::from(app_port) {
+            transaction.commit().await?;
+            return Ok(Json(app_service_response(
+                &existing,
+                &state.config.app_service_public_host,
+                database.as_ref(),
+            )?));
+        }
+
+        let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "UPDATE project_app_services SET app_port = $1, host = NULL, port = NULL, status = $2, error_message = NULL, database_resource_id = $3, updated_at = now() WHERE id = $4 RETURNING {APP_SERVICE_COLUMNS}"
+        ))
+        .bind(i32::from(app_port))
+        .bind(STATUS_PROVISIONING)
+        .bind(database_resource_id)
+        .bind(existing.id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        service
+    };
+
+    let github_credentials = if service.image_source == IMAGE_SOURCE_GITHUB {
+        match github::docker_credentials(&state, user.id).await? {
+            Some(credentials) => Some(credentials),
+            None => {
+                sqlx::query(
+                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+                )
+                .bind(STATUS_ERROR)
+                .bind("Connect GitHub before deploying a private image.")
+                .bind(service.id)
+                .execute(&state.db)
+                .await?;
+                return Err(AppError::Conflict {
+                    code: "GITHUB_CONNECTION_REQUIRED",
+                    message: "Connect GitHub before deploying a private GitHub image.",
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let provisioned = provision_docker(
+        &state,
+        project_id,
+        &service.image,
+        app_port,
+        github_credentials.as_ref(),
+        database.as_ref(),
+        true,
+    )
+    .await;
+    let provisioned = match provisioned {
+        Ok(provisioned) => provisioned,
+        Err(error) => {
+            tracing::error!(
+                project_id = %project_id,
+                service_id = %service.id,
+                error = %error,
+                "app service port update failed"
+            );
+            sqlx::query(
+                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+            )
+            .bind(STATUS_ERROR)
+            .bind(PROVISIONING_ERROR_MESSAGE)
+            .bind(service.id)
+            .execute(&state.db)
+            .await?;
+            return Err(AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PROVISIONING_FAILED",
+                message: PROVISIONING_ERROR_MESSAGE,
+            });
+        }
+    };
+
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
+    ))
+    .bind(STATUS_READY)
+    .bind(&provisioned.host)
+    .bind(i32::from(provisioned.port))
+    .bind(i32::from(provisioned.app_port))
+    .bind(&provisioned.container_name)
+    .bind(database_resource_id)
+    .bind(service.id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        database.as_ref(),
+    )?))
 }
 
 /// Attach a previously deployed app to a newly-ready project database. This
@@ -351,6 +508,7 @@ pub async fn reconcile_project_database_connection(
         u16::try_from(service.app_port).context("invalid app service container port")?,
         github_credentials.as_ref(),
         Some(&database),
+        true,
     )
     .await;
     match provisioned {
@@ -610,6 +768,7 @@ async fn provision_docker(
     app_port: u16,
     github_credentials: Option<&GithubDockerCredentials>,
     database: Option<&DatabaseResourceRow>,
+    honor_requested_port: bool,
 ) -> Result<ProvisionedAppService> {
     let database_environment =
         database_environment(&state.config.database_credentials_encryption_key, database)?;
@@ -631,7 +790,11 @@ async fn provision_docker(
     }
 
     let exposed = docker_image_exposed_ports(state, image).await?;
-    let app_port = resolve_container_port(app_port, &exposed);
+    let app_port = if honor_requested_port {
+        app_port
+    } else {
+        resolve_container_port(app_port, &exposed)
+    };
 
     let container_name = format!("knotree-app-{}", project_id.simple());
     remove_existing_container(state, &container_name).await?;
@@ -868,6 +1031,7 @@ mod tests {
         assert_eq!(resolve_container_port(80, &[80, 443]), 80);
         assert_eq!(resolve_container_port(3000, &[]), 3000);
         assert_eq!(resolve_container_port(9000, &[8080, 8443]), 8080);
+        assert_eq!(resolve_container_port(3000, &[80]), 80);
     }
 
     #[test]

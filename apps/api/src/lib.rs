@@ -57,7 +57,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services",
-            get(app_services::list).post(app_services::create),
+            get(app_services::list)
+                .post(app_services::create)
+                .patch(app_services::update),
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/tables",

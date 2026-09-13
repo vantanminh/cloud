@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react"
 import {
   ActivityIcon,
   Clock3Icon,
@@ -20,6 +27,7 @@ import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { ApiError } from "@/lib/api"
 import {
@@ -30,6 +38,7 @@ import {
   getDatabaseStats,
   getDatabaseTableData,
   listDatabaseTables,
+  updateAppService,
 } from "@/lib/resources"
 import type {
   DatabaseConfig,
@@ -88,6 +97,7 @@ type ResourceWorkspaceProps = {
   copiedConnectionString: boolean
   onToast: (message: string) => void
   onOpenLogs: () => void
+  onAppServiceUpdated?: (resource: AppService) => void
 }
 
 const DEFAULT_QUERY = "SELECT 1"
@@ -114,6 +124,7 @@ export function ResourceWorkspace({
   copiedConnectionString,
   onToast,
   onOpenLogs,
+  onAppServiceUpdated,
 }: ResourceWorkspaceProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [activeTab, setActiveTab] =
@@ -265,7 +276,10 @@ export function ResourceWorkspace({
             <SettingsPane
               node={node}
               environment={environment}
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
               onToast={onToast}
+              onAppServiceUpdated={onAppServiceUpdated}
             />
           )}
         </div>
@@ -2115,16 +2129,119 @@ function ConsolePane({
   )
 }
 
+function AppPortEditor({
+  appService,
+  workspaceSlug,
+  projectSlug,
+  onToast,
+  onAppServiceUpdated,
+}: {
+  appService: AppService
+  workspaceSlug: string
+  projectSlug: string
+  onToast: (message: string) => void
+  onAppServiceUpdated?: (resource: AppService) => void
+}) {
+  const [appPort, setAppPort] = useState(String(appService.appPort))
+  const [error, setError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+  const parsedPort = Number(appPort)
+  const isValidPort =
+    Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
+  const isUnchanged = isValidPort && parsedPort === appService.appPort
+  const isBusy = appService.status === "provisioning" || isSaving
+
+  useEffect(() => {
+    setAppPort(String(appService.appPort))
+    setError(null)
+  }, [appService.id, appService.appPort])
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!isValidPort) {
+      setError("Use a container port between 1 and 65535.")
+      return
+    }
+    if (isUnchanged || isBusy) {
+      return
+    }
+    setIsSaving(true)
+    setError(null)
+    try {
+      const resource = await updateAppService(workspaceSlug, projectSlug, {
+        appPort: parsedPort,
+      })
+      onAppServiceUpdated?.(resource)
+      onToast("Container port updated. The app was redeployed.")
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(caught.fields.appPort ?? caught.message)
+      } else {
+        setError("The API is currently unavailable. Please try again.")
+      }
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <form className="resource-workspace-app-port" onSubmit={handleSubmit}>
+      <div className="resource-workspace-app-port-field">
+        <Label htmlFor="workspace-app-port">Container port</Label>
+        <Input
+          id="workspace-app-port"
+          name="appPort"
+          type="number"
+          min={1}
+          max={65535}
+          value={appPort}
+          disabled={isBusy}
+          aria-invalid={Boolean(error)}
+          aria-describedby="workspace-app-port-hint workspace-app-port-error"
+          onChange={(event) => {
+            setAppPort(event.target.value)
+            setError(null)
+          }}
+        />
+      </div>
+      <p id="workspace-app-port-hint" className="resource-workspace-muted">
+        The port the process listens on inside the container. Saving redeploys
+        the app and assigns a new public URL.
+      </p>
+      {error ? (
+        <p
+          id="workspace-app-port-error"
+          className="resource-workspace-app-port-error"
+          role="alert"
+        >
+          {error}
+        </p>
+      ) : null}
+      <Button type="submit" size="sm" disabled={isBusy || isUnchanged}>
+        {isSaving ? "Redeploying…" : "Save and redeploy"}
+      </Button>
+    </form>
+  )
+}
+
 function SettingsPane({
   node,
   environment,
+  workspaceSlug,
+  projectSlug,
   onToast,
+  onAppServiceUpdated,
 }: {
   node: ResourceWorkspaceNode
   environment: string
+  workspaceSlug: string
+  projectSlug: string
   onToast: (message: string) => void
+  onAppServiceUpdated?: (resource: AppService) => void
 }) {
   const [search, setSearch] = useState("")
+  const appService =
+    node.resource?.resourceType === "app" ? node.resource : undefined
   const sections = [
     {
       id: "source",
@@ -2138,7 +2255,9 @@ function SettingsPane({
     {
       id: "networking",
       title: "Networking",
-      description: "Connection endpoint and access scope for this resource.",
+      description: appService
+        ? "Image endpoint, container port, and the public URL Knotree assigned."
+        : "Connection endpoint and access scope for this resource.",
       rows:
         node.resource?.resourceType === "postgres"
           ? [
@@ -2147,12 +2266,11 @@ function SettingsPane({
               ["Database", node.resource.databaseName],
               ["Username", node.resource.username],
             ]
-          : node.resource?.resourceType === "app"
+          : appService
             ? [
-                ["Image", node.resource.image],
-                ["Container port", String(node.resource.appPort)],
-                ["Public URL", node.resource.serviceUrl ?? "Pending"],
-                ["Container", node.resource.containerName ?? "Pending"],
+                ["Image", appService.image],
+                ["Public URL", appService.serviceUrl ?? "Pending"],
+                ["Container", appService.containerName ?? "Pending"],
               ]
             : [["Access", "Project internal"]],
     },
@@ -2168,11 +2286,12 @@ function SettingsPane({
       ],
     },
   ]
-  const visibleSections = sections.filter((section) =>
-    `${section.title} ${section.description} ${section.rows.flat().join(" ")}`
-      .toLowerCase()
-      .includes(search.toLowerCase())
-  )
+  const visibleSections = sections.filter((section) => {
+    const haystack = `${section.title} ${section.description} ${section.rows.flat().join(" ")}${
+      section.id === "networking" && appService ? " container port" : ""
+    }`
+    return haystack.toLowerCase().includes(search.toLowerCase())
+  })
 
   return (
     <section
@@ -2210,16 +2329,26 @@ function SettingsPane({
                       </div>
                     ))}
                   </dl>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      onToast(`${section.title} is read-only in development`)
-                    }
-                  >
-                    Manage
-                  </Button>
+                  {section.id === "networking" && appService ? (
+                    <AppPortEditor
+                      appService={appService}
+                      workspaceSlug={workspaceSlug}
+                      projectSlug={projectSlug}
+                      onToast={onToast}
+                      onAppServiceUpdated={onAppServiceUpdated}
+                    />
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        onToast(`${section.title} is read-only in development`)
+                      }
+                    >
+                      Manage
+                    </Button>
+                  )}
                 </div>
               </article>
             ))

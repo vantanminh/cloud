@@ -127,6 +127,12 @@ pub struct CreateAppServiceRequest {
     pub app_port: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppServiceRequest {
+    pub app_port: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CsrfResponse {
     #[serde(rename = "csrfToken")]

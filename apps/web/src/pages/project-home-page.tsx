@@ -975,6 +975,10 @@ function TopologyDashboard({
           copiedConnectionString={copiedConnectionString}
           onToast={showToast}
           onOpenLogs={openResourceLogs}
+          onAppServiceUpdated={(resource) => {
+            setAppService(resource)
+            setResourceError(null)
+          }}
         />
       )}
 
