@@ -94,6 +94,17 @@ The local Docker implementation is enabled by default in development. The
 production Kubernetes deployment keeps it disabled until the API has an
 available Docker runtime and a public routing layer for app containers.
 
+Docker App services and their project's PostgreSQL resource automatically join
+the same project-scoped private bridge network
+(`knotree-net-<project-id>`). The database is reachable from the App service
+at `postgres:5432`, without using the random host port. When Postgres is
+ready, the App service receives `DATABASE_URL` plus `PGHOST`,
+`PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` inside
+the container. The API response exposes only the assigned resource metadata
+and variable names, never secret values. Creating the resources in either
+order is supported; creating Postgres after an App service triggers an
+automatic app reconciliation.
+
 Development uses the local Docker daemon and creates one container plus one
 named volume per project (`knotree-pg-<project-id>` and
 `knotree-pg-data-<project-id>`). Production uses Kubernetes and creates one

@@ -200,4 +200,67 @@ describe("ResourceWorkspace database pane", () => {
       )
     })
   })
+
+  it("shows the automatically assigned private database connection", async () => {
+    const user = userEvent.setup()
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "project",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "node:22-alpine",
+            imageSource: "public",
+            appPort: 3000,
+            host: "localhost",
+            port: 49152,
+            serviceUrl: "http://localhost:49152",
+            containerName: "knotree-app-project",
+            databaseConnection: {
+              resourceId: "resource-id",
+              name: "Postgres",
+              databaseName: "knotree_db_project",
+              username: "knotree_role_project",
+              networkName: "knotree-net-project",
+              host: "postgres",
+              port: 5432,
+              environmentVariables: [
+                "DATABASE_URL",
+                "PGHOST",
+                "PGPORT",
+                "PGDATABASE",
+                "PGUSER",
+                "PGPASSWORD",
+              ],
+            },
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={vi.fn()}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    expect(
+      within(dialog).getByText("Postgres connected automatically")
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText("postgres:5432")).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole("tab", { name: "Variables" }))
+    expect(await within(dialog).findByText("PGDATABASE")).toBeInTheDocument()
+    expect(within(dialog).getByText("knotree_db_project")).toBeInTheDocument()
+  })
 })

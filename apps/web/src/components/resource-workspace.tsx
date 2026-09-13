@@ -402,6 +402,33 @@ function DeploymentsPane({
           )}
         </div>
       </article>
+      {appService?.databaseConnection && (
+        <article className="resource-workspace-private-link" role="status">
+          <span
+            className="resource-workspace-private-link-icon"
+            aria-hidden="true"
+          >
+            <DatabaseIcon />
+          </span>
+          <div>
+            <strong>Postgres connected automatically</strong>
+            <span>
+              {appService.databaseConnection.name} via{" "}
+              <code>
+                {appService.databaseConnection.host}:
+                {appService.databaseConnection.port}
+              </code>
+            </span>
+            <small>
+              {appService.databaseConnection.environmentVariables.length}{" "}
+              private variables assigned on the project network
+            </small>
+          </div>
+          <span className="resource-workspace-private-link-status">
+            CONNECTED
+          </span>
+        </article>
+      )}
       <div className="resource-workspace-history-head">
         <span>HISTORY</span>
         <button
@@ -1357,6 +1384,10 @@ function VariablesPane({
   onToast: (message: string) => void
 }) {
   const [search, setSearch] = useState("")
+  const appDatabaseConnection =
+    node.resource?.resourceType === "app"
+      ? node.resource.databaseConnection
+      : undefined
   const variables =
     node.resource?.resourceType === "postgres"
       ? [
@@ -1372,6 +1403,24 @@ function VariablesPane({
             ["APP_IMAGE_SOURCE", node.resource.imageSource],
             ["APP_PORT", String(node.resource.appPort)],
             ["APP_SERVICE_URL", node.resource.serviceUrl ?? "pending"],
+            ...(appDatabaseConnection
+              ? [
+                  [
+                    "DATABASE_URL",
+                    "postgres://••••••••@" +
+                      appDatabaseConnection.host +
+                      ":" +
+                      appDatabaseConnection.port +
+                      "/" +
+                      appDatabaseConnection.databaseName,
+                  ],
+                  ["PGHOST", appDatabaseConnection.host],
+                  ["PGPORT", String(appDatabaseConnection.port)],
+                  ["PGDATABASE", appDatabaseConnection.databaseName],
+                  ["PGUSER", appDatabaseConnection.username],
+                  ["PGPASSWORD", "••••••••"],
+                ]
+              : []),
           ]
         : [["APP_ENV", "development"]]
   const filteredVariables = variables.filter(([name]) =>

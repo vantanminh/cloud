@@ -39,6 +39,9 @@ session should feel quick, calm, and trustworthy:
   transient feedback.
 - Docker App service deployment from a pasted image reference. Public images
   deploy without login; private `ghcr.io` images require a GitHub connection.
+- Automatic App service-to-Postgres private-network assignment. A ready
+  database is reachable from the app at `postgres:5432` and the Variables
+  section shows the non-secret assignment metadata.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
   Metrics, Console, and Settings. The Database section reads and mutates the
   selected project's dedicated PostgreSQL instance through typed API calls;
@@ -61,6 +64,13 @@ dedicated PostgreSQL instance. The App service card is backed by the API and
 shows the Docker image, source, container status, and returned service URL.
 Redis and unsupported operational sections remain explicitly unavailable until
 their APIs and product contracts exist.
+
+When both Docker resources exist in a project, the App service deployment card
+shows a connected state for the project-private Postgres link. The Variables
+section lists `DATABASE_URL` and the `PG*` assignments with password
+values masked. If the App service was created first, the API reconciles it when
+Postgres becomes ready; the UI does not ask the user to paste or copy a
+database password into the app configuration.
 
 ## 2. Experience principles
 
@@ -211,7 +221,8 @@ Click Sign out
   → service name + Docker image + public/private image source + container port
   → GitHub connection when the source is private
   → POST /workspaces/:slug/projects/:projectSlug/app-services
-  → Docker pull + isolated container + random published port
+  → Docker pull + isolated container + project-private network
+  → automatic DATABASE_URL/PG* assignment when Postgres is ready
   → ready App service card + returned service URL
 ```
 
@@ -400,6 +411,12 @@ theme uses the same layout and replaces the page-local surface tokens.
   image reference, image access mode, and container port. Public mode pulls
   without credentials. Private mode is restricted to `ghcr.io` and exposes a
   GitHub OAuth connection action; the browser never receives the GitHub token.
+- A ready Postgres resource is linked automatically. The App service
+  Deployments tab shows the internal `postgres:5432` endpoint and the number
+  of assigned variables; the Variables tab shows `DATABASE_URL` and
+  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, with secrets masked.
+  The same behavior is reconciled when the App service was created before the
+  database.
 - The project node remains the application entry point. Once deployed it
   displays the real image/status and opens a service workspace with deployment
   metadata, URL, variables, and settings. A failed deployment is shown as an

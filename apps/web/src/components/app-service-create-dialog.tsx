@@ -159,7 +159,8 @@ export function AppServiceCreateDialog({
               </Dialog.Title>
               <Dialog.Description className="project-dialog-description">
                 Paste a Docker image and Knotree will run it as an isolated
-                service for this project.
+                service for this project. A ready Postgres resource is connected
+                automatically over the project&apos;s private network.
               </Dialog.Description>
             </div>
             <button
