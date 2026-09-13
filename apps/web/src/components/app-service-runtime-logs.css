@@ -1,0 +1,137 @@
+.app-service-runtime-logs {
+  display: grid;
+  min-height: 100%;
+  gap: 14px;
+}
+
+.app-service-runtime-logs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.app-service-runtime-logs-header > div:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-service-runtime-logs-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--project-fg, var(--foreground));
+  font-size: 13px;
+}
+
+.app-service-runtime-logs-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-service-runtime-status {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(
+    in oklch,
+    var(--project-muted, var(--muted-foreground)) 14%,
+    var(--project-bg, var(--background))
+  );
+  color: var(--project-muted, var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.app-service-runtime-status.running {
+  background: color-mix(
+    in oklch,
+    var(--project-ok, #15803d) 15%,
+    var(--project-bg, var(--background))
+  );
+  color: var(--project-ok, #15803d);
+}
+
+.app-service-runtime-status.loading {
+  color: var(--project-accent, var(--primary));
+}
+
+.app-service-runtime-log {
+  min-height: 320px;
+  max-height: 34rem;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--project-border, var(--border));
+  border-radius: 10px;
+  background: #111827;
+  color: #d1fae5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-service-runtime-logs.compact .app-service-runtime-log {
+  min-height: 180px;
+  max-height: 22rem;
+}
+
+.app-service-runtime-logs-state {
+  display: grid;
+  min-height: 320px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 24px;
+  border: 1px dashed var(--project-border, var(--border));
+  border-radius: 10px;
+  color: var(--project-muted, var(--muted-foreground));
+  text-align: center;
+}
+
+.app-service-runtime-logs-state strong {
+  color: var(--project-fg, var(--foreground));
+  font-size: 14px;
+}
+
+.app-service-runtime-logs-state span {
+  max-width: 36rem;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app-service-runtime-logs-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.app-service-runtime-logs .is-spinning {
+  animation: app-service-runtime-log-spin 0.9s linear infinite;
+}
+
+@keyframes app-service-runtime-log-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 767px) {
+  .app-service-runtime-logs-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .app-service-runtime-logs-controls {
+    align-self: flex-end;
+  }
+}

@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -11,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getDatabaseMetrics: vi.fn(),
   getDatabaseStats: vi.fn(),
   getDatabaseTableData: vi.fn(),
+  getAppServiceLogs: vi.fn(),
   listDatabaseTables: vi.fn(),
   updateAppService: vi.fn(),
 }))
@@ -61,6 +68,17 @@ describe("ResourceWorkspace database pane", () => {
           diskWriteBytes: 56_600_000,
         },
       ],
+    })
+    mocks.getAppServiceLogs.mockResolvedValue({
+      appServiceId: "app-resource-id",
+      containerName: "knotree-app-project",
+      status: "ready",
+      running: true,
+      lines: [
+        "2026-09-13T12:00:00Z listening on 0.0.0.0:3000",
+        "2026-09-13T12:00:01Z GET / 200",
+      ],
+      message: null,
     })
   })
 
@@ -263,6 +281,57 @@ describe("ResourceWorkspace database pane", () => {
     await user.click(within(dialog).getByRole("tab", { name: "Variables" }))
     expect(await within(dialog).findByText("PGDATABASE")).toBeInTheDocument()
     expect(within(dialog).getByText("knotree_db_project")).toBeInTheDocument()
+  })
+
+  it("loads runtime logs for the selected app service", async () => {
+    const user = userEvent.setup()
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "project",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "node:22-alpine",
+            imageSource: "public",
+            appPort: 3000,
+            host: "localhost",
+            port: 49152,
+            serviceUrl: "http://localhost:49152",
+            containerName: "knotree-app-project",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={vi.fn()}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Console" }))
+
+    expect(await within(dialog).findByRole("log")).toHaveTextContent(
+      "2026-09-13T12:00:01Z GET / 200"
+    )
+    expect(mocks.getAppServiceLogs).toHaveBeenCalledWith(
+      "mimo-i-tech",
+      "test-2",
+      "app-resource-id"
+    )
+    expect(
+      within(dialog).getByRole("button", { name: "Refresh app service logs" })
+    ).toBeInTheDocument()
   })
 })
 

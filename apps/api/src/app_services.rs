@@ -29,8 +29,8 @@ use crate::{
     error::AppError,
     github::{self, GithubDockerCredentials},
     models::{
-        AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceResponse,
-        CreateAppServiceRequest, UpdateAppServiceRequest,
+        AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
+        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceRequest,
     },
     projects, security,
     state::AppState,
@@ -71,7 +71,14 @@ struct AppServiceDeploymentRow {
     updated_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AppServiceLogsTarget {
+    container_name: Option<String>,
+    status: String,
+}
+
 const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id";
+const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct DatabaseResourceRow {
@@ -203,6 +210,96 @@ pub async fn deployment_events(
         },
     );
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+pub async fn logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+) -> Result<Json<AppServiceLogsResponse>, AppError> {
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    let target = sqlx::query_as::<_, AppServiceLogsTarget>(
+        "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
+    )
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+
+    let Some(container_name) = target.container_name.clone() else {
+        return Ok(Json(AppServiceLogsResponse {
+            app_service_id,
+            container_name: None,
+            status: target.status,
+            running: false,
+            lines: Vec::new(),
+            message: Some("The app service container has not been deployed yet.".to_owned()),
+        }));
+    };
+
+    if target.status != STATUS_READY {
+        return Ok(Json(AppServiceLogsResponse {
+            app_service_id,
+            container_name: Some(container_name),
+            status: target.status,
+            running: false,
+            lines: Vec::new(),
+            message: Some("Runtime logs are available after the app service is ready.".to_owned()),
+        }));
+    }
+
+    let running = docker_container_running(&state, &container_name).await?;
+    let output = docker_raw(
+        &state,
+        [
+            "logs".to_owned(),
+            "--timestamps".to_owned(),
+            "--tail".to_owned(),
+            APP_SERVICE_LOG_TAIL_LINES.to_owned(),
+            container_name.clone(),
+        ],
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(
+            app_service_id = %app_service_id,
+            container_name = %container_name,
+            error = %error,
+            "could not read app service container logs"
+        );
+        AppError::ServiceUnavailable {
+            code: "APP_SERVICE_LOGS_UNAVAILABLE",
+            message: "The app service logs are temporarily unavailable.",
+        }
+    })?;
+
+    if !output.status.success() {
+        tracing::warn!(
+            app_service_id = %app_service_id,
+            container_name = %container_name,
+            error = %String::from_utf8_lossy(&output.stderr),
+            "Docker could not read app service container logs"
+        );
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_LOGS_UNAVAILABLE",
+            message: "The app service logs are temporarily unavailable.",
+        });
+    }
+
+    Ok(Json(AppServiceLogsResponse {
+        app_service_id,
+        container_name: Some(container_name),
+        status: target.status,
+        running,
+        lines: docker_log_lines(&output),
+        message: None,
+    }))
 }
 
 pub async fn create(
@@ -1432,6 +1529,49 @@ where
         bail!("Docker app service operation failed: {detail}");
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+async fn docker_container_running(
+    state: &AppState,
+    container_name: &str,
+) -> std::result::Result<bool, AppError> {
+    let output = docker_raw(
+        state,
+        [
+            "inspect".to_owned(),
+            "--format={{.State.Running}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(
+            container_name,
+            error = %error,
+            "could not inspect app service container"
+        );
+        AppError::ServiceUnavailable {
+            code: "APP_SERVICE_LOGS_UNAVAILABLE",
+            message: "The app service logs are temporarily unavailable.",
+        }
+    })?;
+
+    Ok(output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .eq_ignore_ascii_case("true"))
+}
+
+fn docker_log_lines(output: &Output) -> Vec<String> {
+    let mut contents = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(&stderr);
+    }
+    contents.lines().map(str::to_owned).collect()
 }
 
 async fn docker_raw<I>(state: &AppState, args: I) -> Result<Output>

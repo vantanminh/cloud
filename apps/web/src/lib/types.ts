@@ -44,6 +44,15 @@ export type AppServiceDeployment = {
   errorMessage?: string
 }
 
+export type AppServiceLogs = {
+  appServiceId: string
+  containerName: string | null
+  status: AppServiceStatus
+  running: boolean
+  lines: string[]
+  message: string | null
+}
+
 export type AppServiceDatabaseConnection = {
   resourceId: string
   name: string

@@ -8,6 +8,7 @@ import type {
   DatabaseTable,
   DatabaseTableData,
   AppService,
+  AppServiceLogs,
   GithubConnectionStatus,
   PostgresResource,
 } from "@/lib/types"
@@ -67,6 +68,16 @@ export function appServiceDeploymentEventsUrl(
 ) {
   return apiUrl(
     `${appServicesPath(workspaceSlug, projectSlug)}/deployments/${encodeURIComponent(deploymentId)}/events`
+  )
+}
+
+export function getAppServiceLogs(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string
+) {
+  return apiRequest<AppServiceLogs>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/logs`
   )
 }
 

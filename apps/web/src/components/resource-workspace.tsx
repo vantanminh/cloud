@@ -27,6 +27,7 @@ import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
+import { AppServiceRuntimeLogs } from "@/components/app-service-runtime-logs"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -245,6 +246,7 @@ export function ResourceWorkspace({
               node={node}
               onToast={onToast}
               onOpenLogs={onOpenLogs}
+              onOpenRuntimeLogs={() => setActiveTab("console")}
             />
           )}
           {activeTab === "database" && (
@@ -271,7 +273,12 @@ export function ResourceWorkspace({
             />
           )}
           {activeTab === "console" && (
-            <ConsolePane node={node} onToast={onToast} />
+            <ConsolePane
+              node={node}
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
+              onToast={onToast}
+            />
           )}
           {activeTab === "settings" && (
             <SettingsPane
@@ -293,10 +300,12 @@ function DeploymentsPane({
   node,
   onToast,
   onOpenLogs,
+  onOpenRuntimeLogs,
 }: {
   node: ResourceWorkspaceNode
   onToast: (message: string) => void
   onOpenLogs: () => void
+  onOpenRuntimeLogs: () => void
 }) {
   const isReady =
     node.resource?.status === "ready" ||
@@ -390,10 +399,10 @@ function DeploymentsPane({
             type="button"
             variant="outline"
             size="sm"
-            onClick={onOpenLogs}
+            onClick={appService ? onOpenRuntimeLogs : onOpenLogs}
           >
             <FileTextIcon data-icon="inline-start" />
-            View logs
+            {appService ? "View runtime logs" : "View logs"}
           </Button>
         </div>
         <div className="resource-workspace-deploy-bottom">
@@ -2093,12 +2102,17 @@ function volumePercent(point: DatabaseMetricPoint) {
 
 function ConsolePane({
   node,
+  workspaceSlug,
+  projectSlug,
   onToast,
 }: {
   node: ResourceWorkspaceNode
+  workspaceSlug: string
+  projectSlug: string
   onToast: (message: string) => void
 }) {
-  const isAppService = node.resource?.resourceType === "app"
+  const appService =
+    node.resource?.resourceType === "app" ? node.resource : null
   return (
     <section
       className="resource-workspace-pane"
@@ -2110,37 +2124,35 @@ function ConsolePane({
         <div className="resource-workspace-console-meta">
           <span>
             <TerminalIcon aria-hidden="true" />
-            Project console
+            {appService ? "Container logs" : "Project console"}
           </span>
-          <span className="resource-workspace-muted">Not connected</span>
+          <span className="resource-workspace-muted">
+            {appService ? "Docker runtime" : "Not connected"}
+          </span>
         </div>
-        <ResourceEmptyState
-          icon={<ServerIcon aria-hidden="true" />}
-          title={
-            isAppService
-              ? "Container console is unavailable"
-              : "Console is unavailable"
-          }
-          description={
-            isAppService
-              ? "App service containers are managed through Docker. Use the service URL to inspect the running application."
-              : "This managed PostgreSQL resource exposes connection credentials, not a shell."
-          }
-        />
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() =>
-            onToast(
-              isAppService
-                ? "Container logs opened"
-                : "Connection details opened"
-            )
-          }
-        >
-          <CopyIcon data-icon="inline-start" />
-          {isAppService ? "View container details" : "View connection details"}
-        </Button>
+        {appService ? (
+          <AppServiceRuntimeLogs
+            appService={appService}
+            workspaceSlug={workspaceSlug}
+            projectSlug={projectSlug}
+          />
+        ) : (
+          <>
+            <ResourceEmptyState
+              icon={<ServerIcon aria-hidden="true" />}
+              title="Console is unavailable"
+              description="This managed PostgreSQL resource exposes connection credentials, not a shell."
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onToast("Connection details opened")}
+            >
+              <CopyIcon data-icon="inline-start" />
+              View connection details
+            </Button>
+          </>
+        )}
       </div>
     </section>
   )

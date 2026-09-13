@@ -111,6 +111,17 @@ pub struct AppServiceDeploymentResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppServiceLogsResponse {
+    pub app_service_id: Uuid,
+    pub container_name: Option<String>,
+    pub status: String,
+    pub running: bool,
+    pub lines: Vec<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppServiceResponse {
     pub id: Uuid,
     pub name: String,

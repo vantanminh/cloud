@@ -61,6 +61,10 @@ pub fn router(state: AppState) -> Router {
             get(app_services::deployment_events),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/logs",
+            get(app_services::logs),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services",
             get(app_services::list)
                 .post(app_services::create)
