@@ -228,7 +228,7 @@ impl Config {
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))
             .allow_credentials(true)
-            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
             .allow_headers([
                 header::ACCEPT,
                 header::CONTENT_TYPE,

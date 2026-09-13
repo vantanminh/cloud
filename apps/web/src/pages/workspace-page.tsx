@@ -5,6 +5,7 @@ import {
   FolderKanbanIcon,
   LogOutIcon,
   PlusIcon,
+  Settings2Icon,
 } from "lucide-react"
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom"
 
@@ -258,6 +259,14 @@ export function WorkspacePage() {
             >
               <PlusIcon data-icon="inline-start" />
               New project
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate("/settings/integrations")}
+            >
+              <Settings2Icon data-icon="inline-start" />
+              Settings
             </Button>
             <Button variant="ghost" size="sm" onClick={handleSignOut}>
               <LogOutIcon data-icon="inline-start" />

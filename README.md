@@ -62,6 +62,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `GET /auth/github/status`
 - `GET /auth/github/start?returnTo=/workspace/...`
 - `GET /auth/github/callback`
+- `POST /auth/github/disconnect`
 - `POST /workspaces`
 - `GET /workspaces/:slug`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources`
@@ -87,9 +88,11 @@ metadata and encrypted credentials; it is not used as a project database.
 The App service endpoint provisions one Docker container per project from the
 submitted image reference. Public images are pulled without credentials. Private
 images are currently restricted to `ghcr.io` and require the signed-in user to
-connect GitHub; the API stores the encrypted OAuth package token only long
-enough to authenticate the Docker pull and then logs out of the registry. The
-response includes the random published port and `serviceUrl`.
+connect GitHub from the account-level `/settings/integrations` page (or from the
+deploy dialog). Each Knotree user has an independent GitHub connection; the API
+stores that user's encrypted OAuth package token only long enough to authenticate
+the Docker pull and then logs out of the registry. The response includes the
+random published port and `serviceUrl`.
 The local Docker implementation is enabled by default in development. The
 production Kubernetes deployment keeps it disabled until the API has an
 available Docker runtime and a public routing layer for app containers.
@@ -175,6 +178,8 @@ runs SQLx migrations as a pre-install/pre-upgrade hook, and exposes
 kubectl create secret generic knotree-api-secrets `
   --from-literal=DATABASE_URL='postgres://user:password@postgres.example/knotree_cloud' `
   --from-literal=DATABASE_CREDENTIALS_ENCRYPTION_KEY='replace-with-a-stable-32-byte-base64url-key' `
+  --from-literal=GITHUB_CLIENT_ID='your-github-oauth-client-id' `
+  --from-literal=GITHUB_CLIENT_SECRET='your-github-oauth-client-secret' `
   --namespace knotree
 helm upgrade --install knotree-api deploy/helm/knotree-api `
   --namespace knotree --create-namespace `

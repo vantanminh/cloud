@@ -131,6 +131,10 @@ export function getGithubAuthorizationUrl(returnTo?: string) {
   )
 }
 
+export function disconnectGithub() {
+  return apiRequest<void>("/auth/github/disconnect", { method: "POST" })
+}
+
 export function listDatabaseTables(
   workspaceSlug: string,
   projectSlug: string,

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use axum::{
     Json,
     extract::{Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,20 @@ pub async fn status(
         connected: connection.is_some(),
         login: connection.map(|connection| connection.github_login),
     }))
+}
+
+pub async fn disconnect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    sqlx::query("DELETE FROM github_connections WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub async fn callback(

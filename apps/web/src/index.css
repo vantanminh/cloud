@@ -225,6 +225,227 @@
   background: var(--background);
 }
 
+.github-integration-page {
+  min-height: 100svh;
+  background:
+    radial-gradient(circle at 85% 0%, color-mix(in oklch, var(--primary) 8%, transparent), transparent 28rem),
+    var(--background);
+}
+
+.github-integration-header {
+  border-bottom: 1px solid color-mix(in oklch, var(--border), transparent 15%);
+  background: color-mix(in oklch, var(--background) 92%, transparent);
+}
+
+.github-integration-header-inner {
+  display: flex;
+  width: min(100%, 72rem);
+  min-height: 4.5rem;
+  margin: 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1rem 1.25rem;
+}
+
+.github-integration-brand,
+.github-integration-connected,
+.github-integration-disconnected {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.github-integration-brand-mark,
+.github-integration-card-icon,
+.github-integration-status-dot {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.75rem;
+  background: color-mix(in oklch, var(--primary) 10%, var(--background));
+  color: var(--primary);
+}
+
+.github-integration-brand-mark {
+  height: 2.5rem;
+  width: 2.5rem;
+}
+
+.github-integration-brand-mark svg,
+.github-integration-card-icon svg {
+  height: 1.25rem;
+  width: 1.25rem;
+}
+
+.github-integration-eyebrow {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.github-integration-heading {
+  margin-top: 0.125rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.github-integration-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: color 160ms ease;
+}
+
+.github-integration-back:hover {
+  color: var(--foreground);
+}
+
+.github-integration-back svg {
+  height: 1rem;
+  width: 1rem;
+}
+
+.github-integration-content {
+  display: flex;
+  width: min(100%, 44rem);
+  margin: 0 auto;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 4.5rem 1.25rem 6rem;
+}
+
+.github-integration-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.github-integration-intro h1 {
+  font-family: var(--font-sans);
+  font-size: clamp(2rem, 6vw, 3rem);
+  font-weight: 650;
+  letter-spacing: -0.05em;
+}
+
+.github-integration-intro > p:last-child {
+  max-width: 38rem;
+  color: var(--muted-foreground);
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.github-integration-card {
+  gap: 0;
+  border: 1px solid color-mix(in oklch, var(--border), transparent 5%);
+  box-shadow: 0 1.5rem 4rem color-mix(in oklch, var(--foreground) 6%, transparent);
+}
+
+.github-integration-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  padding: 1.25rem;
+}
+
+.github-integration-card-icon {
+  height: 2.5rem;
+  width: 2.5rem;
+}
+
+.github-integration-card-content {
+  min-height: 6rem;
+  padding: 0 1.25rem 1.25rem;
+}
+
+.github-integration-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 5rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+
+.github-integration-connected,
+.github-integration-disconnected {
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: color-mix(in oklch, var(--muted) 42%, var(--background));
+}
+
+.github-integration-status-dot {
+  height: 2rem;
+  width: 2rem;
+  border-radius: 999px;
+}
+
+.github-integration-status-dot svg {
+  height: 1.125rem;
+  width: 1.125rem;
+}
+
+.github-integration-connected .github-integration-status-dot {
+  background: color-mix(in oklch, var(--primary) 14%, var(--background));
+}
+
+.github-integration-disconnected .github-integration-status-dot {
+  background: color-mix(in oklch, var(--muted) 72%, var(--background));
+  color: var(--muted-foreground);
+}
+
+.github-integration-connected strong,
+.github-integration-disconnected strong {
+  display: block;
+  font-size: 0.875rem;
+}
+
+.github-integration-connected p,
+.github-integration-disconnected p {
+  margin-top: 0.25rem;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.github-integration-connected code,
+.github-integration-disconnected code {
+  border-radius: 0.25rem;
+  background: color-mix(in oklch, var(--muted) 80%, var(--background));
+  padding: 0.1rem 0.25rem;
+  font-size: 0.75rem;
+}
+
+.github-integration-card-footer {
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+}
+
+.github-integration-footnote {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.github-integration-footnote strong {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.github-integration-dismiss {
+  align-self: center;
+}
+
 .workspace-projects-content {
   display: flex;
   width: min(100%, 72rem);
@@ -518,6 +739,25 @@
 }
 
 @media (max-width: 767px) {
+  .github-integration-header-inner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .github-integration-content {
+    padding: 3rem 1rem 5rem;
+  }
+
+  .github-integration-card-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .github-integration-card-footer > button {
+    width: 100%;
+  }
+
   .workspace-projects-content {
     gap: 2rem;
     padding: 3rem 1rem 5rem;

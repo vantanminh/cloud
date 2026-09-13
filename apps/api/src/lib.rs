@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/github/start", get(github::start))
         .route("/auth/github/callback", get(github::callback))
         .route("/auth/github/status", get(github::status))
+        .route("/auth/github/disconnect", post(github::disconnect))
         .route("/workspaces", post(workspaces::create))
         .route("/workspaces/{slug}", get(workspaces::get));
 

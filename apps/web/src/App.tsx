@@ -10,6 +10,7 @@ import {
 import { useAuth } from "@/auth/auth-context"
 import { LoadingScreen } from "@/components/loading-screen"
 import { AuthPage } from "@/pages/auth-page"
+import { GitHubIntegrationPage } from "@/pages/github-integration-page"
 import { ProjectHomePage } from "@/pages/project-home-page"
 import { NewWorkspacePage, WorkspacePage } from "@/pages/workspace-page"
 
@@ -23,6 +24,11 @@ export default function App() {
       </Route>
       <Route element={<ProtectedRoute />}>
         <Route path="/new/workspace" element={<WorkspaceCreationRoute />} />
+        <Route path="/settings" element={<SettingsRoute />} />
+        <Route
+          path="/settings/integrations"
+          element={<GitHubIntegrationPage />}
+        />
         <Route
           path="/workspace/:workspaceSlug/project/:projectSlug"
           element={<ProjectRoute />}
@@ -72,6 +78,10 @@ function ProtectedRoute() {
 
 function WorkspaceCreationRoute() {
   return <NewWorkspacePage />
+}
+
+function SettingsRoute() {
+  return <Navigate to="/settings/integrations" replace />
 }
 
 function WorkspaceRoute() {

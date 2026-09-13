@@ -644,7 +644,7 @@ function TopologyDashboard({
           </ProjectRailButton>
           <ProjectRailButton
             label="Settings"
-            onClick={() => showToast("Settings is available in this workspace")}
+            onClick={() => navigate("/settings/integrations")}
           >
             <Settings2Icon aria-hidden="true" />
           </ProjectRailButton>
