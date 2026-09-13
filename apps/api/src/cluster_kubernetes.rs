@@ -96,6 +96,7 @@ pub async fn provision(config: &Config, spec: &ClusterSpec) -> Result<Provisione
         internal_port: POSTGRES_PORT,
         public_host,
         public_port,
+        network_name: None,
     })
 }
 

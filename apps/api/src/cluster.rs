@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use serde_json::Value;
 use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
@@ -10,6 +11,12 @@ use crate::config::Config;
 
 pub const PROVIDER_DOCKER: &str = "docker";
 pub const PROVIDER_KUBERNETES: &str = "kubernetes";
+pub const PROJECT_NETWORK_POSTGRES_ALIAS: &str = "postgres";
+pub const PROJECT_NETWORK_APP_ALIAS: &str = "app";
+
+pub fn project_network_name(project_id: Uuid) -> String {
+    format!("knotree-net-{}", project_id.simple())
+}
 
 /// Docker Desktop publishes the development database on IPv4 loopback. Using
 /// `localhost` lets some clients try `::1` first, which adds a multi-second
@@ -39,6 +46,7 @@ pub struct ProvisionedCluster {
     pub internal_port: u16,
     pub public_host: Option<String>,
     pub public_port: Option<u16>,
+    pub network_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -286,6 +294,7 @@ pub async fn provision_with_provider(
 async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
     let cluster_name = format!("knotree-pg-{}", spec.project_id.simple());
     let volume_name = format!("knotree-pg-data-{}", spec.project_id.simple());
+    let network_name = ensure_project_network(config, spec.project_id).await?;
     let internal_host = connection_host(PROVIDER_DOCKER, &config.database_resource_host);
 
     ensure_docker_volume(config, &volume_name).await?;
@@ -305,8 +314,14 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
                 "com.knotree.managed-by=knotree-api".to_owned(),
                 "--label".to_owned(),
                 format!("com.knotree.project-id={}", spec.project_id),
+                "--label".to_owned(),
+                "com.knotree.resource-type=postgres".to_owned(),
                 "--restart".to_owned(),
                 "unless-stopped".to_owned(),
+                "--network".to_owned(),
+                network_name.clone(),
+                "--network-alias".to_owned(),
+                PROJECT_NETWORK_POSTGRES_ALIAS.to_owned(),
                 "--env".to_owned(),
                 format!("POSTGRES_DB={}", spec.database_name),
                 "--env".to_owned(),
@@ -335,6 +350,14 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
         run_docker(config, ["start".to_owned(), cluster_name.clone()]).await?;
     }
 
+    ensure_docker_network_attachment(
+        config,
+        &network_name,
+        &cluster_name,
+        PROJECT_NETWORK_POSTGRES_ALIAS,
+    )
+    .await?;
+
     let port = docker_port(config, &cluster_name).await?;
     wait_for_postgres(
         &internal_host,
@@ -362,7 +385,159 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
         internal_port: port,
         public_host,
         public_port,
+        network_name: Some(network_name),
     })
+}
+
+pub async fn ensure_project_network(config: &Config, project_id: Uuid) -> Result<String> {
+    let network_name = project_network_name(project_id);
+    let inspect = docker_raw(
+        config,
+        [
+            "network".to_owned(),
+            "inspect".to_owned(),
+            network_name.clone(),
+        ],
+    )
+    .await?;
+    if inspect.status.success() {
+        return Ok(network_name);
+    }
+
+    let create = docker_raw(
+        config,
+        [
+            "network".to_owned(),
+            "create".to_owned(),
+            "--driver".to_owned(),
+            "bridge".to_owned(),
+            "--label".to_owned(),
+            "com.knotree.managed-by=knotree-api".to_owned(),
+            "--label".to_owned(),
+            format!("com.knotree.project-id={project_id}"),
+            network_name.clone(),
+        ],
+    )
+    .await?;
+    if create.status.success() {
+        return Ok(network_name);
+    }
+
+    // A concurrent resource provision may have created the deterministic
+    // network between the inspect and create calls. Treat that race as safe.
+    let retry_inspect = docker_raw(
+        config,
+        [
+            "network".to_owned(),
+            "inspect".to_owned(),
+            network_name.clone(),
+        ],
+    )
+    .await?;
+    if retry_inspect.status.success() {
+        return Ok(network_name);
+    }
+
+    let detail = String::from_utf8_lossy(&create.stderr);
+    let detail = detail
+        .lines()
+        .next()
+        .unwrap_or("unknown Docker network error");
+    bail!("Docker project network operation failed: {detail}")
+}
+
+pub async fn ensure_docker_network_attachment(
+    config: &Config,
+    network_name: &str,
+    container_name: &str,
+    network_alias: &str,
+) -> Result<()> {
+    let output = docker_raw(
+        config,
+        [
+            "inspect".to_owned(),
+            "--format={{json .NetworkSettings.Networks}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.lines().next().unwrap_or("container not found");
+        bail!("could not inspect Docker network attachment: {detail}");
+    }
+
+    let networks: Value = serde_json::from_slice(&output.stdout)
+        .context("Docker returned invalid network attachment data")?;
+    if network_has_alias(&networks, network_name, network_alias) {
+        return Ok(());
+    }
+
+    if networks.get(network_name).is_some() {
+        run_docker(
+            config,
+            [
+                "network".to_owned(),
+                "disconnect".to_owned(),
+                "--force".to_owned(),
+                network_name.to_owned(),
+                container_name.to_owned(),
+            ],
+        )
+        .await?;
+    }
+
+    let connect = docker_raw(
+        config,
+        [
+            "network".to_owned(),
+            "connect".to_owned(),
+            "--alias".to_owned(),
+            network_alias.to_owned(),
+            network_name.to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if connect.status.success() {
+        return Ok(());
+    }
+
+    let retry = docker_raw(
+        config,
+        [
+            "inspect".to_owned(),
+            "--format={{json .NetworkSettings.Networks}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if retry.status.success() {
+        let networks: Value = serde_json::from_slice(&retry.stdout)
+            .context("Docker returned invalid network attachment data")?;
+        if network_has_alias(&networks, network_name, network_alias) {
+            return Ok(());
+        }
+    }
+
+    let detail = String::from_utf8_lossy(&connect.stderr);
+    let detail = detail
+        .lines()
+        .next()
+        .unwrap_or("unknown Docker network connection error");
+    bail!("Docker project network connection failed: {detail}")
+}
+
+fn network_has_alias(networks: &Value, network_name: &str, network_alias: &str) -> bool {
+    networks
+        .get(network_name)
+        .and_then(|network| network.get("Aliases"))
+        .and_then(Value::as_array)
+        .is_some_and(|aliases| {
+            aliases
+                .iter()
+                .any(|alias| alias.as_str() == Some(network_alias))
+        })
 }
 
 async fn ensure_docker_volume(config: &Config, volume_name: &str) -> Result<()> {
@@ -496,6 +671,30 @@ mod tests {
         assert!(name.chars().all(|character| character.is_ascii_lowercase()
             || character.is_ascii_digit()
             || character == '-'));
+    }
+
+    #[test]
+    fn project_network_names_and_aliases_are_stable() {
+        let project_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        assert_eq!(
+            super::project_network_name(project_id),
+            "knotree-net-11111111222233334444555555555555"
+        );
+        let networks = serde_json::json!({
+            "knotree-net-11111111222233334444555555555555": {
+                "Aliases": ["postgres", "knotree-pg"]
+            }
+        });
+        assert!(super::network_has_alias(
+            &networks,
+            "knotree-net-11111111222233334444555555555555",
+            "postgres"
+        ));
+        assert!(!super::network_has_alias(
+            &networks,
+            "knotree-net-11111111222233334444555555555555",
+            "app"
+        ));
     }
 
     #[test]

@@ -88,6 +88,19 @@ pub struct CreateResourceRequest {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AppServiceDatabaseConnectionResponse {
+    pub resource_id: Uuid,
+    pub name: String,
+    pub database_name: String,
+    pub username: String,
+    pub network_name: String,
+    pub host: String,
+    pub port: u16,
+    pub environment_variables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppServiceResponse {
     pub id: Uuid,
     pub name: String,
@@ -101,6 +114,8 @@ pub struct AppServiceResponse {
     pub service_url: Option<String>,
     pub container_name: Option<String>,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_connection: Option<AppServiceDatabaseConnectionResponse>,
 }
 
 #[derive(Debug, Deserialize)]

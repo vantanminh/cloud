@@ -15,10 +15,10 @@ use uuid::Uuid;
 
 use crate::{
     auth,
-    cluster::PROVIDER_DOCKER,
+    cluster::{self, PROVIDER_DOCKER},
     error::AppError,
     github::{self, GithubDockerCredentials},
-    models::{AppServiceResponse, CreateAppServiceRequest},
+    models::{AppServiceDatabaseConnectionResponse, AppServiceResponse, CreateAppServiceRequest},
     projects, security,
     state::AppState,
 };
@@ -35,6 +35,7 @@ const PROVISIONING_ERROR_MESSAGE: &str =
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AppServiceRow {
     id: Uuid,
+    project_id: Uuid,
     name: String,
     image: String,
     image_source: String,
@@ -44,10 +45,21 @@ struct AppServiceRow {
     container_name: Option<String>,
     status: String,
     error_message: Option<String>,
+    database_resource_id: Option<Uuid>,
 }
 
-const APP_SERVICE_COLUMNS: &str =
-    "id, name, image, image_source, app_port, host, port, container_name, status, error_message";
+const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id";
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct DatabaseResourceRow {
+    id: Uuid,
+    name: String,
+    database_name: String,
+    role_name: String,
+    password_ciphertext: String,
+}
+
+const DATABASE_RESOURCE_COLUMNS: &str = "id, name, database_name, role_name, password_ciphertext";
 
 pub async fn list(
     State(state): State<AppState>,
@@ -64,8 +76,15 @@ pub async fn list(
     .fetch_optional(&state.db)
     .await?;
 
+    let database = ready_database_resource(&state, project_id).await?;
     service
-        .map(|service| app_service_response(&service, &state.config.app_service_public_host))
+        .map(|service| {
+            app_service_response(
+                &service,
+                &state.config.app_service_public_host,
+                database.as_ref(),
+            )
+        })
         .transpose()
         .map(|service| Json(service.into_iter().collect()))
 }
@@ -98,6 +117,8 @@ pub async fn create(
     let image = validate_image(&input.image)?;
     let image_source = validate_image_source(&input.image_source, &image)?;
     let app_port = validate_app_port(input.app_port)?;
+    let database = ready_database_resource(&state, project_id).await?;
+    let database_resource_id = database.as_ref().map(|database| database.id);
 
     let (service, is_new) = {
         let mut transaction = state.db.begin().await?;
@@ -114,7 +135,12 @@ pub async fn create(
         .await?;
 
         let result = match existing {
-            Some(service) if service.status == STATUS_READY => (service, false),
+            Some(service)
+                if service.status == STATUS_READY
+                    && service.database_resource_id == database_resource_id =>
+            {
+                (service, false)
+            }
             Some(service) if service.status == STATUS_PROVISIONING => {
                 return Err(AppError::Conflict {
                     code: "APP_SERVICE_PROVISIONING",
@@ -123,13 +149,14 @@ pub async fn create(
             }
             Some(service) => {
                 let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-                    "UPDATE project_app_services SET name = $1, image = $2, image_source = $3, app_port = $4, host = NULL, port = NULL, status = $5, error_message = NULL, updated_at = now() WHERE id = $6 RETURNING {APP_SERVICE_COLUMNS}"
+                    "UPDATE project_app_services SET name = $1, image = $2, image_source = $3, app_port = $4, host = NULL, port = NULL, status = $5, error_message = NULL, database_resource_id = $6, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
                 ))
                 .bind(&name)
                 .bind(&image)
                 .bind(&image_source)
                 .bind(i32::from(app_port))
                 .bind(STATUS_PROVISIONING)
+                .bind(database_resource_id)
                 .bind(service.id)
                 .fetch_one(&mut *transaction)
                 .await?;
@@ -137,7 +164,7 @@ pub async fn create(
             }
             None => {
                 let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-                    "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {APP_SERVICE_COLUMNS}"
+                    "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status, database_resource_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {APP_SERVICE_COLUMNS}"
                 ))
                 .bind(Uuid::new_v4())
                 .bind(project_id)
@@ -146,6 +173,7 @@ pub async fn create(
                 .bind(&image_source)
                 .bind(i32::from(app_port))
                 .bind(STATUS_PROVISIONING)
+                .bind(database_resource_id)
                 .fetch_one(&mut *transaction)
                 .await?;
                 (service, true)
@@ -161,6 +189,7 @@ pub async fn create(
             Json(app_service_response(
                 &service,
                 &state.config.app_service_public_host,
+                database.as_ref(),
             )?),
         )
             .into_response());
@@ -171,7 +200,7 @@ pub async fn create(
             Some(credentials) => Some(credentials),
             None => {
                 sqlx::query(
-                    "UPDATE project_app_services SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
+                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
                 )
                 .bind(STATUS_ERROR)
                 .bind("Connect GitHub before deploying a private image.")
@@ -194,6 +223,7 @@ pub async fn create(
         &image,
         app_port,
         github_credentials.as_ref(),
+        database.as_ref(),
     )
     .await;
     let provisioned = match provisioned {
@@ -206,7 +236,7 @@ pub async fn create(
                 "app service provisioning failed"
             );
             sqlx::query(
-                "UPDATE project_app_services SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
+                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
             )
             .bind(STATUS_ERROR)
             .bind(PROVISIONING_ERROR_MESSAGE)
@@ -221,22 +251,140 @@ pub async fn create(
     };
 
     let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "UPDATE project_app_services SET status = $1, host = $2, port = $3, container_name = $4, error_message = NULL, updated_at = now() WHERE id = $5 RETURNING {APP_SERVICE_COLUMNS}"
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, container_name = $4, database_resource_id = $5, error_message = NULL, updated_at = now() WHERE id = $6 RETURNING {APP_SERVICE_COLUMNS}"
     ))
     .bind(STATUS_READY)
     .bind(&provisioned.host)
     .bind(i32::from(provisioned.port))
     .bind(&provisioned.container_name)
+    .bind(database_resource_id)
     .bind(service.id)
     .fetch_one(&state.db)
     .await?;
-    let response = app_service_response(&service, &state.config.app_service_public_host)?;
+    let response = app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        database.as_ref(),
+    )?;
     let status = if is_new {
         StatusCode::CREATED
     } else {
         StatusCode::OK
     };
     Ok((status, Json(response)).into_response())
+}
+
+/// Attach a previously deployed app to a newly-ready project database. This
+/// covers the reverse creation order (app first, Postgres second) while
+/// keeping the database endpoint itself independent from the app API.
+pub async fn reconcile_project_database_connection(
+    state: &AppState,
+    project_id: Uuid,
+    user_id: Uuid,
+) -> Result<()> {
+    let Some(database) = ready_database_resource(state, project_id).await? else {
+        return Ok(());
+    };
+
+    let Some(service) = ({
+        let mut transaction = state.db.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(project_id))
+            .execute(&mut *transaction)
+            .await?;
+        let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 AND status = $2 AND (database_resource_id IS NULL OR database_resource_id <> $3) FOR UPDATE"
+        ))
+        .bind(project_id)
+        .bind(STATUS_READY)
+        .bind(database.id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(service) = service.as_ref() {
+            sqlx::query(
+                "UPDATE project_app_services SET status = $1, error_message = NULL, updated_at = now() WHERE id = $2",
+            )
+            .bind(STATUS_PROVISIONING)
+            .bind(service.id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        service
+    }) else {
+        return Ok(());
+    };
+
+    let github_credentials = if service.image_source == IMAGE_SOURCE_GITHUB {
+        match github::docker_credentials(state, user_id)
+            .await
+            .map_err(|_| anyhow::anyhow!("could not read GitHub package credentials"))?
+        {
+            Some(credentials) => Some(credentials),
+            None => {
+                // The existing app remains untouched. The next explicit
+                // deploy, after GitHub is connected, will include the DB env.
+                tracing::warn!(
+                    project_id = %project_id,
+                    service_id = %service.id,
+                    "skipping automatic private app database connection without GitHub credentials"
+                );
+                sqlx::query(
+                    "UPDATE project_app_services SET status = $1, updated_at = now() WHERE id = $2",
+                )
+                .bind(STATUS_READY)
+                .bind(service.id)
+                .execute(&state.db)
+                .await?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+
+    let provisioned = provision_docker(
+        state,
+        project_id,
+        &service.image,
+        u16::try_from(service.app_port).context("invalid app service container port")?,
+        github_credentials.as_ref(),
+        Some(&database),
+    )
+    .await;
+    match provisioned {
+        Ok(provisioned) => {
+            sqlx::query(
+                "UPDATE project_app_services SET status = $1, host = $2, port = $3, container_name = $4, database_resource_id = $5, error_message = NULL, updated_at = now() WHERE id = $6",
+            )
+            .bind(STATUS_READY)
+            .bind(&provisioned.host)
+            .bind(i32::from(provisioned.port))
+            .bind(&provisioned.container_name)
+            .bind(database.id)
+            .bind(service.id)
+            .execute(&state.db)
+            .await?;
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(
+                project_id = %project_id,
+                service_id = %service.id,
+                error = %error,
+                "automatic app service database connection failed"
+            );
+            sqlx::query(
+                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+            )
+            .bind(STATUS_ERROR)
+            .bind(PROVISIONING_ERROR_MESSAGE)
+            .bind(service.id)
+            .execute(&state.db)
+            .await?;
+            Err(error)
+        }
+    }
 }
 
 fn validate_service_name(value: &str) -> Result<String, AppError> {
@@ -315,6 +463,7 @@ fn validate_app_port(value: Option<u32>) -> Result<u16, AppError> {
 fn app_service_response(
     service: &AppServiceRow,
     public_host: &str,
+    database: Option<&DatabaseResourceRow>,
 ) -> Result<AppServiceResponse, AppError> {
     let app_port = u16::try_from(service.app_port)
         .map_err(|_| AppError::internal("invalid app service container port"))?;
@@ -345,7 +494,74 @@ fn app_service_response(
         service_url,
         container_name: service.container_name.clone(),
         error_message: service.error_message.clone(),
+        database_connection: service
+            .database_resource_id
+            .and_then(|resource_id| database.filter(|database| database.id == resource_id))
+            .map(|database| database_connection_response(service.project_id, database)),
     })
+}
+
+fn database_connection_response(
+    project_id: Uuid,
+    database: &DatabaseResourceRow,
+) -> AppServiceDatabaseConnectionResponse {
+    AppServiceDatabaseConnectionResponse {
+        resource_id: database.id,
+        name: database.name.clone(),
+        database_name: database.database_name.clone(),
+        username: database.role_name.clone(),
+        network_name: cluster::project_network_name(project_id),
+        host: cluster::PROJECT_NETWORK_POSTGRES_ALIAS.to_owned(),
+        port: 5432,
+        environment_variables: vec![
+            "DATABASE_URL".to_owned(),
+            "PGHOST".to_owned(),
+            "PGPORT".to_owned(),
+            "PGDATABASE".to_owned(),
+            "PGUSER".to_owned(),
+            "PGPASSWORD".to_owned(),
+        ],
+    }
+}
+
+async fn ready_database_resource(
+    state: &AppState,
+    project_id: Uuid,
+) -> std::result::Result<Option<DatabaseResourceRow>, sqlx::Error> {
+    sqlx::query_as::<_, DatabaseResourceRow>(&format!(
+        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 AND status = 'ready' AND cluster_provider = $2"
+    ))
+    .bind(project_id)
+    .bind(PROVIDER_DOCKER)
+    .fetch_optional(&state.db)
+    .await
+}
+
+fn database_environment(
+    encryption_key: &[u8; 32],
+    database: Option<&DatabaseResourceRow>,
+) -> Result<Vec<String>> {
+    let Some(database) = database else {
+        return Ok(Vec::new());
+    };
+    let password = security::decrypt_secret(&database.password_ciphertext, encryption_key)
+        .map_err(|_| anyhow::anyhow!("could not decrypt the PostgreSQL credentials"))?;
+    let database_url = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        database.role_name,
+        password,
+        cluster::PROJECT_NETWORK_POSTGRES_ALIAS,
+        5432,
+        database.database_name,
+    );
+    Ok(vec![
+        format!("DATABASE_URL={database_url}"),
+        format!("PGHOST={}", cluster::PROJECT_NETWORK_POSTGRES_ALIAS),
+        "PGPORT=5432".to_owned(),
+        format!("PGDATABASE={}", database.database_name),
+        format!("PGUSER={}", database.role_name),
+        format!("PGPASSWORD={password}"),
+    ])
 }
 
 #[derive(Debug)]
@@ -361,7 +577,12 @@ async fn provision_docker(
     image: &str,
     app_port: u16,
     github_credentials: Option<&GithubDockerCredentials>,
+    database: Option<&DatabaseResourceRow>,
 ) -> Result<ProvisionedAppService> {
+    let database_environment =
+        database_environment(&state.config.database_credentials_encryption_key, database)?;
+    let network_name = cluster::ensure_project_network(&state.config, project_id).await?;
+
     if let Some(credentials) = github_credentials {
         if !image
             .get(.."ghcr.io/".len())
@@ -380,27 +601,34 @@ async fn provision_docker(
     let container_name = format!("knotree-app-{}", project_id.simple());
     remove_existing_container(state, &container_name).await?;
     let publish = format!("{}::{}", state.config.app_service_bind_address, app_port);
-    run_docker(
-        state,
-        [
-            "run".to_owned(),
-            "--detach".to_owned(),
-            "--name".to_owned(),
-            container_name.clone(),
-            "--label".to_owned(),
-            "com.knotree.managed-by=knotree-api".to_owned(),
-            "--label".to_owned(),
-            format!("com.knotree.project-id={project_id}"),
-            "--label".to_owned(),
-            "com.knotree.resource-type=app".to_owned(),
-            "--restart".to_owned(),
-            "unless-stopped".to_owned(),
-            "--publish".to_owned(),
-            publish,
-            image.to_owned(),
-        ],
-    )
-    .await?;
+    let mut docker_args = vec![
+        "run".to_owned(),
+        "--detach".to_owned(),
+        "--name".to_owned(),
+        container_name.clone(),
+        "--label".to_owned(),
+        "com.knotree.managed-by=knotree-api".to_owned(),
+        "--label".to_owned(),
+        format!("com.knotree.project-id={project_id}"),
+        "--label".to_owned(),
+        "com.knotree.resource-type=app".to_owned(),
+        "--restart".to_owned(),
+        "unless-stopped".to_owned(),
+        "--network".to_owned(),
+        network_name,
+        "--network-alias".to_owned(),
+        cluster::PROJECT_NETWORK_APP_ALIAS.to_owned(),
+        "--publish".to_owned(),
+        publish,
+    ];
+    // Keep database credentials inside the container environment. They are
+    // never serialized into the API response or Docker labels.
+    for variable in database_environment {
+        docker_args.push("--env".to_owned());
+        docker_args.push(variable);
+    }
+    docker_args.push(image.to_owned());
+    run_docker(state, docker_args).await?;
 
     let running = docker_inspect_running(state, &container_name).await?;
     if running != "true" {
@@ -500,7 +728,10 @@ async fn docker_port(state: &AppState, container_name: &str, app_port: u16) -> R
         .context("Docker did not publish an app service port")
 }
 
-async fn run_docker<const N: usize>(state: &AppState, args: [String; N]) -> Result<String> {
+async fn run_docker<I>(state: &AppState, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = String>,
+{
     let output = docker_raw(state, args).await?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
@@ -510,7 +741,10 @@ async fn run_docker<const N: usize>(state: &AppState, args: [String; N]) -> Resu
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-async fn docker_raw<const N: usize>(state: &AppState, args: [String; N]) -> Result<Output> {
+async fn docker_raw<I>(state: &AppState, args: I) -> Result<Output>
+where
+    I: IntoIterator<Item = String>,
+{
     Command::new(&state.config.database_cluster_docker_binary)
         .args(args)
         .output()
@@ -583,5 +817,26 @@ mod tests {
             format!("knotree-app-{}", project_id.simple()),
             "knotree-app-11111111222233334444555555555555"
         );
+    }
+
+    #[test]
+    fn injects_database_variables_using_the_private_postgres_alias() {
+        let key = [7_u8; 32];
+        let database = DatabaseResourceRow {
+            id: Uuid::new_v4(),
+            name: "Postgres".to_owned(),
+            database_name: "knotree_db_project".to_owned(),
+            role_name: "knotree_role_project".to_owned(),
+            password_ciphertext: security::encrypt_secret("secret", &key).unwrap(),
+        };
+
+        let variables = database_environment(&key, Some(&database)).unwrap();
+        assert!(variables.contains(
+            &"DATABASE_URL=postgres://knotree_role_project:secret@postgres:5432/knotree_db_project"
+                .to_owned()
+        ));
+        assert!(variables.contains(&"PGHOST=postgres".to_owned()));
+        assert!(variables.contains(&"PGPORT=5432".to_owned()));
+        assert!(variables.contains(&"PGPASSWORD=secret".to_owned()));
     }
 }

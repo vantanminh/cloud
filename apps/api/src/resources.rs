@@ -7,7 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    auth,
+    app_services, auth,
     cluster::{self, ClusterSpec},
     error::AppError,
     models::{CreateResourceRequest, PostgresResourceResponse},
@@ -213,6 +213,18 @@ pub async fn create(
     .bind(resource.id)
     .fetch_one(&state.db)
     .await?;
+
+    if let Err(error) =
+        app_services::reconcile_project_database_connection(&state, project_id, user.id).await
+    {
+        tracing::warn!(
+            project_id = %project_id,
+            resource_id = %resource.id,
+            error = %error,
+            "database is ready but the existing app service could not be auto-connected"
+        );
+    }
+
     let response = resource_response(&resource, &state)?;
 
     let status = if is_new {
