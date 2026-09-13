@@ -156,6 +156,12 @@ pub struct UpdateAppServiceRequest {
     pub app_port: u32,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppServiceDatabaseRequest {
+    pub database_resource_id: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CsrfResponse {
     #[serde(rename = "csrfToken")]

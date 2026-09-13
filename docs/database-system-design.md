@@ -16,12 +16,12 @@ provider/endpoint metadata. The browser receives connection metadata only
 after authorization; the password is never stored in frontend state except as
 part of the copy action's returned connection string.
 
-Docker App services are a separate deployment plane. Each project can own one
-App service, represented by image and runtime metadata in the control plane and
-executed in its own Docker container. It keeps its own image/container lifecycle
-and never shares the PostgreSQL volume or API connection pool, but both
-containers join the same project-scoped private Docker network when the Docker
-provider is active.
+Docker App services are a separate deployment plane. Each project can own up to
+six App services, represented by image and runtime metadata in the control plane
+and executed in separate Docker containers. Each service keeps its own
+image/container lifecycle and never shares the PostgreSQL volume or API
+connection pool, but Docker resources join the same project-scoped private
+network when the Docker provider is active.
 
 ## Isolation boundary
 
@@ -45,24 +45,25 @@ project resource contract.
 
 Docker resources in a project share a bridge network named
 `knotree-net-<project-id>`. The PostgreSQL container has the stable DNS alias
-`postgres`, and the App service has the alias `app`; a different project gets a
-different network, so project services cannot resolve one another by default.
+`postgres`, and each App service has a service-scoped container name; a
+different project gets a different network, so project services cannot resolve
+one another by default.
 The host-published ports remain available for the API and local development,
 but application-to-database traffic uses the private network and never needs
 the random host port.
 
-When a ready PostgreSQL resource exists, App service provisioning automatically
-injects these container-only variables:
+An App service starts without a database connection. When the user assigns a
+ready PostgreSQL resource to that service from its Settings menu, the next
+deployment injects these container-only variables:
 
 `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD`.
 
 `PGHOST` is `postgres` and `PGPORT` is `5432`. The API stores the database
 resource UUID on the App service, returns only non-secret connection metadata
-and variable names, and never returns the password in the App service
-response. If the App service is created first, database readiness triggers an
-automatic reconciliation/redeploy so the same assignment is eventually made
-in the reverse order as well. Kubernetes App service provisioning remains
-disabled until its namespace-scoped equivalent is implemented.
+and variable names, and never returns the password in the App service response.
+Creating a database never changes an existing App service until the user
+explicitly selects it. Kubernetes App service provisioning remains disabled
+until its namespace-scoped equivalent is implemented.
 
 ## Management API
 
@@ -84,8 +85,10 @@ the PostgreSQL resource contract:
 
 | Method | Route suffix | Operation |
 | --- | --- | --- |
-| GET | `app-services` | read the project's App service metadata |
-| POST | `app-services` | validate an image and deploy one Docker App service |
+| GET | `app-services` | read up to six App service records for the project |
+| POST | `app-services` | validate an image and deploy a new Docker App service |
+| PATCH | `app-services/{app_service_id}` | redeploy one service with a new container port |
+| PATCH | `app-services/{app_service_id}/database` | assign or remove the service's PostgreSQL connection |
 | GET | `auth/github/status` | report the signed-in user's package connection |
 | GET | `auth/github/start` | create OAuth state and return the GitHub authorization URL |
 | GET | `auth/github/callback` | exchange the OAuth code and store an encrypted package token |
@@ -131,12 +134,12 @@ image support is currently limited to `ghcr.io`: the user connects GitHub with
 OAuth, the API encrypts the returned package token with
 `DATABASE_CREDENTIALS_ENCRYPTION_KEY`, performs a short-lived Docker registry
 login for the pull, then logs out. Tokens are never sent to the browser or
-included in API responses. Docker development publishes the container on a
+included in API responses. Docker development publishes each container on a
 random loopback port and returns the configured public host plus that port as
-`serviceUrl`. When the project has a ready Docker PostgreSQL resource, the
+`serviceUrl`. When a user has assigned a ready Docker PostgreSQL resource, the
 same response includes `databaseConnection` with the internal network name,
-`postgres:5432`, the database identity, and the names of the automatically
-assigned variables. This Docker implementation is enabled by default only in local
+`postgres:5432`, the database identity, and the names of the assigned
+variables. This Docker implementation is enabled by default only in local
 development; the production Kubernetes chart keeps App service provisioning
 disabled until a Docker runtime integration and public routing layer are
 configured for the API deployment.

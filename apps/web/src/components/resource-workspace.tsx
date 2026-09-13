@@ -40,7 +40,9 @@ import {
   getDatabaseStats,
   getDatabaseTableData,
   listDatabaseTables,
+  listPostgresResources,
   updateAppService,
+  updateAppServiceDatabase,
 } from "@/lib/resources"
 import type {
   DatabaseConfig,
@@ -58,7 +60,7 @@ import type {
 import "./resource-workspace.css"
 
 type ResourceWorkspaceNode = {
-  id: "postgres" | "project"
+  id: string
   title: string
   subtitle?: string
   type: string
@@ -194,7 +196,10 @@ export function ResourceWorkspace({
         <div className="resource-workspace-head">
           <div className="resource-workspace-identity">
             <span
-              className={cn("resource-workspace-logo", node.id)}
+              className={cn(
+                "resource-workspace-logo",
+                node.resource?.resourceType === "postgres" ? "postgres" : "project"
+              )}
               aria-hidden="true"
             >
               {node.id === "postgres" ? <DatabaseIcon /> : <GitBranchIcon />}
@@ -439,7 +444,7 @@ function DeploymentsPane({
             <DatabaseIcon />
           </span>
           <div>
-            <strong>Postgres connected automatically</strong>
+            <strong>Postgres connection assigned</strong>
             <span>
               {appService.databaseConnection.name} via{" "}
               <code>
@@ -453,7 +458,7 @@ function DeploymentsPane({
             </small>
           </div>
           <span className="resource-workspace-private-link-status">
-            CONNECTED
+            ASSIGNED
           </span>
         </article>
       )}
@@ -2192,9 +2197,12 @@ function AppPortEditor({
     setIsSaving(true)
     setError(null)
     try {
-      const resource = await updateAppService(workspaceSlug, projectSlug, {
-        appPort: parsedPort,
-      })
+      const resource = await updateAppService(
+        workspaceSlug,
+        projectSlug,
+        appService.id,
+        { appPort: parsedPort }
+      )
       onAppServiceUpdated?.(resource)
       onToast("Container port updated. The app was redeployed.")
     } catch (caught) {
@@ -2245,6 +2253,134 @@ function AppPortEditor({
         {isSaving ? "Redeploying…" : "Save and redeploy"}
       </Button>
     </form>
+  )
+}
+
+function DatabaseAttachmentEditor({
+  appService,
+  workspaceSlug,
+  projectSlug,
+  onToast,
+  onAppServiceUpdated,
+}: {
+  appService: AppService
+  workspaceSlug: string
+  projectSlug: string
+  onToast: (message: string) => void
+  onAppServiceUpdated?: (resource: AppService) => void
+}) {
+  const [resources, setResources] = useState<PostgresResource[]>([])
+  const [selectedResourceId, setSelectedResourceId] = useState(
+    appService.databaseConnection?.resourceId ?? ""
+  )
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void listPostgresResources(workspaceSlug, projectSlug)
+      .then((nextResources) => {
+        if (active) {
+          setResources(nextResources)
+          setError(null)
+        }
+      })
+      .catch((caught: unknown) => {
+        if (!active) {
+          return
+        }
+        setError(
+          caught instanceof ApiError
+            ? caught.message
+            : "The database resources could not be loaded."
+        )
+      })
+      .finally(() => {
+        if (active) {
+          setIsLoading(false)
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  }, [projectSlug, workspaceSlug])
+
+  async function handleChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const nextResourceId = event.target.value
+    const nextDatabaseResourceId = nextResourceId || null
+    setSelectedResourceId(nextResourceId)
+    setIsSaving(true)
+    setError(null)
+    try {
+      const resource = await updateAppServiceDatabase(
+        workspaceSlug,
+        projectSlug,
+        appService.id,
+        { databaseResourceId: nextDatabaseResourceId }
+      )
+      onAppServiceUpdated?.(resource)
+      onToast(
+        nextDatabaseResourceId
+          ? "Postgres connection assigned. The service was redeployed."
+          : "Postgres connection removed. The service was redeployed."
+      )
+    } catch (caught) {
+      setSelectedResourceId(appService.databaseConnection?.resourceId ?? "")
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "The database connection could not be updated."
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const isBusy = isLoading || isSaving || appService.status === "provisioning"
+
+  return (
+    <article
+      id="database-connection"
+      className="resource-workspace-setting-section"
+    >
+      <h3>Database connection</h3>
+      <p>
+        A new app service starts without a database. Choose the PostgreSQL
+        resource to inject private connection variables into this service.
+      </p>
+      <div className="resource-workspace-setting-block">
+        <label className="resource-workspace-attachment-field">
+          <span>PostgreSQL resource</span>
+          <select
+            aria-label="PostgreSQL resource for app service"
+            value={selectedResourceId}
+            disabled={isBusy}
+            onChange={(event) => void handleChange(event)}
+          >
+            <option value="">No database attached</option>
+            {resources.map((resource) => (
+              <option
+                key={resource.id}
+                value={resource.id}
+                disabled={resource.status !== "ready"}
+              >
+                {resource.name} ({resource.status})
+              </option>
+            ))}
+          </select>
+        </label>
+        {isSaving && (
+          <span className="resource-workspace-muted">Redeploying service…</span>
+        )}
+      </div>
+      {error ? (
+        <p className="resource-workspace-app-port-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </article>
   )
 }
 
@@ -2335,6 +2471,15 @@ function SettingsPane({
       </div>
       <div className="resource-workspace-settings-layout">
         <div>
+          {appService && (
+            <DatabaseAttachmentEditor
+              appService={appService}
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
+              onToast={onToast}
+              onAppServiceUpdated={onAppServiceUpdated}
+            />
+          )}
           {visibleSections.length ? (
             visibleSections.map((section) => (
               <article

@@ -31,6 +31,7 @@ import type {
 type AppServiceCreateDialogProps = {
   workspaceSlug: string
   projectSlug: string
+  appServiceCount?: number
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: (resource: AppService) => void
@@ -41,6 +42,7 @@ type ImageSource = "public" | "github"
 export function AppServiceCreateDialog({
   workspaceSlug,
   projectSlug,
+  appServiceCount = 0,
   open,
   onOpenChange,
   onCreated,
@@ -255,7 +257,7 @@ export function AppServiceCreateDialog({
               <Dialog.Description className="project-dialog-description">
                 {submittedResource
                   ? "The deployment is running in the background. Follow each Docker step and live log below."
-                  : "Paste a Docker image and Knotree will run it as an isolated service for this project. A ready Postgres resource is connected automatically over the project's private network."}
+                  : `Paste a Docker image and Knotree will run it as an isolated service for this project. New services start without a database; assign one later from Settings. (${appServiceCount}/6 services)`}
               </Dialog.Description>
             </div>
             <button

@@ -39,9 +39,9 @@ session should feel quick, calm, and trustworthy:
   transient feedback.
 - Docker App service deployment from a pasted image reference. Public images
   deploy without login; private `ghcr.io` images require a GitHub connection.
-- Automatic App service-to-Postgres private-network assignment. A ready
-  database is reachable from the app at `postgres:5432` and the Variables
-  section shows the non-secret assignment metadata.
+- Up to six Docker App services per project. New services start without a
+  database; the selected service's Settings menu assigns or removes a
+  project PostgreSQL connection over the private network.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
   Metrics, Console, and Settings. The Database section reads and mutates the
   selected project's dedicated PostgreSQL instance through typed API calls;
@@ -57,20 +57,20 @@ session should feel quick, calm, and trustworthy:
 - Workspace switching, invitations, billing data, or settings mutations.
 - Redis provisioning, deployment logs, backups, and persistent topology editing.
 
-The topology home owns one real PostgreSQL resource and one Docker App service
-per project in this slice. Database tables, rows, schema creation, SQL results,
-live stats, runtime metrics, and safe configuration settings come from the
-dedicated PostgreSQL instance. The App service card is backed by the API and
-shows the Docker image, source, container status, and returned service URL.
+The topology home owns one real PostgreSQL resource and up to six Docker App
+services per project in this slice. Database tables, rows, schema creation, SQL
+results, live stats, runtime metrics, and safe configuration settings come from
+the dedicated PostgreSQL instance. Each App service card is backed by the API
+and shows its Docker image, source, container status, and returned service URL.
 Redis and unsupported operational sections remain explicitly unavailable until
 their APIs and product contracts exist.
 
-When both Docker resources exist in a project, the App service deployment card
-shows a connected state for the project-private Postgres link. The Variables
-section lists `DATABASE_URL` and the `PG*` assignments with password
-values masked. If the App service was created first, the API reconciles it when
-Postgres becomes ready; the UI does not ask the user to paste or copy a
-database password into the app configuration.
+When a user assigns a database from an App service Settings menu, the
+deployment card shows the project-private Postgres link. The Variables section
+lists `DATABASE_URL` and the `PG*` assignments with password values masked.
+Creating either resource leaves the other unchanged until the user chooses the
+connection; the UI never asks the user to paste or copy a database password
+into the app configuration.
 
 ## 2. Experience principles
 
@@ -222,7 +222,7 @@ Click Sign out
   → GitHub connection when the source is private
   → POST /workspaces/:slug/projects/:projectSlug/app-services
   → Docker pull + isolated container + project-private network
-  → automatic DATABASE_URL/PG* assignment when Postgres is ready
+  → no database variables until the user assigns a database in Settings
   → ready App service card + returned service URL
 ```
 
@@ -411,12 +411,12 @@ theme uses the same layout and replaces the page-local surface tokens.
   image reference, image access mode, and container port. Public mode pulls
   without credentials. Private mode is restricted to `ghcr.io` and exposes a
   GitHub OAuth connection action; the browser never receives the GitHub token.
-- A ready Postgres resource is linked automatically. The App service
-  Deployments tab shows the internal `postgres:5432` endpoint and the number
-  of assigned variables; the Variables tab shows `DATABASE_URL` and
-  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, with secrets masked.
-  The same behavior is reconciled when the App service was created before the
-  database.
+- The App service Settings menu assigns or removes a ready Postgres resource.
+  The Deployments tab then shows the internal `postgres:5432` endpoint and the
+  number of assigned variables; the Variables tab shows `DATABASE_URL` and
+  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, with secrets masked. Creating
+  either resource does not change the other until the user chooses the
+  connection.
 - The project node remains the application entry point. Once deployed it
   displays the real image/status and opens a service workspace with deployment
   metadata, URL, variables, and settings. A failed deployment is shown as an

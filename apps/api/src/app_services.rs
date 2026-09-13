@@ -30,7 +30,8 @@ use crate::{
     github::{self, GithubDockerCredentials},
     models::{
         AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
-        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceRequest,
+        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceDatabaseRequest,
+        UpdateAppServiceRequest,
     },
     projects, security,
     state::AppState,
@@ -42,6 +43,7 @@ const STATUS_READY: &str = "ready";
 const STATUS_PROVISIONING: &str = "provisioning";
 const STATUS_ERROR: &str = "error";
 const DEFAULT_APP_PORT: u16 = 3000;
+const MAX_APP_SERVICES_PER_PROJECT: i64 = 6;
 const PROVISIONING_ERROR_MESSAGE: &str =
     "The Docker app service could not be deployed. Check the image and try again.";
 
@@ -99,27 +101,26 @@ pub async fn list(
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
         projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
-    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1"
+    let services = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 ORDER BY created_at ASC, id ASC"
     ))
     .bind(project_id)
-    .fetch_optional(&state.db)
+    .fetch_all(&state.db)
     .await?;
-
-    let database = ready_database_resource(&state, project_id).await?;
-    let response = match service {
-        Some(service) => {
-            let deployment = latest_deployment(&state.db, service.id).await?;
-            Some(app_service_response(
-                &service,
-                &state.config.app_service_public_host,
-                database.as_ref(),
-                deployment,
-            )?)
-        }
-        None => None,
-    };
-    Ok(Json(response.into_iter().collect()))
+    let databases = ready_database_resources(&state, project_id).await?;
+    let mut response = Vec::with_capacity(services.len());
+    for service in &services {
+        let database = service
+            .database_resource_id
+            .and_then(|resource_id| databases.iter().find(|database| database.id == resource_id));
+        response.push(app_service_response(
+            service,
+            &state.config.app_service_public_host,
+            database,
+            latest_deployment(&state.db, service.id).await?,
+        )?);
+    }
+    Ok(Json(response))
 }
 
 pub async fn deployment_events(
@@ -330,95 +331,48 @@ pub async fn create(
     let image = validate_image(&input.image)?;
     let image_source = validate_image_source(&input.image_source, &image)?;
     let app_port = validate_app_port(input.app_port)?;
-    let database = ready_database_resource(&state, project_id).await?;
-    let database_resource_id = database.as_ref().map(|database| database.id);
-
-    let (service, _is_new) = {
+    let service = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(advisory_lock_key(project_id))
             .execute(&mut *transaction)
             .await?;
 
-        let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 FOR UPDATE"
-        ))
-        .bind(project_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-
-        let result = match existing {
-            Some(service)
-                if service.status == STATUS_READY
-                    && service.database_resource_id == database_resource_id
-                    && service.image == image
-                    && service.image_source == image_source
-                    && service.app_port == i32::from(app_port) =>
-            {
-                (service, false)
-            }
-            Some(service) if service.status == STATUS_PROVISIONING => {
-                return Err(AppError::Conflict {
-                    code: "APP_SERVICE_PROVISIONING",
-                    message: "This app service is already being deployed.",
-                });
-            }
-            Some(service) => {
-                let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-                    "UPDATE project_app_services SET name = $1, image = $2, image_source = $3, app_port = $4, host = NULL, port = NULL, status = $5, error_message = NULL, database_resource_id = $6, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
-                ))
-                .bind(&name)
-                .bind(&image)
-                .bind(&image_source)
-                .bind(i32::from(app_port))
-                .bind(STATUS_PROVISIONING)
-                .bind(database_resource_id)
-                .bind(service.id)
-                .fetch_one(&mut *transaction)
-                .await?;
-                (service, false)
-            }
-            None => {
-                let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-                    "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status, database_resource_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {APP_SERVICE_COLUMNS}"
-                ))
-                .bind(Uuid::new_v4())
-                .bind(project_id)
-                .bind(&name)
-                .bind(&image)
-                .bind(&image_source)
-                .bind(i32::from(app_port))
-                .bind(STATUS_PROVISIONING)
-                .bind(database_resource_id)
-                .fetch_one(&mut *transaction)
-                .await?;
-                (service, true)
-            }
-        };
-        transaction.commit().await?;
-        result
-    };
-
-    if service.status == STATUS_READY {
-        let deployment = latest_deployment(&state.db, service.id).await?;
-        return Ok((
-            StatusCode::OK,
-            Json(app_service_response(
-                &service,
-                &state.config.app_service_public_host,
-                database.as_ref(),
-                deployment,
-            )?),
+        let service_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM project_app_services WHERE project_id = $1",
         )
-            .into_response());
-    }
+        .bind(project_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if service_count >= MAX_APP_SERVICES_PER_PROJECT {
+            return Err(AppError::Conflict {
+                code: "APP_SERVICE_LIMIT_REACHED",
+                message: "A project can have up to 6 app services.",
+            });
+        }
+
+        let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {APP_SERVICE_COLUMNS}"
+        ))
+        .bind(Uuid::new_v4())
+        .bind(project_id)
+        .bind(&name)
+        .bind(&image)
+        .bind(&image_source)
+        .bind(i32::from(app_port))
+        .bind(STATUS_PROVISIONING)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        service
+    };
 
     let github_credentials = if image_source == IMAGE_SOURCE_GITHUB {
         match github::docker_credentials(&state, user.id).await? {
             Some(credentials) => Some(credentials),
             None => {
                 sqlx::query(
-                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+                    "UPDATE project_app_services SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
                 )
                 .bind(STATUS_ERROR)
                 .bind("Connect GitHub before deploying a private image.")
@@ -450,7 +404,7 @@ pub async fn create(
     let response = app_service_response(
         &service,
         &state.config.app_service_public_host,
-        database.as_ref(),
+        None,
         latest_deployment(&state.db, service.id).await?,
     )?;
     let deployment_state = state.clone();
@@ -463,8 +417,8 @@ pub async fn create(
             image,
             app_port,
             github_credentials,
-            database,
-            database_resource_id,
+            None,
+            None,
             false,
         )
         .await;
@@ -476,7 +430,7 @@ pub async fn create(
 pub async fn update(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<UpdateAppServiceRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
@@ -498,10 +452,8 @@ pub async fn update(
     }
 
     let app_port = validate_app_port(Some(input.app_port))?;
-    let database = ready_database_resource(&state, project_id).await?;
-    let database_resource_id = database.as_ref().map(|database| database.id);
 
-    let service = {
+    let (service, database_resource_id, previous_container_name) = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(advisory_lock_key(project_id))
@@ -509,8 +461,9 @@ pub async fn update(
             .await?;
 
         let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 FOR UPDATE"
+            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2 FOR UPDATE"
         ))
+        .bind(app_service_id)
         .bind(project_id)
         .fetch_optional(&mut *transaction)
         .await?
@@ -528,6 +481,8 @@ pub async fn update(
 
         if existing.status == STATUS_READY && existing.app_port == i32::from(app_port) {
             transaction.commit().await?;
+            let database =
+                database_resource_by_id(&state, project_id, existing.database_resource_id).await?;
             return Ok(Json(app_service_response(
                 &existing,
                 &state.config.app_service_public_host,
@@ -537,27 +492,33 @@ pub async fn update(
         }
 
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "UPDATE project_app_services SET app_port = $1, host = NULL, port = NULL, status = $2, error_message = NULL, database_resource_id = $3, updated_at = now() WHERE id = $4 RETURNING {APP_SERVICE_COLUMNS}"
+            "UPDATE project_app_services SET app_port = $1, host = NULL, port = NULL, status = $2, error_message = NULL, updated_at = now() WHERE id = $3 RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(i32::from(app_port))
         .bind(STATUS_PROVISIONING)
-        .bind(database_resource_id)
         .bind(existing.id)
         .fetch_one(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        service
+        (
+            service,
+            existing.database_resource_id,
+            existing.container_name,
+        )
     };
+
+    let database = database_resource_by_id(&state, project_id, database_resource_id).await?;
 
     let github_credentials = if service.image_source == IMAGE_SOURCE_GITHUB {
         match github::docker_credentials(&state, user.id).await? {
             Some(credentials) => Some(credentials),
             None => {
                 sqlx::query(
-                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = $3, updated_at = now() WHERE id = $4",
                 )
                 .bind(STATUS_ERROR)
                 .bind("Connect GitHub before deploying a private image.")
+                .bind(database_resource_id)
                 .bind(service.id)
                 .execute(&state.db)
                 .await?;
@@ -574,11 +535,13 @@ pub async fn update(
     let provisioned = provision_docker(
         &state,
         project_id,
+        service.id,
         &service.image,
         app_port,
         github_credentials.as_ref(),
         database.as_ref(),
         true,
+        previous_container_name.as_deref(),
         None,
     )
     .await;
@@ -592,10 +555,11 @@ pub async fn update(
                 "app service port update failed"
             );
             sqlx::query(
-                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = $3, updated_at = now() WHERE id = $4",
             )
             .bind(STATUS_ERROR)
             .bind(PROVISIONING_ERROR_MESSAGE)
+            .bind(database_resource_id)
             .bind(service.id)
             .execute(&state.db)
             .await?;
@@ -626,69 +590,117 @@ pub async fn update(
     )?))
 }
 
-/// Attach a previously deployed app to a newly-ready project database. This
-/// covers the reverse creation order (app first, Postgres second) while
-/// keeping the database endpoint itself independent from the app API.
-pub async fn reconcile_project_database_connection(
-    state: &AppState,
-    project_id: Uuid,
-    user_id: Uuid,
-) -> Result<()> {
-    let Some(database) = ready_database_resource(state, project_id).await? else {
-        return Ok(());
-    };
+pub async fn update_database_connection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Json(input): Json<UpdateAppServiceDatabaseRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
 
-    let Some(service) = ({
+    if !state.config.app_service_provisioning_enabled {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_PROVISIONING_DISABLED",
+            message: "App service provisioning is not enabled for this environment.",
+        });
+    }
+    if state.config.database_cluster_provider != PROVIDER_DOCKER {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_DOCKER_REQUIRED",
+            message: "App services currently require the Docker provider.",
+        });
+    }
+
+    let (service, previous_database_id, previous_container_name, database) = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(advisory_lock_key(project_id))
             .execute(&mut *transaction)
             .await?;
-        let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 AND status = $2 AND (database_resource_id IS NULL OR database_resource_id <> $3) FOR UPDATE"
+
+        let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2 FOR UPDATE"
         ))
+        .bind(app_service_id)
         .bind(project_id)
-        .bind(STATUS_READY)
-        .bind(database.id)
         .fetch_optional(&mut *transaction)
-        .await?;
-        if let Some(service) = service.as_ref() {
-            sqlx::query(
-                "UPDATE project_app_services SET status = $1, error_message = NULL, updated_at = now() WHERE id = $2",
-            )
-            .bind(STATUS_PROVISIONING)
-            .bind(service.id)
-            .execute(&mut *transaction)
-            .await?;
+        .await?
+        .ok_or(AppError::NotFound {
+            code: "APP_SERVICE_NOT_FOUND",
+            message: "Deploy an app service before changing its database connection.",
+        })?;
+
+        if existing.status == STATUS_PROVISIONING {
+            return Err(AppError::Conflict {
+                code: "APP_SERVICE_PROVISIONING",
+                message: "This app service is already being deployed.",
+            });
         }
+
+        let database = match input.database_resource_id {
+            Some(database_id) => Some(
+                sqlx::query_as::<_, DatabaseResourceRow>(&format!(
+                    "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+                ))
+                .bind(database_id)
+                .bind(project_id)
+                .bind(PROVIDER_DOCKER)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(AppError::NotFound {
+                    code: "DATABASE_RESOURCE_NOT_FOUND",
+                    message: "The selected PostgreSQL database is not ready in this project.",
+                })?,
+            ),
+            None => None,
+        };
+
+        if existing.database_resource_id == input.database_resource_id {
+            transaction.commit().await?;
+            return Ok(Json(app_service_response(
+                &existing,
+                &state.config.app_service_public_host,
+                database.as_ref(),
+                latest_deployment(&state.db, existing.id).await?,
+            )?));
+        }
+
+        let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+            "UPDATE project_app_services SET host = NULL, port = NULL, status = $1, error_message = NULL, updated_at = now() WHERE id = $2 RETURNING {APP_SERVICE_COLUMNS}"
+        ))
+        .bind(STATUS_PROVISIONING)
+        .bind(existing.id)
+        .fetch_one(&mut *transaction)
+        .await?;
         transaction.commit().await?;
-        service
-    }) else {
-        return Ok(());
+        (
+            service,
+            existing.database_resource_id,
+            existing.container_name,
+            database,
+        )
     };
 
     let github_credentials = if service.image_source == IMAGE_SOURCE_GITHUB {
-        match github::docker_credentials(state, user_id)
-            .await
-            .map_err(|_| anyhow::anyhow!("could not read GitHub package credentials"))?
-        {
+        match github::docker_credentials(&state, user.id).await? {
             Some(credentials) => Some(credentials),
             None => {
-                // The existing app remains untouched. The next explicit
-                // deploy, after GitHub is connected, will include the DB env.
-                tracing::warn!(
-                    project_id = %project_id,
-                    service_id = %service.id,
-                    "skipping automatic private app database connection without GitHub credentials"
-                );
                 sqlx::query(
-                    "UPDATE project_app_services SET status = $1, updated_at = now() WHERE id = $2",
+                    "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = $3, updated_at = now() WHERE id = $4",
                 )
-                .bind(STATUS_READY)
+                .bind(STATUS_ERROR)
+                .bind("Connect GitHub before deploying a private image.")
+                .bind(previous_database_id)
                 .bind(service.id)
                 .execute(&state.db)
                 .await?;
-                return Ok(());
+                return Err(AppError::Conflict {
+                    code: "GITHUB_CONNECTION_REQUIRED",
+                    message: "Connect GitHub before deploying a private GitHub image.",
+                });
             }
         }
     } else {
@@ -696,50 +708,62 @@ pub async fn reconcile_project_database_connection(
     };
 
     let provisioned = provision_docker(
-        state,
+        &state,
         project_id,
+        service.id,
         &service.image,
-        u16::try_from(service.app_port).context("invalid app service container port")?,
+        u16::try_from(service.app_port)
+            .map_err(|_| AppError::internal("invalid app service container port"))?,
         github_credentials.as_ref(),
-        Some(&database),
+        database.as_ref(),
         true,
+        previous_container_name.as_deref(),
         None,
     )
     .await;
-    match provisioned {
-        Ok(provisioned) => {
-            sqlx::query(
-                "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7",
-            )
-            .bind(STATUS_READY)
-            .bind(&provisioned.host)
-            .bind(i32::from(provisioned.port))
-            .bind(i32::from(provisioned.app_port))
-            .bind(&provisioned.container_name)
-            .bind(database.id)
-            .bind(service.id)
-            .execute(&state.db)
-            .await?;
-            Ok(())
-        }
+    let provisioned = match provisioned {
+        Ok(provisioned) => provisioned,
         Err(error) => {
             tracing::error!(
                 project_id = %project_id,
                 service_id = %service.id,
                 error = %error,
-                "automatic app service database connection failed"
+                "app service database connection update failed"
             );
             sqlx::query(
-                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+                "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = $3, updated_at = now() WHERE id = $4",
             )
             .bind(STATUS_ERROR)
             .bind(PROVISIONING_ERROR_MESSAGE)
+            .bind(previous_database_id)
             .bind(service.id)
             .execute(&state.db)
             .await?;
-            Err(error)
+            return Err(AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PROVISIONING_FAILED",
+                message: PROVISIONING_ERROR_MESSAGE,
+            });
         }
-    }
+    };
+
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
+    ))
+    .bind(STATUS_READY)
+    .bind(&provisioned.host)
+    .bind(i32::from(provisioned.port))
+    .bind(i32::from(provisioned.app_port))
+    .bind(&provisioned.container_name)
+    .bind(input.database_resource_id)
+    .bind(service.id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
+    )?))
 }
 
 fn validate_service_name(value: &str) -> Result<String, AppError> {
@@ -975,11 +999,13 @@ async fn run_app_service_deployment(
         let provisioned = provision_docker(
             &state,
             project_id,
+            service_id,
             &image,
             app_port,
             github_credentials.as_ref(),
             database.as_ref(),
             honor_requested_port,
+            None,
             Some(&logger),
         )
         .await?;
@@ -1039,13 +1065,31 @@ async fn run_app_service_deployment(
     }
 }
 
-async fn ready_database_resource(
+async fn ready_database_resources(
     state: &AppState,
     project_id: Uuid,
-) -> std::result::Result<Option<DatabaseResourceRow>, sqlx::Error> {
+) -> std::result::Result<Vec<DatabaseResourceRow>, sqlx::Error> {
     sqlx::query_as::<_, DatabaseResourceRow>(&format!(
         "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 AND status = 'ready' AND cluster_provider = $2"
     ))
+    .bind(project_id)
+    .bind(PROVIDER_DOCKER)
+    .fetch_all(&state.db)
+    .await
+}
+
+async fn database_resource_by_id(
+    state: &AppState,
+    project_id: Uuid,
+    resource_id: Option<Uuid>,
+) -> std::result::Result<Option<DatabaseResourceRow>, sqlx::Error> {
+    let Some(resource_id) = resource_id else {
+        return Ok(None);
+    };
+    sqlx::query_as::<_, DatabaseResourceRow>(&format!(
+        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+    ))
+    .bind(resource_id)
     .bind(project_id)
     .bind(PROVIDER_DOCKER)
     .fetch_optional(&state.db)
@@ -1119,11 +1163,13 @@ fn resolve_container_port(requested: u16, exposed: &[u16]) -> u16 {
 async fn provision_docker(
     state: &AppState,
     project_id: Uuid,
+    service_id: Uuid,
     image: &str,
     app_port: u16,
     github_credentials: Option<&GithubDockerCredentials>,
     database: Option<&DatabaseResourceRow>,
     honor_requested_port: bool,
+    previous_container_name: Option<&str>,
     logger: Option<&DeploymentLogger>,
 ) -> Result<ProvisionedAppService> {
     log_deployment(logger, "Prepare", "Preparing the Docker deployment.").await?;
@@ -1169,7 +1215,12 @@ async fn provision_docker(
         .await?;
     }
 
-    let container_name = format!("knotree-app-{}", project_id.simple());
+    let container_name = format!("knotree-app-{}", service_id.simple());
+    if let Some(previous_container_name) = previous_container_name {
+        if previous_container_name != container_name {
+            remove_existing_container(state, previous_container_name, logger).await?;
+        }
+    }
     remove_existing_container(state, &container_name, logger).await?;
     let publish = format!("{}::{}", state.config.app_service_bind_address, app_port);
     let mut docker_args = vec![
@@ -1656,12 +1707,17 @@ mod tests {
     }
 
     #[test]
-    fn uses_a_stable_container_name_per_project() {
-        let project_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+    fn uses_a_stable_container_name_per_service() {
+        let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
         assert_eq!(
-            format!("knotree-app-{}", project_id.simple()),
+            format!("knotree-app-{}", service_id.simple()),
             "knotree-app-11111111222233334444555555555555"
         );
+    }
+
+    #[test]
+    fn caps_a_project_at_six_app_services() {
+        assert_eq!(MAX_APP_SERVICES_PER_PROJECT, 6);
     }
 
     #[test]

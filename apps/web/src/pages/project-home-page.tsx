@@ -58,8 +58,8 @@ import type {
 
 import "./project-home.css"
 
-type TopologyNodeId = "postgres" | "project"
-type ConnectorId = "project-postgres"
+type TopologyNodeId = string
+type ConnectorId = string
 type Environment = "production" | "staging"
 type Theme = "light" | "dark"
 type WorkspaceView = "topology" | "logs"
@@ -77,7 +77,7 @@ type TopologyNode = {
 
 type PersistedDashboardState = {
   zoom?: number
-  selectedNode?: TopologyNodeId | null
+  selectedNode?: string | null
 }
 
 export function ProjectHomePage() {
@@ -185,7 +185,7 @@ function TopologyDashboard({
   const { session, signOut } = useAuth()
   const [postgresResource, setPostgresResource] =
     useState<PostgresResource | null>(null)
-  const [appService, setAppService] = useState<AppService | null>(null)
+  const [appServices, setAppServices] = useState<AppService[]>([])
   const [resourcesLoading, setResourcesLoading] = useState(true)
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
@@ -199,38 +199,52 @@ function TopologyDashboard({
   )
   const [activeView, setActiveView] = useState<WorkspaceView>("topology")
   const nodes = useMemo<TopologyNode[]>(() => {
-    const projectNode: TopologyNode = {
+    const databaseNode: TopologyNode | null = postgresResource
+      ? {
+          id: "postgres",
+          title: postgresResource.name,
+          subtitle: postgresResource.databaseName,
+          type: "PostgreSQL database",
+          volume: postgresResource.databaseName,
+          status: resourceStatusLabel(postgresResource.status),
+          resource: postgresResource,
+          position: { left: 50, top: 12 },
+        }
+      : null
+    const serviceNodes = appServices.map((service, index) => {
+      const column = index % 3
+      const row = Math.floor(index / 3)
+      return {
+        id: appServiceNodeId(service.id),
+        title: appServices.length === 1 ? project.name : service.name,
+        subtitle:
+          appServices.length === 1
+            ? `${service.name} · ${service.image}`
+            : service.image,
+        type: "Docker app service",
+        volume: service.containerName ?? `${service.name}-volume`,
+        status: resourceStatusLabel(service.status),
+        resource: service,
+        position: {
+          left: appServices.length === 1 ? 50 : 20 + column * 30,
+          top: postgresResource ? 38 + row * 30 : 24 + row * 30,
+        },
+      }
+    })
+    if (serviceNodes.length > 0) {
+      return databaseNode ? [databaseNode, ...serviceNodes] : serviceNodes
+    }
+    const emptyServiceNode: TopologyNode = {
       id: "project",
       title: project.name,
-      subtitle: appService?.image ?? project.slug,
+      subtitle: project.slug,
       type: "App service",
-      volume: appService?.containerName ?? `${project.slug}-volume`,
-      status: appService
-        ? resourceStatusLabel(appService.status)
-        : "Needs setup",
-      resource: appService ?? undefined,
-      position: postgresResource
-        ? { left: 42, top: 53 }
-        : { left: 50, top: 35 },
+      volume: `${project.slug}-volume`,
+      status: "Needs setup",
+      position: postgresResource ? { left: 50, top: 42 } : { left: 50, top: 35 },
     }
-    if (!postgresResource) {
-      return [projectNode]
-    }
-
-    return [
-      {
-        id: "postgres",
-        title: postgresResource.name,
-        subtitle: postgresResource.databaseName,
-        type: "PostgreSQL database",
-        volume: postgresResource.databaseName,
-        status: resourceStatusLabel(postgresResource.status),
-        resource: postgresResource,
-        position: { left: 42, top: 20 },
-      },
-      projectNode,
-    ]
-  }, [appService, postgresResource, project.name, project.slug])
+    return databaseNode ? [databaseNode, emptyServiceNode] : [emptyServiceNode]
+  }, [appServices, postgresResource, project.name, project.slug])
   const stateKey = `project-topology-dashboard-state:${project.id}`
   const initialState = useMemo(() => readPersistedState(stateKey), [stateKey])
   const [zoom, setZoom] = useState(initialState.zoom)
@@ -260,7 +274,7 @@ function TopologyDashboard({
           return
         }
         setPostgresResource(postgresResources[0] ?? null)
-        setAppService(appServices[0] ?? null)
+        setAppServices(appServices)
         setResourcesLoading(false)
       })
       .catch((error: unknown) => {
@@ -280,7 +294,9 @@ function TopologyDashboard({
     }
   }, [projectSlug, workspaceSlug])
 
-  const appServiceIsProvisioning = appService?.status === "provisioning"
+  const appServiceIsProvisioning = appServices.some(
+    (service) => service.status === "provisioning"
+  )
 
   useEffect(() => {
     if (!appServiceIsProvisioning) {
@@ -291,8 +307,8 @@ function TopologyDashboard({
     const refresh = () => {
       void listAppServices(workspaceSlug, projectSlug)
         .then((resources) => {
-          if (active && resources[0]) {
-            setAppService(resources[0])
+          if (active) {
+            setAppServices(resources)
           }
         })
         .catch(() => {
@@ -408,18 +424,24 @@ function TopologyDashboard({
 
   function handleAppServiceAdd() {
     setAddMenuOpen(false)
-    if (appService?.status === "ready") {
-      setSelectedNode("project")
-      showToast("App service is already deployed")
+    if (appServices.length >= 6) {
+      showToast("A project can have up to 6 app services")
       return
     }
     setAppServiceDialogOpen(true)
   }
 
   function handleAppServiceCreated(resource: AppService) {
-    setAppService(resource)
+    setAppServices((current) => {
+      const existing = current.some((service) => service.id === resource.id)
+      return existing
+        ? current.map((service) =>
+            service.id === resource.id ? resource : service
+          )
+        : [...current, resource]
+    })
     setResourceError(null)
-    setSelectedNode("project")
+    setSelectedNode(appServiceNodeId(resource.id))
     showToast(
       resource.status === "provisioning"
         ? "App service deployment started"
@@ -702,7 +724,7 @@ function TopologyDashboard({
           <LogsWorkspace
             project={project}
             environment={environment}
-            appService={appService}
+            appServices={appServices}
             workspaceSlug={workspaceSlug}
             projectSlug={projectSlug}
           />
@@ -779,6 +801,7 @@ function TopologyDashboard({
                     <ProjectAddOption
                       mark="S"
                       label="App service"
+                      disabled={appServices.length >= 6}
                       onClick={handleAppServiceAdd}
                     />
                   </div>
@@ -816,21 +839,34 @@ function TopologyDashboard({
                     <path d="M0 0 5 2.5 0 5z" fill="var(--project-accent)" />
                   </marker>
                 </defs>
-                {postgresResource && (
-                  <path
-                    className={connectorClassName(
-                      "project-postgres",
-                      selectedNode
-                    )}
-                    data-connector="project-postgres"
-                    d="M42 53 V46 H42 V44"
-                    markerEnd={
-                      selectedNode === "postgres"
-                        ? "url(#project-arrowhead-accent)"
-                        : "url(#project-arrowhead)"
+                {postgresResource &&
+                  appServices.map((service) => {
+                    if (!service.databaseConnection) {
+                      return null
                     }
-                  />
-                )}
+                    const serviceNode = nodes.find(
+                      (node) => node.id === appServiceNodeId(service.id)
+                    )
+                    if (!serviceNode) {
+                      return null
+                    }
+                    const connector = appServiceDatabaseConnectorId(service.id)
+                    const left = serviceNode.position.left
+                    const top = serviceNode.position.top
+                    return (
+                      <path
+                        key={connector}
+                        className={connectorClassName(connector, selectedNode)}
+                        data-connector={connector}
+                        d={`M50 27 V32 H${left} V${top}`}
+                        markerEnd={
+                          selectedNode === serviceNode.id
+                            ? "url(#project-arrowhead-accent)"
+                            : "url(#project-arrowhead)"
+                        }
+                      />
+                    )
+                  })}
               </svg>
 
               {resourcesLoading && (
@@ -877,6 +913,8 @@ function TopologyDashboard({
                     key={node.id}
                     className={cn(
                       "project-node-card",
+                      node.resource?.resourceType === "app" &&
+                        "project-app-node",
                       selectedNode === node.id && "is-selected"
                     )}
                     style={{
@@ -1020,7 +1058,11 @@ function TopologyDashboard({
           onToast={showToast}
           onOpenLogs={openResourceLogs}
           onAppServiceUpdated={(resource) => {
-            setAppService(resource)
+            setAppServices((current) =>
+              current.map((service) =>
+                service.id === resource.id ? resource : service
+              )
+            )
             setResourceError(null)
           }}
         />
@@ -1047,6 +1089,7 @@ function TopologyDashboard({
         projectSlug={projectSlug}
         open={appServiceDialogOpen}
         onOpenChange={setAppServiceDialogOpen}
+        appServiceCount={appServices.length}
         onCreated={handleAppServiceCreated}
       />
 
@@ -1086,69 +1129,80 @@ function ProjectRailButton({
 function LogsWorkspace({
   project,
   environment,
-  appService,
+  appServices,
   workspaceSlug,
   projectSlug,
 }: {
   project: Project
   environment: string
-  appService: AppService | null
+  appServices: AppService[]
   workspaceSlug: string
   projectSlug: string
 }) {
   const [resourceFilter, setResourceFilter] = useState("all")
   const [search, setSearch] = useState("")
   const [live, setLive] = useState(true)
-  const deployment = appService?.deployment
-  const [liveDeployment, setLiveDeployment] =
-    useState<AppServiceDeployment | null>(null)
-  const deploymentId = deployment?.id
-  const deploymentIsActive = deployment?.status === "provisioning"
+  const [liveDeployments, setLiveDeployments] = useState<
+    Record<string, AppServiceDeployment>
+  >({})
 
   useEffect(() => {
-    if (
-      !live ||
-      !deploymentId ||
-      !deploymentIsActive ||
-      typeof EventSource === "undefined"
-    ) {
+    if (!live || typeof EventSource === "undefined") {
       return undefined
     }
-
-    const source = new EventSource(
-      appServiceDeploymentEventsUrl(workspaceSlug, projectSlug, deploymentId),
-      { withCredentials: true }
-    )
-    source.addEventListener("deployment", (event) => {
-      try {
-        const nextDeployment = JSON.parse(
-          (event as MessageEvent<string>).data
-        ) as AppServiceDeployment
-        setLiveDeployment(nextDeployment)
-        if (nextDeployment.status !== "provisioning") {
-          source.close()
-        }
-      } catch {
-        // Keep the saved deployment snapshot when an event cannot be decoded.
+    const sources = appServices.flatMap((service) => {
+      const deployment = service.deployment
+      if (!deployment || deployment.status !== "provisioning") {
+        return []
       }
+      const source = new EventSource(
+        appServiceDeploymentEventsUrl(workspaceSlug, projectSlug, deployment.id),
+        { withCredentials: true }
+      )
+      source.addEventListener("deployment", (event) => {
+        try {
+          const nextDeployment = JSON.parse(
+            (event as MessageEvent<string>).data
+          ) as AppServiceDeployment
+          setLiveDeployments((current) => ({
+            ...current,
+            [service.id]: nextDeployment,
+          }))
+          if (nextDeployment.status !== "provisioning") {
+            source.close()
+          }
+        } catch {
+          // Keep the saved deployment snapshot when an event cannot be decoded.
+        }
+      })
+      source.onerror = () => source.close()
+      return [source]
     })
-    source.onerror = () => source.close()
-    return () => source.close()
-  }, [deploymentId, deploymentIsActive, live, projectSlug, workspaceSlug])
+    return () => sources.forEach((source) => source.close())
+  }, [appServices, live, projectSlug, workspaceSlug])
 
-  const deploymentForLogs =
-    liveDeployment?.id === deployment?.id ? liveDeployment : deployment
-  const deploymentLogs = deploymentForLogs?.logs ?? []
   const normalizedSearch = search.trim().toLowerCase()
-  const filteredDeploymentLogs = deploymentLogs.filter((line) =>
-    line.toLowerCase().includes(normalizedSearch)
-  )
   const showAppServiceLogs =
     resourceFilter === "all" || resourceFilter === "project"
-  const visibleDeployment =
-    deploymentForLogs && showAppServiceLogs
-      ? { ...deploymentForLogs, logs: filteredDeploymentLogs }
-      : null
+  const visibleDeployments = showAppServiceLogs
+    ? appServices.flatMap((service) => {
+        const deployment = liveDeployments[service.id] ?? service.deployment
+        if (!deployment) {
+          return []
+        }
+        return [
+          {
+            service,
+            deployment: {
+              ...deployment,
+              logs: deployment.logs.filter((line) =>
+                line.toLowerCase().includes(normalizedSearch)
+              ),
+            },
+          },
+        ]
+      })
+    : []
 
   return (
     <section className="project-logs-shell" aria-label={`${project.name} logs`}>
@@ -1193,15 +1247,18 @@ function LogsWorkspace({
         </div>
       </div>
       <div className="project-logs-stream" role="log" aria-live="polite">
-        {visibleDeployment ? (
-          <div className="project-logs-deployment">
-            <AppServiceDeploymentLogs deployment={visibleDeployment} compact />
-            {!live && (
-              <span className="project-logs-filter-note">
-                Live tail paused; showing the last saved deployment snapshot.
-              </span>
-            )}
-          </div>
+        {visibleDeployments.length > 0 ? (
+          visibleDeployments.map(({ service, deployment }) => (
+            <div key={service.id} className="project-logs-deployment">
+              <strong>{service.name}</strong>
+              <AppServiceDeploymentLogs deployment={deployment} compact />
+              {!live && (
+                <span className="project-logs-filter-note">
+                  Live tail paused; showing the last saved deployment snapshot.
+                </span>
+              )}
+            </div>
+          ))
         ) : (
           <div className="project-logs-empty">
             <span className="project-logs-empty-icon" aria-hidden="true">
@@ -1229,14 +1286,21 @@ function LogsWorkspace({
 function ProjectAddOption({
   label,
   mark,
+  disabled = false,
   onClick,
 }: {
   label: string
   mark: string
+  disabled?: boolean
   onClick: () => void
 }) {
   return (
-    <button className="project-menu-option" type="button" onClick={onClick}>
+    <button
+      className="project-menu-option"
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+    >
       <span className="project-menu-icon" aria-hidden="true">
         {mark}
       </span>
@@ -1252,12 +1316,19 @@ function NodeIcon({ nodeId }: { nodeId: TopologyNodeId }) {
   return <GitBranchIcon aria-hidden="true" />
 }
 
+function appServiceNodeId(serviceId: string) {
+  return `app:${serviceId}`
+}
+
+function appServiceDatabaseConnectorId(serviceId: string) {
+  return `database:app:${serviceId}`
+}
+
 function connectorClassName(
   connector: ConnectorId,
   selectedNode: TopologyNodeId | null
 ) {
-  const highlighted =
-    connector === "project-postgres" && selectedNode === "postgres"
+  const highlighted = selectedNode !== null && connector.includes(selectedNode)
   return cn("project-connector", highlighted && "is-highlighted")
 }
 
@@ -1299,7 +1370,11 @@ function readPersistedState(key: string): Required<PersistedDashboardState> {
 }
 
 function isTopologyNodeId(value: unknown): value is TopologyNodeId {
-  return value === "postgres" || value === "project"
+  return (
+    value === "postgres" ||
+    value === "project" ||
+    (typeof value === "string" && value.startsWith("app:") && value.length > 4)
+  )
 }
 
 function getInitial(value: string) {

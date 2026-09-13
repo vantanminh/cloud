@@ -19,7 +19,9 @@ const mocks = vi.hoisted(() => ({
   getDatabaseTableData: vi.fn(),
   getAppServiceLogs: vi.fn(),
   listDatabaseTables: vi.fn(),
+  listPostgresResources: vi.fn(),
   updateAppService: vi.fn(),
+  updateAppServiceDatabase: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -80,6 +82,7 @@ describe("ResourceWorkspace database pane", () => {
       ],
       message: null,
     })
+    mocks.listPostgresResources.mockResolvedValue([])
   })
 
   it("uses the first real table in the starter query", async () => {
@@ -220,7 +223,7 @@ describe("ResourceWorkspace database pane", () => {
     })
   })
 
-  it("shows the automatically assigned private database connection", async () => {
+  it("shows the manually assigned private database connection", async () => {
     const user = userEvent.setup()
     render(
       <ResourceWorkspace
@@ -274,7 +277,7 @@ describe("ResourceWorkspace database pane", () => {
 
     const dialog = screen.getByRole("dialog")
     expect(
-      within(dialog).getByText("Postgres connected automatically")
+      within(dialog).getByText("Postgres connection assigned")
     ).toBeInTheDocument()
     expect(within(dialog).getByText("postgres:5432")).toBeInTheDocument()
 
@@ -338,6 +341,7 @@ describe("ResourceWorkspace database pane", () => {
 describe("ResourceWorkspace settings pane", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.listPostgresResources.mockResolvedValue([])
   })
 
   it("redeploys the app when the container port is saved", async () => {
@@ -406,6 +410,7 @@ describe("ResourceWorkspace settings pane", () => {
       expect(mocks.updateAppService).toHaveBeenCalledWith(
         "mimo-i-tech",
         "test-2",
+        "app-resource-id",
         { appPort: 80 }
       )
     })
@@ -462,5 +467,104 @@ describe("ResourceWorkspace settings pane", () => {
     expect(
       within(dialog).getByText("Use a container port between 1 and 65535.")
     ).toBeInTheDocument()
+  })
+
+  it("assigns a PostgreSQL resource from the service settings menu", async () => {
+    const user = userEvent.setup()
+    const onAppServiceUpdated = vi.fn()
+    const onToast = vi.fn()
+    mocks.listPostgresResources.mockResolvedValue([
+      {
+        id: "resource-id",
+        name: "Analytics",
+        resourceType: "postgres",
+        status: "ready",
+        databaseName: "knotree_db_project",
+        username: "knotree_role_project",
+        host: "127.0.0.1",
+        port: 5432,
+        connectionString: null,
+        clusterProvider: "docker",
+      },
+    ])
+    mocks.updateAppServiceDatabase.mockResolvedValue({
+      id: "app-resource-id",
+      name: "App service",
+      resourceType: "app",
+      status: "ready",
+      image: "nginx:alpine",
+      imageSource: "public",
+      appPort: 3000,
+      host: "localhost",
+      port: 59601,
+      serviceUrl: "http://localhost:59601",
+      containerName: "knotree-app-app-resource-id",
+      databaseConnection: {
+        resourceId: "resource-id",
+        name: "Analytics",
+        databaseName: "knotree_db_project",
+        username: "knotree_role_project",
+        networkName: "knotree-net-project",
+        host: "postgres",
+        port: 5432,
+        environmentVariables: ["DATABASE_URL"],
+      },
+    })
+
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "app:app-resource-id",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "nginx:alpine",
+            imageSource: "public",
+            appPort: 3000,
+            host: "localhost",
+            port: 59601,
+            serviceUrl: "http://localhost:59601",
+            containerName: "knotree-app-app-resource-id",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+        onAppServiceUpdated={onAppServiceUpdated}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    const databaseSelect = await within(dialog).findByLabelText(
+      "PostgreSQL resource for app service"
+    )
+    await user.selectOptions(databaseSelect, "resource-id")
+
+    await waitFor(() => {
+      expect(mocks.updateAppServiceDatabase).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "app-resource-id",
+        { databaseResourceId: "resource-id" }
+      )
+    })
+    expect(onAppServiceUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ databaseConnection: expect.any(Object) })
+    )
+    expect(onToast).toHaveBeenCalledWith(
+      "Postgres connection assigned. The service was redeployed."
+    )
   })
 })

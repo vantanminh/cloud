@@ -1323,6 +1323,24 @@
   margin-top: 16px;
 }
 
+.resource-workspace-attachment-field {
+  display: grid;
+  max-width: 420px;
+  gap: 6px;
+  color: var(--project-muted);
+  font-size: 13px;
+}
+
+.resource-workspace-attachment-field select {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--project-border);
+  border-radius: 8px;
+  background: var(--project-bg);
+  color: var(--project-fg);
+  font: inherit;
+}
+
 .resource-workspace-app-port {
   display: grid;
   gap: 8px;

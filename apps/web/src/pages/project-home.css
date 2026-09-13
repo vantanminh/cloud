@@ -531,6 +531,11 @@
   background: var(--project-surface);
 }
 
+.project-menu-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .project-menu-option > span:last-child {
   font-weight: 700;
 }
@@ -668,6 +673,10 @@
     border-color 160ms var(--project-ease),
     box-shadow 160ms var(--project-ease),
     transform 160ms var(--project-ease);
+}
+
+.project-app-node {
+  width: min(360px, 29vw);
 }
 
 .project-node-card:hover {

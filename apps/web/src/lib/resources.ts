@@ -28,6 +28,10 @@ export type UpdateAppServiceInput = {
   appPort: number
 }
 
+export type UpdateAppServiceDatabaseInput = {
+  databaseResourceId: string | null
+}
+
 const inFlightDatabaseRequests = new Map<string, Promise<unknown>>()
 
 function deduplicateDatabaseRequest<T>(key: string, request: () => Promise<T>) {
@@ -131,12 +135,31 @@ export function createAppService(
 export function updateAppService(
   workspaceSlug: string,
   projectSlug: string,
+  appServiceId: string,
   input: UpdateAppServiceInput
 ) {
-  return apiRequest<AppService>(appServicesPath(workspaceSlug, projectSlug), {
-    method: "PATCH",
-    body: input,
-  })
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}`,
+    {
+      method: "PATCH",
+      body: input,
+    }
+  )
+}
+
+export function updateAppServiceDatabase(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string,
+  input: UpdateAppServiceDatabaseInput
+) {
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/database`,
+    {
+      method: "PATCH",
+      body: input,
+    }
+  )
 }
 
 export function getGithubConnectionStatus() {
