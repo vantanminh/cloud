@@ -92,6 +92,7 @@ the PostgreSQL resource contract:
 | GET | `app-services` | read up to six App service records for the project |
 | POST | `app-services` | validate an image and deploy a new Docker App service |
 | PATCH | `app-services/{app_service_id}` | redeploy one service with a new container port |
+| PATCH | `app-services/{app_service_id}/auto-deploy` | enable or disable automatic GHCR image polling |
 | PATCH | `app-services/{app_service_id}/database` | assign or remove the service's PostgreSQL connection |
 | GET | `app-services/{app_service_id}/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live App service CPU, memory, volume, network RX/TX, and disk read/write metrics plus retained history |
 | GET | `auth/github/status` | report the signed-in user's package connection |
@@ -151,6 +152,15 @@ variables. This Docker implementation is enabled by default only in local
 development; the production Kubernetes chart keeps App service provisioning
 disabled until a Docker runtime integration and public routing layer are
 configured for the API deployment.
+
+For GitHub-sourced App services, the API worker checks the configured GHCR tag
+once per minute. It serializes registry login, pull, and logout operations
+because Docker's local registry credentials are process-global, then compares
+the pulled image identity with the identity of the running container. A change
+is recorded as a normal deployment so the existing deployment log and status
+flow remain visible. Registry or credential failures update a safe diagnostic
+field while leaving the current container running. The Settings panel exposes
+the toggle, last checked identity, timestamp, and diagnostic message.
 
 The App service Metrics tab uses the same five-second live polling, bounded
 history, and hover detail as the database Metrics tab. Its volume series tracks

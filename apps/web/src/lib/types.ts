@@ -77,6 +77,10 @@ export type AppService = {
   serviceUrl: string | null
   containerName: string | null
   errorMessage?: string
+  autoDeployEnabled?: boolean
+  deployedImageDigest?: string | null
+  autoDeployCheckedAt?: string | null
+  autoDeployError?: string | null
   databaseConnection?: AppServiceDatabaseConnection
   deployment?: AppServiceDeployment
 }

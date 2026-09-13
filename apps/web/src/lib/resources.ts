@@ -23,10 +23,15 @@ export type CreateAppServiceInput = {
   image: string
   imageSource: "public" | "github"
   appPort: number
+  autoDeploy?: boolean
 }
 
 export type UpdateAppServiceInput = {
   appPort: number
+}
+
+export type UpdateAppServiceAutoDeployInput = {
+  enabled: boolean
 }
 
 export type UpdateAppServiceDatabaseInput = {
@@ -152,6 +157,21 @@ export function updateAppService(
 ) {
   return apiRequest<AppService>(
     `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}`,
+    {
+      method: "PATCH",
+      body: input,
+    }
+  )
+}
+
+export function updateAppServiceAutoDeploy(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string,
+  input: UpdateAppServiceAutoDeployInput
+) {
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/auto-deploy`,
     {
       method: "PATCH",
       body: input,

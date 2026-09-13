@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   listDatabaseTables: vi.fn(),
   listPostgresResources: vi.fn(),
   updateAppService: vi.fn(),
+  updateAppServiceAutoDeploy: vi.fn(),
   updateAppServiceDatabase: vi.fn(),
 }))
 
@@ -494,6 +495,86 @@ describe("ResourceWorkspace settings pane", () => {
     )
     expect(onToast).toHaveBeenCalledWith(
       "Container port updated. The app was redeployed."
+    )
+  })
+
+  it("toggles automatic GitHub image deploys from settings", async () => {
+    const user = userEvent.setup()
+    const onAppServiceUpdated = vi.fn()
+    const onToast = vi.fn()
+    mocks.updateAppServiceAutoDeploy.mockResolvedValue({
+      id: "app-resource-id",
+      name: "App service",
+      resourceType: "app",
+      status: "ready",
+      image: "ghcr.io/acme/app:latest",
+      imageSource: "github",
+      appPort: 3000,
+      host: "localhost",
+      port: 59601,
+      serviceUrl: "http://localhost:59601",
+      containerName: "knotree-app-project",
+      autoDeployEnabled: false,
+      deployedImageDigest: "sha256:old",
+    })
+
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "project",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "App service",
+            resourceType: "app",
+            status: "ready",
+            image: "ghcr.io/acme/app:latest",
+            imageSource: "github",
+            appPort: 3000,
+            host: "localhost",
+            port: 51952,
+            serviceUrl: "http://localhost:51952",
+            containerName: "knotree-app-project",
+            autoDeployEnabled: true,
+            deployedImageDigest: "sha256:old",
+          },
+        }}
+        environment="development"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+        onAppServiceUpdated={onAppServiceUpdated}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    const toggle = within(dialog).getByRole("checkbox", {
+      name: "Auto deploy new GitHub images",
+    })
+    expect(toggle).toBeChecked()
+    await user.click(toggle)
+
+    await waitFor(() => {
+      expect(mocks.updateAppServiceAutoDeploy).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "app-resource-id",
+        { enabled: false }
+      )
+    })
+    expect(onAppServiceUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ autoDeployEnabled: false })
+    )
+    expect(onToast).toHaveBeenCalledWith(
+      "Automatic GitHub image deploys disabled."
     )
   })
 

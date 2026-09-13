@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::{future::join_all, stream};
 use serde::Deserialize;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::Command,
@@ -36,7 +36,8 @@ use crate::{
     models::{
         AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
         AppServiceMetricPoint, AppServiceMetricsResponse, AppServiceResponse,
-        CreateAppServiceRequest, UpdateAppServiceDatabaseRequest, UpdateAppServiceRequest,
+        CreateAppServiceRequest, UpdateAppServiceAutoDeployRequest,
+        UpdateAppServiceDatabaseRequest, UpdateAppServiceRequest,
     },
     projects, security,
     state::AppState,
@@ -49,6 +50,7 @@ const STATUS_PROVISIONING: &str = "provisioning";
 const STATUS_ERROR: &str = "error";
 const DEFAULT_APP_PORT: u16 = 3000;
 const MAX_APP_SERVICES_PER_PROJECT: i64 = 6;
+const AUTO_DEPLOY_INTERVAL_SECONDS: u64 = 60;
 const PROVISIONING_ERROR_MESSAGE: &str =
     "The Docker app service could not be deployed. Check the image and try again.";
 
@@ -66,6 +68,10 @@ struct AppServiceRow {
     status: String,
     error_message: Option<String>,
     database_resource_id: Option<Uuid>,
+    auto_deploy_enabled: bool,
+    deployed_image_digest: Option<String>,
+    auto_deploy_checked_at: Option<OffsetDateTime>,
+    auto_deploy_error: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -82,6 +88,25 @@ struct AppServiceDeploymentRow {
 struct AppServiceLogsTarget {
     container_name: Option<String>,
     status: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct AutoDeployCandidate {
+    id: Uuid,
+    image: String,
+    container_name: Option<String>,
+    github_connection_user_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedAutoDeployment {
+    deployment_id: Uuid,
+    service_id: Uuid,
+    project_id: Uuid,
+    image: String,
+    app_port: u16,
+    database_resource_id: Option<Uuid>,
+    database: Option<DatabaseResourceRow>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -103,7 +128,7 @@ pub struct AppServiceMetricsQuery {
     pub range: Option<String>,
 }
 
-const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id";
+const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
 const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -327,6 +352,86 @@ pub async fn logs(
     }))
 }
 
+pub async fn update_auto_deploy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Json(input): Json<UpdateAppServiceAutoDeployRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+
+    if state.config.database_cluster_provider != PROVIDER_DOCKER {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_DOCKER_REQUIRED",
+            message: "App services currently require the Docker provider.",
+        });
+    }
+
+    let mut transaction = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(advisory_lock_key(project_id))
+        .execute(&mut *transaction)
+        .await?;
+    let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2 FOR UPDATE"
+    ))
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+
+    if input.enabled && existing.image_source != IMAGE_SOURCE_GITHUB {
+        return Err(AppError::BadRequest {
+            code: "AUTO_DEPLOY_GITHUB_ONLY",
+            message: "Automatic image deploys are available for GitHub Container Registry images only.",
+        });
+    }
+    if input.enabled && existing.status != STATUS_READY {
+        return Err(AppError::Conflict {
+            code: "APP_SERVICE_NOT_READY",
+            message: "The app service must be ready before automatic image deploys can be enabled.",
+        });
+    }
+    if input.enabled && github::docker_credentials(&state, user.id).await?.is_none() {
+        return Err(AppError::Conflict {
+            code: "GITHUB_CONNECTION_REQUIRED",
+            message: "Connect GitHub before enabling automatic image deploys.",
+        });
+    }
+
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "UPDATE project_app_services
+         SET auto_deploy_enabled = $1,
+             github_connection_user_id = CASE WHEN $1 THEN $2 ELSE github_connection_user_id END,
+             auto_deploy_error = NULL,
+             updated_at = now()
+         WHERE id = $3
+         RETURNING {APP_SERVICE_COLUMNS}"
+    ))
+    .bind(input.enabled)
+    .bind(user.id)
+    .bind(app_service_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    let database =
+        database_resource_by_id(&state, project_id, service.database_resource_id).await?;
+    Ok(Json(app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
+    )?))
+}
+
 pub async fn metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -454,6 +559,9 @@ pub async fn create(
     let image = validate_image(&input.image)?;
     let image_source = validate_image_source(&input.image_source, &image)?;
     let app_port = validate_app_port(input.app_port)?;
+    let auto_deploy_enabled =
+        image_source == IMAGE_SOURCE_GITHUB && input.auto_deploy.unwrap_or(true);
+    let github_connection_user_id = (image_source == IMAGE_SOURCE_GITHUB).then_some(user.id);
     let service = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -475,7 +583,7 @@ pub async fn create(
         }
 
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {APP_SERVICE_COLUMNS}"
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -484,6 +592,8 @@ pub async fn create(
         .bind(&image_source)
         .bind(i32::from(app_port))
         .bind(STATUS_PROVISIONING)
+        .bind(auto_deploy_enabled)
+        .bind(github_connection_user_id)
         .fetch_one(&mut *transaction)
         .await?;
         transaction.commit().await?;
@@ -542,6 +652,7 @@ pub async fn create(
             github_credentials,
             None,
             None,
+            false,
             false,
         )
         .await;
@@ -694,7 +805,7 @@ pub async fn update(
     };
 
     let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = $7, error_message = NULL, auto_deploy_error = NULL, updated_at = now() WHERE id = $8 RETURNING {APP_SERVICE_COLUMNS}"
     ))
     .bind(STATUS_READY)
     .bind(&provisioned.host)
@@ -702,6 +813,7 @@ pub async fn update(
     .bind(i32::from(provisioned.app_port))
     .bind(&provisioned.container_name)
     .bind(database_resource_id)
+    .bind(&provisioned.image_digest)
     .bind(service.id)
     .fetch_one(&state.db)
     .await?;
@@ -870,7 +982,7 @@ pub async fn update_database_connection(
     };
 
     let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = $7, error_message = NULL, auto_deploy_error = NULL, updated_at = now() WHERE id = $8 RETURNING {APP_SERVICE_COLUMNS}"
     ))
     .bind(STATUS_READY)
     .bind(&provisioned.host)
@@ -878,6 +990,7 @@ pub async fn update_database_connection(
     .bind(i32::from(provisioned.app_port))
     .bind(&provisioned.container_name)
     .bind(input.database_resource_id)
+    .bind(&provisioned.image_digest)
     .bind(service.id)
     .fetch_one(&state.db)
     .await?;
@@ -997,6 +1110,12 @@ fn app_service_response(
         service_url,
         container_name: service.container_name.clone(),
         error_message: service.error_message.clone(),
+        auto_deploy_enabled: service.auto_deploy_enabled,
+        deployed_image_digest: service.deployed_image_digest.clone(),
+        auto_deploy_checked_at: service
+            .auto_deploy_checked_at
+            .and_then(|value| value.format(&Rfc3339).ok()),
+        auto_deploy_error: service.auto_deploy_error.clone(),
         database_connection: service
             .database_resource_id
             .and_then(|resource_id| database.filter(|database| database.id == resource_id))
@@ -1110,6 +1229,7 @@ async fn run_app_service_deployment(
     database: Option<DatabaseResourceRow>,
     database_resource_id: Option<Uuid>,
     honor_requested_port: bool,
+    automatic: bool,
 ) {
     let logger = DeploymentLogger {
         db: state.db.clone(),
@@ -1133,7 +1253,7 @@ async fn run_app_service_deployment(
         )
         .await?;
         sqlx::query(
-            "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7",
+            "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = $7, error_message = NULL, auto_deploy_error = NULL, auto_deploy_checked_at = CASE WHEN $8 THEN now() ELSE auto_deploy_checked_at END, updated_at = now() WHERE id = $9",
         )
         .bind(STATUS_READY)
         .bind(&provisioned.host)
@@ -1141,6 +1261,8 @@ async fn run_app_service_deployment(
         .bind(i32::from(provisioned.app_port))
         .bind(&provisioned.container_name)
         .bind(database_resource_id)
+        .bind(&provisioned.image_digest)
+        .bind(automatic)
         .bind(service_id)
         .execute(&state.db)
         .await?;
@@ -1169,10 +1291,12 @@ async fn run_app_service_deployment(
             }
         }
         if let Err(update_error) = sqlx::query(
-            "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = NULL, updated_at = now() WHERE id = $3",
+            "UPDATE project_app_services SET status = $1, error_message = $2, database_resource_id = $3, auto_deploy_error = CASE WHEN $4 THEN $2 ELSE auto_deploy_error END, auto_deploy_checked_at = CASE WHEN $4 THEN now() ELSE auto_deploy_checked_at END, updated_at = now() WHERE id = $5",
         )
         .bind(STATUS_ERROR)
         .bind(PROVISIONING_ERROR_MESSAGE)
+        .bind(database_resource_id)
+        .bind(automatic)
         .bind(service_id)
         .execute(&state.db)
         .await
@@ -1186,6 +1310,255 @@ async fn run_app_service_deployment(
             tracing::error!(error = %finish_error, "could not finish app service deployment record");
         }
     }
+}
+
+const AUTO_DEPLOY_CHECK_ERROR_MESSAGE: &str =
+    "Automatic image update check failed. Verify the GitHub connection and image tag.";
+
+pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(AUTO_DEPLOY_INTERVAL_SECONDS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            if let Err(error) = poll_auto_deployments(&state).await {
+                tracing::warn!(error = %error, "could not enumerate automatic app service deployments");
+            }
+        }
+    })
+}
+
+async fn poll_auto_deployments(state: &AppState) -> std::result::Result<(), sqlx::Error> {
+    let candidates = sqlx::query_as::<_, AutoDeployCandidate>(
+        "SELECT id, image, container_name, github_connection_user_id
+         FROM project_app_services
+         WHERE auto_deploy_enabled = TRUE
+           AND image_source = $1
+           AND status = $2
+         ORDER BY auto_deploy_checked_at NULLS FIRST, id ASC",
+    )
+    .bind(IMAGE_SOURCE_GITHUB)
+    .bind(STATUS_READY)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Registry login is process-global in Docker. Check services serially so
+    // two users' credentials cannot race through `docker login`/`logout`.
+    for candidate in candidates {
+        if let Err(error) = check_auto_deploy_candidate(state, candidate.clone()).await {
+            tracing::warn!(
+                app_service_id = %candidate.id,
+                error = %error,
+                "automatic app service image check failed"
+            );
+            if let Err(update_error) = record_auto_deploy_error(state, candidate.id).await {
+                tracing::warn!(
+                    app_service_id = %candidate.id,
+                    error = %update_error,
+                    "could not persist automatic app service image check error"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn check_auto_deploy_candidate(
+    state: &AppState,
+    candidate: AutoDeployCandidate,
+) -> Result<()> {
+    let user_id = candidate
+        .github_connection_user_id
+        .context("the automatic deploy has no GitHub connection owner")?;
+    let credentials = github::docker_credentials(state, user_id)
+        .await
+        .map_err(|error| anyhow::anyhow!("could not load GitHub credentials: {error:?}"))?
+        .context("the GitHub connection is no longer available")?;
+    let container_name = candidate
+        .container_name
+        .as_deref()
+        .context("the ready app service has no container")?;
+    let running_digest = docker_container_image_digest(state, container_name)
+        .await?
+        .context("Docker did not return the running container image digest")?;
+
+    pull_github_image(state, &credentials, &candidate.image, None).await?;
+    let pulled_digest = docker_image_digest(state, &candidate.image, None)
+        .await?
+        .context("Docker did not return the pulled image digest")?;
+    // The running container is authoritative. The stored digest is metadata
+    // and can be stale if an operator redeployed outside of this API.
+    let baseline_digest = running_digest;
+
+    if baseline_digest == pulled_digest {
+        record_auto_deploy_check(state, candidate.id, &pulled_digest).await?;
+        return Ok(());
+    }
+
+    if let Some(queued) =
+        queue_auto_deployment(state, candidate.id, Some(&baseline_digest), &pulled_digest).await?
+    {
+        let credentials = Some(credentials);
+        let state = state.clone();
+        tokio::spawn(async move {
+            run_app_service_deployment(
+                state,
+                queued.deployment_id,
+                queued.service_id,
+                queued.project_id,
+                queued.image,
+                queued.app_port,
+                credentials,
+                queued.database,
+                queued.database_resource_id,
+                false,
+                true,
+            )
+            .await;
+        });
+    }
+    Ok(())
+}
+
+async fn record_auto_deploy_check(
+    state: &AppState,
+    service_id: Uuid,
+    digest: &str,
+) -> std::result::Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE project_app_services
+         SET deployed_image_digest = $1,
+             auto_deploy_checked_at = now(),
+             auto_deploy_error = NULL,
+             updated_at = now()
+         WHERE id = $2 AND auto_deploy_enabled = TRUE",
+    )
+    .bind(digest)
+    .bind(service_id)
+    .execute(&state.db)
+    .await
+    .map(|_| ())
+}
+
+async fn record_auto_deploy_error(
+    state: &AppState,
+    service_id: Uuid,
+) -> std::result::Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE project_app_services
+         SET auto_deploy_checked_at = now(), auto_deploy_error = $1, updated_at = now()
+         WHERE id = $2 AND auto_deploy_enabled = TRUE",
+    )
+    .bind(AUTO_DEPLOY_CHECK_ERROR_MESSAGE)
+    .bind(service_id)
+    .execute(&state.db)
+    .await
+    .map(|_| ())
+}
+
+async fn queue_auto_deployment(
+    state: &AppState,
+    service_id: Uuid,
+    expected_digest: Option<&str>,
+    pulled_digest: &str,
+) -> Result<Option<QueuedAutoDeployment>> {
+    let mut transaction = state.db.begin().await?;
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 FOR UPDATE"
+    ))
+    .bind(service_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .context("the app service disappeared during automatic deployment")?;
+
+    if service.status != STATUS_READY
+        || !service.auto_deploy_enabled
+        || service.image_source != IMAGE_SOURCE_GITHUB
+    {
+        transaction.commit().await?;
+        return Ok(None);
+    }
+
+    let current_digest = expected_digest.or(service.deployed_image_digest.as_deref());
+    if current_digest == Some(pulled_digest) {
+        sqlx::query(
+            "UPDATE project_app_services
+             SET deployed_image_digest = $1,
+                 auto_deploy_checked_at = now(),
+                 auto_deploy_error = NULL,
+                 updated_at = now()
+             WHERE id = $2",
+        )
+        .bind(pulled_digest)
+        .bind(service.id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        return Ok(None);
+    }
+
+    let database = match service.database_resource_id {
+        Some(resource_id) => Some(
+            sqlx::query_as::<_, DatabaseResourceRow>(&format!(
+                "SELECT {DATABASE_RESOURCE_COLUMNS}
+                 FROM project_postgres_databases
+                 WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+            ))
+            .bind(resource_id)
+            .bind(service.project_id)
+            .bind(PROVIDER_DOCKER)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .context("the attached database is no longer ready")?,
+        ),
+        None => None,
+    };
+    let app_port = u16::try_from(service.app_port)
+        .map_err(|_| anyhow::anyhow!("invalid app service container port"))?;
+    let deployment_id = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE project_app_services
+         SET status = $1, host = NULL, port = NULL, error_message = NULL,
+             auto_deploy_checked_at = now(), auto_deploy_error = NULL, updated_at = now()
+         WHERE id = $2",
+    )
+    .bind(STATUS_PROVISIONING)
+    .bind(service.id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO app_service_deployments (id, app_service_id, status, current_step, logs)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(deployment_id)
+    .bind(service.id)
+    .bind(STATUS_PROVISIONING)
+    .bind("Queued")
+    .bind(format!(
+        "Automatic deploy queued for image digest {}.",
+        short_image_digest(pulled_digest)
+    ))
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some(QueuedAutoDeployment {
+        deployment_id,
+        service_id: service.id,
+        project_id: service.project_id,
+        image: service.image,
+        app_port,
+        database_resource_id: service.database_resource_id,
+        database,
+    }))
+}
+
+fn short_image_digest(digest: &str) -> String {
+    if digest.len() <= 19 {
+        return digest.to_owned();
+    }
+    format!("{}…{}", &digest[..15], &digest[digest.len() - 4..])
 }
 
 async fn persist_app_service_metric_sample(
@@ -1440,6 +1813,7 @@ struct ProvisionedAppService {
     port: u16,
     app_port: u16,
     container_name: String,
+    image_digest: Option<String>,
 }
 
 fn parse_exposed_ports(output: &str) -> Vec<u16> {
@@ -1497,14 +1871,12 @@ async fn provision_docker(
         {
             bail!("private app images must be hosted on ghcr.io");
         }
-        docker_login(state, credentials, logger).await?;
-        let pull_result = docker_pull(state, image, logger).await;
-        let _ = docker_logout(state, logger).await;
-        pull_result?;
+        pull_github_image(state, credentials, image, logger).await?;
     } else {
         docker_pull(state, image, logger).await?;
     }
 
+    let image_digest = docker_image_digest(state, image, logger).await?;
     let declared_volumes = docker_image_declared_volumes(state, image, logger).await?;
     if !declared_volumes.is_empty() {
         bail!(
@@ -1600,6 +1972,7 @@ async fn provision_docker(
         port,
         app_port,
         container_name,
+        image_digest,
     })
 }
 
@@ -1621,6 +1994,51 @@ async fn docker_image_declared_volumes(
     )
     .await?;
     Ok(parse_declared_volumes(&output))
+}
+
+async fn docker_image_digest(
+    state: &AppState,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<Option<String>> {
+    log_deployment(logger, "Inspect image", "Reading the pulled image digest.").await?;
+    let output = run_docker_for_deployment(
+        state,
+        logger,
+        "Inspect image",
+        vec![
+            "image".to_owned(),
+            "inspect".to_owned(),
+            "--format={{.Id}}".to_owned(),
+            image.to_owned(),
+        ],
+    )
+    .await?;
+    Ok(parse_image_digest(&output))
+}
+
+async fn docker_container_image_digest(
+    state: &AppState,
+    container_name: &str,
+) -> Result<Option<String>> {
+    let output = docker_raw(
+        state,
+        [
+            "inspect".to_owned(),
+            "--format={{.Image}}".to_owned(),
+            container_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(parse_image_digest(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_image_digest(output: &str) -> Option<String> {
+    let digest = output.trim();
+    (!digest.is_empty() && digest.starts_with("sha256:")).then(|| digest.to_owned())
 }
 
 fn parse_declared_volumes(output: &str) -> Vec<String> {
@@ -1657,7 +2075,7 @@ async fn docker_pull(
     state: &AppState,
     image: &str,
     logger: Option<&DeploymentLogger>,
-) -> Result<()> {
+) -> Result<String> {
     log_deployment(logger, "Pull image", &format!("Pulling image {image}.")).await?;
     run_docker_for_deployment(
         state,
@@ -1666,7 +2084,21 @@ async fn docker_pull(
         vec!["pull".to_owned(), image.to_owned()],
     )
     .await
-    .map(|_| ())
+}
+
+async fn pull_github_image(
+    state: &AppState,
+    credentials: &GithubDockerCredentials,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<String> {
+    let _registry_lock = state.github_registry_lock.lock().await;
+    docker_login(state, credentials, logger).await?;
+    let pull_result = docker_pull(state, image, logger).await;
+    let logout_result = docker_logout(state, logger).await;
+    let output = pull_result?;
+    logout_result?;
+    Ok(output)
 }
 
 async fn docker_login(
@@ -2081,6 +2513,20 @@ mod tests {
     #[test]
     fn caps_a_project_at_six_app_services() {
         assert_eq!(MAX_APP_SERVICES_PER_PROJECT, 6);
+    }
+
+    #[test]
+    fn reads_docker_image_identities() {
+        assert_eq!(
+            parse_image_digest(" sha256:0123456789abcdef\n"),
+            Some("sha256:0123456789abcdef".to_owned())
+        );
+        assert_eq!(parse_image_digest(""), None);
+        assert_eq!(parse_image_digest("latest"), None);
+        assert_eq!(
+            short_image_digest("sha256:0123456789abcdef"),
+            "sha256:01234567…cdef"
+        );
     }
 
     #[test]

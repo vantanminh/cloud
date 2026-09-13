@@ -13,6 +13,7 @@ pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
     pub database_pools: Arc<RwLock<HashMap<Uuid, PgPool>>>,
+    pub github_registry_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -21,6 +22,7 @@ impl AppState {
             db,
             config,
             database_pools: Arc::new(RwLock::new(HashMap::new())),
+            github_registry_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

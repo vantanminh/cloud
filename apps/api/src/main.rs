@@ -5,7 +5,7 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use knotree_api::{config::Config, database, router, state::AppState};
+use knotree_api::{app_services, config::Config, database, router, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,6 +31,7 @@ async fn main() -> Result<()> {
     let state = AppState::new(db, config);
     let metrics_sampler = database::spawn_metrics_sampler(state.clone());
     let storage_guard = database::spawn_storage_guard(state.clone());
+    let auto_deployer = app_services::spawn_auto_deployer(state.clone());
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!(%bind_addr, "knotree api listening");
 
@@ -39,6 +40,7 @@ async fn main() -> Result<()> {
         .await?;
     metrics_sampler.abort();
     storage_guard.abort();
+    auto_deployer.abort();
     Ok(())
 }
 

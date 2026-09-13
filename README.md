@@ -69,6 +69,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
+- `PATCH /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/auto-deploy`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/logs` (recent Docker runtime logs)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/deployments/:deploymentId/events` (SSE deployment progress/log stream)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
@@ -95,6 +96,11 @@ deploy dialog). Each Knotree user has an independent GitHub connection; the API
 stores that user's encrypted OAuth package token only long enough to authenticate
 the Docker pull and then logs out of the registry. The response includes the
 random published port and `serviceUrl`.
+GitHub-sourced services can automatically poll their GHCR tag once per minute;
+when the pulled image identity changes, the API queues a normal redeployment.
+The Settings panel can enable or disable this watcher and reports the last
+checked image identity and any safe registry error. A failed check leaves the
+currently running container untouched.
 The local Docker implementation is enabled by default in development. The
 production Kubernetes deployment keeps it disabled until the API has an
 available Docker runtime and a public routing layer for app containers.

@@ -135,6 +135,10 @@ pub struct AppServiceResponse {
     pub service_url: Option<String>,
     pub container_name: Option<String>,
     pub error_message: Option<String>,
+    pub auto_deploy_enabled: bool,
+    pub deployed_image_digest: Option<String>,
+    pub auto_deploy_checked_at: Option<String>,
+    pub auto_deploy_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_connection: Option<AppServiceDatabaseConnectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,12 +152,19 @@ pub struct CreateAppServiceRequest {
     pub image: String,
     pub image_source: String,
     pub app_port: Option<u32>,
+    pub auto_deploy: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAppServiceRequest {
     pub app_port: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppServiceAutoDeployRequest {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]

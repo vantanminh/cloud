@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             get(app_services::metrics),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/auto-deploy",
+            patch(app_services::update_auto_deploy),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/database",
             patch(app_services::update_database_connection),
         )

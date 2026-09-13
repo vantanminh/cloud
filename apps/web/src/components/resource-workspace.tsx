@@ -43,6 +43,7 @@ import {
   listDatabaseTables,
   listPostgresResources,
   updateAppService,
+  updateAppServiceAutoDeploy,
   updateAppServiceDatabase,
 } from "@/lib/resources"
 import type {
@@ -2185,6 +2186,112 @@ function ConsolePane({
   )
 }
 
+function AutoDeployEditor({
+  appService,
+  workspaceSlug,
+  projectSlug,
+  onToast,
+  onAppServiceUpdated,
+}: {
+  appService: AppService
+  workspaceSlug: string
+  projectSlug: string
+  onToast: (message: string) => void
+  onAppServiceUpdated?: (resource: AppService) => void
+}) {
+  const isGithubImage = appService.imageSource === "github"
+  const [enabled, setEnabled] = useState(appService.autoDeployEnabled ?? false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const isBusy = isSaving || appService.status === "provisioning"
+
+  async function handleChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextEnabled = event.target.checked
+    setEnabled(nextEnabled)
+    setIsSaving(true)
+    setError(null)
+    try {
+      const resource = await updateAppServiceAutoDeploy(
+        workspaceSlug,
+        projectSlug,
+        appService.id,
+        { enabled: nextEnabled }
+      )
+      setEnabled(resource.autoDeployEnabled ?? nextEnabled)
+      onAppServiceUpdated?.(resource)
+      onToast(
+        nextEnabled
+          ? "Automatic GitHub image deploys enabled."
+          : "Automatic GitHub image deploys disabled."
+      )
+    } catch (caught) {
+      setEnabled(appService.autoDeployEnabled ?? false)
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Automatic image deploys could not be updated."
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <div className="resource-workspace-auto-deploy">
+      <div className="resource-workspace-auto-deploy-row">
+        <div>
+          <strong>Deploy new image digests</strong>
+          <p className="resource-workspace-muted">
+            {isGithubImage
+              ? "Knotree checks this GHCR tag every minute and redeploys only when the image changes."
+              : "Automatic image deploys are available for GitHub Container Registry images."}
+          </p>
+        </div>
+        <label className="resource-workspace-auto-deploy-toggle">
+          <input
+            type="checkbox"
+            aria-label="Auto deploy new GitHub images"
+            checked={enabled}
+            disabled={!isGithubImage || isBusy}
+            onChange={(event) => void handleChange(event)}
+          />
+          <span>{isSaving ? "Saving…" : enabled ? "Enabled" : "Disabled"}</span>
+        </label>
+      </div>
+      <dl>
+        <div>
+          <dt>Registry</dt>
+          <dd>{isGithubImage ? "GitHub Container Registry" : "Docker registry"}</dd>
+        </div>
+        <div>
+          <dt>Deployed digest</dt>
+          <dd>
+            <code>{appService.deployedImageDigest ?? "Not recorded yet"}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Last check</dt>
+          <dd>
+            {appService.autoDeployCheckedAt
+              ? new Date(appService.autoDeployCheckedAt).toLocaleString()
+              : "Not checked yet"}
+          </dd>
+        </div>
+      </dl>
+      {appService.autoDeployError ? (
+        <p className="resource-workspace-app-port-error" role="alert">
+          {appService.autoDeployError}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="resource-workspace-app-port-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 function AppPortEditor({
   appService,
   workspaceSlug,
@@ -2445,6 +2552,23 @@ function SettingsPane({
         ["Volume", "10 GB (writes stop at the limit)"],
       ],
     },
+    ...(appService
+      ? [
+          {
+            id: "auto-deploy",
+            title: "Auto updates",
+            description:
+              "Watch the GitHub Container Registry tag and queue a deployment when its image digest changes.",
+            rows: [
+              ["Image", appService.image],
+              [
+                "Deployed digest",
+                appService.deployedImageDigest ?? "Not recorded yet",
+              ],
+            ],
+          },
+        ]
+      : []),
     {
       id: "networking",
       title: "Networking",
@@ -2522,37 +2646,50 @@ function SettingsPane({
               >
                 <h3>{section.title}</h3>
                 <p>{section.description}</p>
-                <div className="resource-workspace-setting-block">
-                  <dl>
-                    {section.rows.map(([label, value]) => (
-                      <div key={label}>
-                        <dt>{label}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  {section.id === "networking" && appService ? (
-                    <AppPortEditor
-                      key={`${appService.id}:${appService.appPort}`}
+                {section.id === "auto-deploy" && appService ? (
+                  <div className="resource-workspace-setting-block">
+                    <AutoDeployEditor
+                      key={`${appService.id}:${appService.autoDeployEnabled ? "on" : "off"}`}
                       appService={appService}
                       workspaceSlug={workspaceSlug}
                       projectSlug={projectSlug}
                       onToast={onToast}
                       onAppServiceUpdated={onAppServiceUpdated}
                     />
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        onToast(`${section.title} is read-only in development`)
-                      }
-                    >
-                      Manage
-                    </Button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="resource-workspace-setting-block">
+                    <dl>
+                      {section.rows.map(([label, value]) => (
+                        <div key={label}>
+                          <dt>{label}</dt>
+                          <dd>{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    {section.id === "networking" && appService ? (
+                      <AppPortEditor
+                        key={`${appService.id}:${appService.appPort}`}
+                        appService={appService}
+                        workspaceSlug={workspaceSlug}
+                        projectSlug={projectSlug}
+                        onToast={onToast}
+                        onAppServiceUpdated={onAppServiceUpdated}
+                      />
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          onToast(`${section.title} is read-only in development`)
+                        }
+                      >
+                        Manage
+                      </Button>
+                    )}
+                  </div>
+                )}
               </article>
             ))
           ) : (

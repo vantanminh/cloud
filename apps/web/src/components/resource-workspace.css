@@ -1323,6 +1323,58 @@
   margin-top: 16px;
 }
 
+.resource-workspace-auto-deploy {
+  display: grid;
+  gap: 16px;
+}
+
+.resource-workspace-auto-deploy-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resource-workspace-auto-deploy-row p {
+  margin: 4px 0 0;
+}
+
+.resource-workspace-auto-deploy-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--project-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.resource-workspace-auto-deploy-toggle input {
+  accent-color: var(--project-accent);
+}
+
+.resource-workspace-auto-deploy dl {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.resource-workspace-auto-deploy dt {
+  color: var(--project-muted);
+  font-size: 13px;
+}
+
+.resource-workspace-auto-deploy dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-workspace-auto-deploy code {
+  font-size: 12px;
+}
+
 .resource-workspace-attachment-field {
   display: grid;
   max-width: 420px;
