@@ -63,6 +63,10 @@ pub fn router(state: AppState) -> Router {
             get(database::stats),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/metrics",
+            get(database::metrics),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/config",
             get(database::config),
         )

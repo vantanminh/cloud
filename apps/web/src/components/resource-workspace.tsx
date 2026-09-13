@@ -26,12 +26,15 @@ import {
   createDatabaseTable,
   executeDatabaseQuery,
   getDatabaseConfig,
+  getDatabaseMetrics,
   getDatabaseStats,
   getDatabaseTableData,
   listDatabaseTables,
 } from "@/lib/resources"
 import type {
   DatabaseConfig,
+  DatabaseMetricPoint,
+  DatabaseMetrics,
   DatabaseStats,
   DatabaseTable,
   DatabaseTableData,
@@ -87,6 +90,7 @@ type ResourceWorkspaceProps = {
 
 const DEFAULT_QUERY = "SELECT 1"
 const TABLE_SEARCH_DEBOUNCE_MS = 250
+const METRICS_REFRESH_MS = 5_000
 
 export function ResourceWorkspace({
   node,
@@ -231,7 +235,14 @@ export function ResourceWorkspace({
           {activeTab === "variables" && (
             <VariablesPane node={node} onToast={onToast} />
           )}
-          {activeTab === "metrics" && <MetricsPane onToast={onToast} />}
+          {activeTab === "metrics" && (
+            <MetricsPane
+              node={node}
+              projectSlug={projectSlug}
+              workspaceSlug={workspaceSlug}
+              onToast={onToast}
+            />
+          )}
           {activeTab === "console" && <ConsolePane onToast={onToast} />}
           {activeTab === "settings" && (
             <SettingsPane
@@ -1391,7 +1402,120 @@ function VariablesPane({
   )
 }
 
-function MetricsPane({ onToast }: { onToast: (message: string) => void }) {
+function MetricsPane({
+  node,
+  projectSlug,
+  workspaceSlug,
+  onToast,
+}: {
+  node: ResourceWorkspaceNode
+  projectSlug: string
+  workspaceSlug: string
+  onToast: (message: string) => void
+}) {
+  const resourceId = node.resource?.id
+  const isReady = node.id === "postgres" && node.resource?.status === "ready"
+  const [metrics, setMetrics] = useState<DatabaseMetrics | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [live, setLive] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const requestInFlight = useRef(false)
+
+  const loadMetrics = useCallback(
+    async (silent: boolean) => {
+      if (!resourceId || !isReady || requestInFlight.current) {
+        return
+      }
+      requestInFlight.current = true
+      if (silent) {
+        setRefreshing(true)
+      } else {
+        setLoading(true)
+      }
+      try {
+        const nextMetrics = await getDatabaseMetrics(
+          workspaceSlug,
+          projectSlug,
+          resourceId
+        )
+        setMetrics(nextMetrics)
+        setError(null)
+      } catch (requestError) {
+        setError(databaseErrorMessage(requestError))
+      } finally {
+        requestInFlight.current = false
+        setLoading(false)
+        setRefreshing(false)
+      }
+    },
+    [isReady, projectSlug, resourceId, workspaceSlug]
+  )
+
+  useEffect(() => {
+    if (!isReady || !resourceId) {
+      return
+    }
+
+    const initialLoadId = window.setTimeout(() => {
+      void loadMetrics(false)
+    }, 0)
+    if (!live) {
+      return () => window.clearTimeout(initialLoadId)
+    }
+    const intervalId = window.setInterval(() => {
+      void loadMetrics(true)
+    }, METRICS_REFRESH_MS)
+    return () => {
+      window.clearTimeout(initialLoadId)
+      window.clearInterval(intervalId)
+    }
+  }, [isReady, live, loadMetrics, resourceId])
+
+  if (node.id !== "postgres" || !resourceId) {
+    return (
+      <section
+        className="resource-workspace-pane"
+        id="resource-pane-metrics"
+        role="tabpanel"
+        aria-labelledby="resource-tab-metrics"
+      >
+        <ResourceEmptyState
+          icon={<ActivityIcon aria-hidden="true" />}
+          title="No database metrics"
+          description="Metrics are available for a dedicated PostgreSQL resource."
+        />
+      </section>
+    )
+  }
+
+  if (!isReady) {
+    return (
+      <section
+        className="resource-workspace-pane"
+        id="resource-pane-metrics"
+        role="tabpanel"
+        aria-labelledby="resource-tab-metrics"
+      >
+        <ResourceEmptyState
+          icon={<ActivityIcon aria-hidden="true" />}
+          title="Database is provisioning"
+          description="Live metrics become available as soon as the dedicated PostgreSQL cluster is ready."
+        />
+      </section>
+    )
+  }
+
+  const points = metrics?.points ?? []
+  const current = points[points.length - 1] ?? null
+  const lastUpdated = current
+    ? new Date(current.timestamp * 1_000).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    : null
+
   return (
     <section
       className="resource-workspace-pane"
@@ -1400,52 +1524,226 @@ function MetricsPane({ onToast }: { onToast: (message: string) => void }) {
       aria-labelledby="resource-tab-metrics"
     >
       <div className="resource-workspace-metric-toolbar">
-        <span className="resource-workspace-muted">Last 24 hours</span>
+        <div className="resource-workspace-metric-status">
+          <span className="resource-workspace-muted">
+            Last 24 hours{lastUpdated ? ` · updated ${lastUpdated}` : ""}
+          </span>
+          {refreshing && (
+            <span className="resource-workspace-muted">Refreshing…</span>
+          )}
+        </div>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => onToast("Metrics range opened")}
+          aria-pressed={live}
+          onClick={() => {
+            setLive((currentLive) => {
+              const nextLive = !currentLive
+              onToast(nextLive ? "Live metrics resumed" : "Live metrics paused")
+              return nextLive
+            })
+          }}
         >
-          1 day
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-pressed="true"
-          onClick={() => onToast("Live metrics resumed")}
-        >
-          <span className="resource-workspace-live-dot" aria-hidden="true" />
-          Live
+          <span
+            className={cn("resource-workspace-live-dot", !live && "paused")}
+            aria-hidden="true"
+          />
+          {live ? "Live" : "Paused"}
         </Button>
       </div>
-      <div className="resource-workspace-metrics-grid">
-        <MetricCard title="CPU" legend="Sum · Replicas" accent="blue" />
-        <MetricCard title="Memory" legend="Sum · Replicas" accent="violet" />
-        <MetricCard title="Volume" legend="Used · Capacity" accent="ink" />
-      </div>
+
+      {error && (
+        <div className="resource-workspace-error" role="alert">
+          {error}
+        </div>
+      )}
+      {metrics?.systemMetricsMessage && (
+        <div className="resource-workspace-hint-banner">
+          <p>{metrics.systemMetricsMessage}</p>
+        </div>
+      )}
+
+      {loading && !metrics ? (
+        <ResourceEmptyState
+          icon={<ActivityIcon aria-hidden="true" />}
+          title="Loading metrics…"
+          description="Reading live runtime metrics from this project database."
+        />
+      ) : (
+        <div className="resource-workspace-metrics-grid">
+          <MetricCard
+            title="CPU"
+            legend="Container usage"
+            accent="blue"
+            points={points}
+            series={[
+              {
+                label: "CPU",
+                colorClass: "blue",
+                getValue: (point) => point.cpuPercent,
+                formatValue: (value) => `${value.toFixed(2)}%`,
+              },
+            ]}
+            scaleMax={100}
+            axisMaxLabel="100%"
+          />
+          <MetricCard
+            title="Memory"
+            legend="Container usage"
+            accent="violet"
+            points={points}
+            series={[
+              {
+                label: "Used",
+                colorClass: "violet",
+                getValue: (point) => memoryPercent(point),
+                formatValue: (value) => `${value.toFixed(1)}%`,
+                getDisplayValue: (point) =>
+                  point.memoryUsedBytes !== null &&
+                  point.memoryLimitBytes !== null
+                    ? `${formatBytes(point.memoryUsedBytes)} / ${formatBytes(point.memoryLimitBytes)}`
+                    : "Unavailable",
+              },
+            ]}
+            scaleMax={100}
+            axisMaxLabel="100%"
+          />
+          <MetricCard
+            title="Volume"
+            legend="Used · Capacity"
+            accent="ink"
+            points={points}
+            series={[
+              {
+                label: "Used",
+                colorClass: "ink",
+                getValue: (point) => volumePercent(point),
+                formatValue: (value) => `${value.toFixed(1)}%`,
+                getDisplayValue: (point) =>
+                  point.volumeUsedBytes !== null &&
+                  point.volumeCapacityBytes !== null
+                    ? `${formatBytes(point.volumeUsedBytes)} / ${formatBytes(point.volumeCapacityBytes)}`
+                    : point.volumeUsedBytes !== null
+                      ? formatBytes(point.volumeUsedBytes)
+                      : "Unavailable",
+              },
+            ]}
+            scaleMax={100}
+            axisMaxLabel="100%"
+          />
+          <MetricCard
+            title="Network I/O"
+            legend="RX · TX totals"
+            accent="green"
+            points={points}
+            series={[
+              {
+                label: "RX",
+                colorClass: "green",
+                getValue: (point) => point.networkReceiveBytes,
+                formatValue: formatBytes,
+              },
+              {
+                label: "TX",
+                colorClass: "blue",
+                getValue: (point) => point.networkTransmitBytes,
+                formatValue: formatBytes,
+              },
+            ]}
+          />
+          <MetricCard
+            title="Disk I/O"
+            legend="Read · Write totals"
+            accent="orange"
+            points={points}
+            series={[
+              {
+                label: "Read",
+                colorClass: "orange",
+                getValue: (point) => point.diskReadBytes,
+                formatValue: formatBytes,
+              },
+              {
+                label: "Write",
+                colorClass: "ink",
+                getValue: (point) => point.diskWriteBytes,
+                formatValue: formatBytes,
+              },
+            ]}
+          />
+        </div>
+      )}
     </section>
   )
+}
+
+type MetricSeries = {
+  label: string
+  colorClass: "blue" | "violet" | "ink" | "green" | "orange"
+  getValue: (point: DatabaseMetricPoint) => number | null
+  formatValue: (value: number) => string
+  getDisplayValue?: (point: DatabaseMetricPoint) => string
 }
 
 function MetricCard({
   title,
   legend,
   accent,
+  points,
+  series,
+  scaleMax,
+  axisMaxLabel,
 }: {
   title: string
   legend: string
-  accent: "blue" | "violet" | "ink"
+  accent: "blue" | "violet" | "ink" | "green" | "orange"
+  points: DatabaseMetricPoint[]
+  series: MetricSeries[]
+  scaleMax?: number
+  axisMaxLabel?: string
 }) {
+  const current = points[points.length - 1] ?? null
+  const allValues = series.flatMap((item) =>
+    points.flatMap((point) => {
+      const value = item.getValue(point)
+      return value === null || !Number.isFinite(value) ? [] : [value]
+    })
+  )
+  const measuredMax = allValues.length ? Math.max(...allValues) : 0
+  const chartMax = scaleMax ?? Math.max(measuredMax, 1)
+  const chartWidth = 310
+  const chartLeft = 40
+  const chartBottom = 160
+  const chartHeight = 140
+  const xForIndex = (index: number) =>
+    chartLeft +
+    (points.length > 1 ? (index * chartWidth) / (points.length - 1) : chartWidth / 2)
+  const axisLabel = axisMaxLabel ?? formatBytes(chartMax)
+
   return (
-    <article className="resource-workspace-metric-card">
+    <article className={cn("resource-workspace-metric-card", accent)}>
       <span className="resource-workspace-metric-legend">● {legend}</span>
       <h3>{title}</h3>
+      <div className="resource-workspace-metric-values">
+        {series.map((item) => {
+          const value = current ? item.getValue(current) : null
+          const displayValue = current
+            ? (item.getDisplayValue?.(current) ??
+              (value === null ? "Unavailable" : item.formatValue(value)))
+            : "Waiting for sample…"
+          return (
+            <span key={item.label} className={item.colorClass}>
+              <small>{item.label}</small>
+              <strong>{displayValue}</strong>
+            </span>
+          )
+        })}
+      </div>
       <svg
         viewBox="0 0 360 180"
         role="img"
-        aria-label={`${title} usage, last day`}
+        aria-label={`${title} usage, last 24 hours`}
       >
         <g className="resource-workspace-chart-grid">
           <line x1="40" y1="20" x2="350" y2="20" />
@@ -1455,24 +1753,63 @@ function MetricCard({
           <line x1="40" y1="160" x2="350" y2="160" />
         </g>
         <text x="0" y="24">
-          100%
+          {axisLabel}
         </text>
         <text x="0" y="164">
-          0%
+          0
         </text>
-        <polyline
-          className={cn("resource-workspace-chart-line", accent)}
-          points={
-            accent === "violet"
-              ? "40,160 110,160 150,142 198,148 240,102 290,116 350,96"
-              : accent === "ink"
-                ? "40,128 100,124 150,120 200,108 260,112 310,98 350,92"
-                : "40,160 120,160 180,158 220,128 280,142 350,138"
-          }
-        />
+        {points.length > 0 &&
+          series.map((item) => {
+            const linePoints = points
+              .map((point, index) => {
+                const value = item.getValue(point)
+                if (value === null || !Number.isFinite(value)) {
+                  return null
+                }
+                const y =
+                  chartBottom -
+                  (Math.max(0, Math.min(value, chartMax)) / chartMax) *
+                    chartHeight
+                return `${xForIndex(index)},${y}`
+              })
+              .filter((point): point is string => point !== null)
+              .join(" ")
+            return linePoints ? (
+              <polyline
+                key={item.label}
+                className={cn(
+                  "resource-workspace-chart-line",
+                  item.colorClass
+                )}
+                points={linePoints}
+              />
+            ) : null
+          })}
       </svg>
     </article>
   )
+}
+
+function memoryPercent(point: DatabaseMetricPoint) {
+  if (
+    point.memoryUsedBytes === null ||
+    point.memoryLimitBytes === null ||
+    point.memoryLimitBytes <= 0
+  ) {
+    return null
+  }
+  return Math.min(100, (point.memoryUsedBytes / point.memoryLimitBytes) * 100)
+}
+
+function volumePercent(point: DatabaseMetricPoint) {
+  if (
+    point.volumeUsedBytes === null ||
+    point.volumeCapacityBytes === null ||
+    point.volumeCapacityBytes <= 0
+  ) {
+    return null
+  }
+  return Math.min(100, (point.volumeUsedBytes / point.volumeCapacityBytes) * 100)
 }
 
 function ConsolePane({ onToast }: { onToast: (message: string) => void }) {

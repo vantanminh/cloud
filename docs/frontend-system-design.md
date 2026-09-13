@@ -39,7 +39,8 @@ session should feel quick, calm, and trustworthy:
   transient feedback.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
   Metrics, Console, and Settings. The Database section reads and mutates the
-  selected project's dedicated PostgreSQL instance through typed API calls.
+  selected project's dedicated PostgreSQL instance through typed API calls;
+  Metrics reads live per-project runtime data through the same boundary.
 - Light and dark dashboard themes persisted as local view preferences.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
@@ -49,15 +50,15 @@ session should feel quick, calm, and trustworthy:
 - OAuth or social login.
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing data, or settings mutations.
-- Redis/app-service provisioning, deployment execution, metrics data, log data,
-  backups, and persistent topology editing.
+- Redis/app-service provisioning, deployment execution, log data, backups, and
+  persistent topology editing.
 
 The topology home now owns one real PostgreSQL resource per project. Database
-tables, rows, schema creation, SQL results, live stats, and safe configuration
-settings come from that instance. Other resource types and operational
-sections keep their visual shell but remain explicitly unavailable until their
-APIs and product contracts exist. New UI must not imply that an omitted
-capability exists.
+tables, rows, schema creation, SQL results, live stats, runtime metrics, and
+safe configuration settings come from that instance. Other resource types and
+operational sections keep their visual shell but remain explicitly unavailable
+until their APIs and product contracts exist. New UI must not imply that an
+omitted capability exists.
 
 ## 2. Experience principles
 
@@ -376,13 +377,18 @@ theme uses the same layout and replaces the page-local surface tokens.
   truthful `No tables yet` state when the dedicated instance has no schema
   data. `Connect` copies the real connection string without displaying
   credentials in the UI.
+- The `Metrics` tab calls the selected resource's metrics endpoint, keeps live
+  polling at the server-provided sample interval, and renders CPU, memory,
+  volume, network RX/TX, and disk read/write series. It displays current
+  values, the last update time, loading/error states, and a Live/Paused control;
+  it never uses placeholder chart coordinates.
 - Add → `Postgres` opens the creation dialog. The API generates the
   database identifier, login role, and strong password, provisions a dedicated
   per-project instance, and returns a connection string after a successful
   connectivity check.
-- `Backups`, `Metrics`, `Console`, and write-oriented `Settings` controls use
-  explicit empty or unavailable states until their APIs exist. Redis and App
-  service remain explicit coming-soon choices and do not create fake nodes.
+- `Backups`, `Console`, and write-oriented `Settings` controls use explicit
+  empty or unavailable states until their APIs exist. Redis and App service
+  remain explicit coming-soon choices and do not create fake nodes.
 
 #### Context and transient state
 
@@ -395,6 +401,12 @@ theme uses the same layout and replaces the page-local surface tokens.
   `dark`, and persist in local storage. Theme controls have explicit labels.
 - The Logs rail item opens a project-scoped logs shell with resource filtering,
   search, and Live/Paused controls. It remains empty until log ingestion exists.
+- Metrics samples are scoped to the selected dedicated PostgreSQL resource. In
+  Docker development, CPU/memory/network/block-I/O values come from that
+  container and volume usage comes from its mounted data path. The API keeps a
+  bounded in-process 24-hour history and the browser receives a downsampled
+  series. Providers without a runtime metrics adapter expose an explicit
+  unavailable message instead of fabricated values.
 - Resource loading and provisioning failures keep the Add action available and
   show a safe, page-level message; raw database errors never reach the browser.
 - Activity, notifications, Agent, Metrics, Resources, Settings, undo/redo, and
@@ -733,8 +745,36 @@ so a production build cannot silently point at localhost.
 | `POST` | `.../resources/:resourceId/database/tables`                 | Session + membership + CSRF | Create a validated project table                  |
 | `GET`  | `.../resources/:resourceId/database/table-data`             | Session + membership        | Read paginated rows and column metadata            |
 | `GET`  | `.../resources/:resourceId/database/stats`                  | Session + membership        | Load live database statistics                      |
+| `GET`  | `.../resources/:resourceId/database/metrics`                | Session + membership        | Load sampled CPU, memory, volume, network, and disk metrics |
 | `GET`  | `.../resources/:resourceId/database/config`                 | Session + membership        | Load allowlisted PostgreSQL settings              |
 | `POST` | `.../resources/:resourceId/database/query`                  | Session + membership + CSRF | Run one bounded SQL statement                     |
+
+The metrics response returns a bounded, chronological `points` array. Runtime
+byte counters are cumulative totals from the selected dedicated container;
+`volumeUsedBytes` and `volumeCapacityBytes` are filesystem byte values. A
+provider that cannot expose runtime metrics returns `null` fields plus
+`systemMetricsAvailable: false` and a user-safe `systemMetricsMessage`.
+
+```json
+{
+  "provider": "docker",
+  "systemMetricsAvailable": true,
+  "sampleIntervalSeconds": 5,
+  "retentionSeconds": 86400,
+  "points": [{
+    "timestamp": 1778697600,
+    "cpuPercent": 2.5,
+    "memoryUsedBytes": 11010048,
+    "memoryLimitBytes": 1073741824,
+    "volumeUsedBytes": 33554432,
+    "volumeCapacityBytes": 10737418240,
+    "networkReceiveBytes": 1500,
+    "networkTransmitBytes": 2097152,
+    "diskReadBytes": 3000000,
+    "diskWriteBytes": 4294967296
+  }]
+}
+```
 
 ### Shared success shape
 
@@ -985,6 +1025,9 @@ Current behavior coverage includes:
 - Topology interactions cover resource selection/workspace, Add menu feedback,
   workspace tabs, connection copy, theme/log navigation, zoom controls,
   responsive bottom navigation, and no-overflow mobile layout.
+- The Metrics tab loads and renders live CPU, memory, volume, network, and disk
+  read/write data for a ready PostgreSQL resource, and exposes the live polling
+  control.
 
 Every new route or meaningful interaction should add:
 
@@ -1005,8 +1048,9 @@ Every new route or meaningful interaction should add:
 - Check topology selection, resource workspace close, Add → Postgres, pending
   and error states, Deployments/Database tabs, table creation, live rows, SQL
   query results, stats/config loading, no-table empty state,
-  connection-string copy, theme toggles, Logs navigation, environment menu,
-  zoom, and sign-out actions with keyboard and pointer input.
+  connection-string copy, Metrics loading/error/live states and metric cards,
+  theme toggles, Logs navigation, environment menu, zoom, and sign-out actions
+  with keyboard and pointer input.
 - Check the resource workspace at desktop and mobile widths, including tab
   scrolling and document-width preservation.
 - Open direct deep links through the Cloudflare SPA fallback.
@@ -1036,8 +1080,9 @@ When adding a feature to this frontend:
 - Add password reset with explicit pending/success/failure states.
 - Add email verification UX and a resend path before turning the production
   verification flag on for real users.
-- Replace Metrics, Logs, Console, Backups, and write-oriented Settings
-  placeholders with API-backed data and explicit loading/error contracts.
+- Replace Logs, Console, Backups, and write-oriented Settings placeholders with
+  API-backed data and explicit loading/error contracts. Extend metrics history
+  to durable time-series storage when multi-instance API deployments require it.
 - Add a dedicated query/cache layer if workspace data becomes larger than the
   current session response.
 

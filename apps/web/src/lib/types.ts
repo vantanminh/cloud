@@ -66,6 +66,28 @@ export type DatabaseStats = {
   estimatedRows: number
 }
 
+export type DatabaseMetricPoint = {
+  timestamp: number
+  cpuPercent: number | null
+  memoryUsedBytes: number | null
+  memoryLimitBytes: number | null
+  volumeUsedBytes: number | null
+  volumeCapacityBytes: number | null
+  networkReceiveBytes: number | null
+  networkTransmitBytes: number | null
+  diskReadBytes: number | null
+  diskWriteBytes: number | null
+}
+
+export type DatabaseMetrics = {
+  provider: string
+  systemMetricsAvailable: boolean
+  systemMetricsMessage: string | null
+  sampleIntervalSeconds: number
+  retentionSeconds: number
+  points: DatabaseMetricPoint[]
+}
+
 export type DatabaseConfig = {
   name: string
   setting: string

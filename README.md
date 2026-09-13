@@ -60,6 +60,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/table-data`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/stats`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/metrics`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/config`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/query`
 
@@ -81,10 +82,18 @@ cluster; replication/failover is a separate provider capability.
 
 The project database API connects to the dedicated instance and supports table
 introspection, paginated table data, table creation, bounded SQL execution,
-live statistics, and selected PostgreSQL settings. SQL requests run with a
+live statistics, runtime metrics, and selected PostgreSQL settings. SQL requests run with a
 per-connection statement timeout and a configurable result-row limit; cluster
 administration statements such as role/database creation, `COPY`, `SET`, and
 `GRANT` are rejected by the console.
+
+The Metrics endpoint samples the selected project container's Docker runtime
+stats in development: CPU, memory, network receive/transmit totals, block
+disk read/write totals, and filesystem volume usage/capacity. The API retains
+up to 24 hours of samples per resource in process memory while it is being
+observed. Kubernetes providers return explicit unavailable runtime fields
+until a cluster metrics adapter is configured; database volume size remains
+available from PostgreSQL.
 
 Resource credentials are encrypted at rest with
 `DATABASE_CREDENTIALS_ENCRYPTION_KEY`; production must provide a stable,

@@ -1,6 +1,7 @@
 import { apiRequest } from "@/lib/api"
 import type {
   DatabaseConfig,
+  DatabaseMetrics,
   DatabaseQueryResult,
   DatabaseStats,
   DatabaseTable,
@@ -137,6 +138,15 @@ export function getDatabaseStats(
 ) {
   const path = databasePath(workspaceSlug, projectSlug, resourceId, "stats")
   return deduplicateDatabaseRequest(path, () => apiRequest<DatabaseStats>(path))
+}
+
+export function getDatabaseMetrics(
+  workspaceSlug: string,
+  projectSlug: string,
+  resourceId: string
+) {
+  const path = databasePath(workspaceSlug, projectSlug, resourceId, "metrics")
+  return apiRequest<DatabaseMetrics>(path)
 }
 
 export function getDatabaseConfig(

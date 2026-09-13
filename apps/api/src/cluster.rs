@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
@@ -14,9 +15,7 @@ pub const PROVIDER_KUBERNETES: &str = "kubernetes";
 /// `localhost` lets some clients try `::1` first, which adds a multi-second
 /// connection fallback on hosts where Docker is not listening on IPv6.
 pub fn connection_host(provider: &str, host: &str) -> String {
-    if provider == PROVIDER_DOCKER
-        && host.trim().eq_ignore_ascii_case("localhost")
-    {
+    if provider == PROVIDER_DOCKER && host.trim().eq_ignore_ascii_case("localhost") {
         return "127.0.0.1".to_owned();
     }
     host.to_owned()
@@ -40,6 +39,232 @@ pub struct ProvisionedCluster {
     pub internal_port: u16,
     pub public_host: Option<String>,
     pub public_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeMetrics {
+    pub cpu_percent: Option<f64>,
+    pub memory_used_bytes: Option<i64>,
+    pub memory_limit_bytes: Option<i64>,
+    pub volume_used_bytes: Option<i64>,
+    pub volume_capacity_bytes: Option<i64>,
+    pub network_receive_bytes: Option<i64>,
+    pub network_transmit_bytes: Option<i64>,
+    pub disk_read_bytes: Option<i64>,
+    pub disk_write_bytes: Option<i64>,
+}
+
+pub async fn collect_runtime_metrics(
+    config: &Config,
+    provider: &str,
+    cluster_name: Option<&str>,
+) -> Result<RuntimeMetrics> {
+    match provider {
+        PROVIDER_DOCKER => {
+            let cluster_name = cluster_name.context("Docker cluster name is missing")?;
+            collect_docker_runtime_metrics(config, cluster_name).await
+        }
+        PROVIDER_KUBERNETES => {
+            // Kubernetes metrics-server does not expose network or block I/O.
+            // Keep these fields explicitly unavailable until a cluster-level
+            // metrics adapter is configured instead of returning made-up data.
+            Ok(RuntimeMetrics::default())
+        }
+        provider => bail!("unsupported database cluster provider: {provider}"),
+    }
+}
+
+async fn collect_docker_runtime_metrics(
+    config: &Config,
+    cluster_name: &str,
+) -> Result<RuntimeMetrics> {
+    let stats_output = docker_raw(
+        config,
+        [
+            "stats".to_owned(),
+            "--no-stream".to_owned(),
+            "--format={{json .}}".to_owned(),
+            cluster_name.to_owned(),
+        ],
+    )
+    .await?;
+    if !stats_output.status.success() {
+        let detail = String::from_utf8_lossy(&stats_output.stderr);
+        let detail = detail
+            .lines()
+            .next()
+            .unwrap_or("unknown Docker stats error");
+        bail!("could not read Docker container metrics: {detail}");
+    }
+
+    let stats_stdout = String::from_utf8_lossy(&stats_output.stdout);
+    let stats_line = stats_stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .context("Docker returned no container metrics")?;
+    let mut metrics = parse_docker_stats(stats_line)?;
+
+    if let Ok(volume_metrics) = docker_volume_metrics(config, cluster_name).await {
+        metrics.volume_used_bytes = Some(volume_metrics.0);
+        metrics.volume_capacity_bytes = Some(volume_metrics.1);
+    }
+
+    Ok(metrics)
+}
+
+async fn docker_volume_metrics(config: &Config, cluster_name: &str) -> Result<(i64, i64)> {
+    let output = docker_raw(
+        config,
+        [
+            "exec".to_owned(),
+            cluster_name.to_owned(),
+            "df".to_owned(),
+            "-Pk".to_owned(),
+            "/var/lib/postgresql/data".to_owned(),
+        ],
+    )
+    .await?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .next()
+            .unwrap_or("unknown Docker filesystem error");
+        bail!("could not read Docker volume metrics: {detail}");
+    }
+    let (filesystem_used_bytes, capacity_bytes) =
+        parse_docker_df(&String::from_utf8_lossy(&output.stdout))?;
+    let used_bytes = docker_raw(
+        config,
+        [
+            "exec".to_owned(),
+            cluster_name.to_owned(),
+            "du".to_owned(),
+            "-sk".to_owned(),
+            "/var/lib/postgresql/data".to_owned(),
+        ],
+    )
+    .await
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| parse_docker_du(&String::from_utf8_lossy(&output.stdout)).ok())
+    .unwrap_or(filesystem_used_bytes);
+    Ok((used_bytes, capacity_bytes))
+}
+
+#[derive(Debug, Deserialize)]
+struct DockerStatsLine {
+    #[serde(rename = "CPUPerc")]
+    cpu_perc: String,
+    #[serde(rename = "MemUsage")]
+    mem_usage: String,
+    #[serde(rename = "NetIO")]
+    net_io: String,
+    #[serde(rename = "BlockIO")]
+    block_io: String,
+}
+
+fn parse_docker_stats(input: &str) -> Result<RuntimeMetrics> {
+    let stats = serde_json::from_str::<DockerStatsLine>(input)
+        .context("Docker returned an invalid container metrics payload")?;
+    let (memory_used_bytes, memory_limit_bytes) = parse_docker_pair(&stats.mem_usage)?;
+    let (network_receive_bytes, network_transmit_bytes) = parse_docker_pair(&stats.net_io)?;
+    let (disk_read_bytes, disk_write_bytes) = parse_docker_pair(&stats.block_io)?;
+
+    Ok(RuntimeMetrics {
+        cpu_percent: Some(parse_docker_percent(&stats.cpu_perc)?),
+        memory_used_bytes: Some(memory_used_bytes),
+        memory_limit_bytes: Some(memory_limit_bytes),
+        volume_used_bytes: None,
+        volume_capacity_bytes: None,
+        network_receive_bytes: Some(network_receive_bytes),
+        network_transmit_bytes: Some(network_transmit_bytes),
+        disk_read_bytes: Some(disk_read_bytes),
+        disk_write_bytes: Some(disk_write_bytes),
+    })
+}
+
+fn parse_docker_pair(input: &str) -> Result<(i64, i64)> {
+    let (left, right) = input
+        .split_once('/')
+        .context("Docker returned a metric without two values")?;
+    Ok((parse_docker_size(left)?, parse_docker_size(right)?))
+}
+
+fn parse_docker_percent(input: &str) -> Result<f64> {
+    let value = input
+        .trim()
+        .strip_suffix('%')
+        .context("Docker returned a CPU metric without a percent sign")?
+        .trim()
+        .parse::<f64>()?;
+    if !value.is_finite() || value < 0.0 {
+        bail!("Docker returned an invalid CPU metric");
+    }
+    Ok(value)
+}
+
+fn parse_docker_size(input: &str) -> Result<i64> {
+    let input = input.trim().replace(',', "");
+    let split_index = input
+        .find(|character: char| !character.is_ascii_digit() && character != '.')
+        .unwrap_or(input.len());
+    let number = input[..split_index].parse::<f64>()?;
+    let unit = input[split_index..].trim().to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "" | "b" => 1.0,
+        "kb" => 1_000.0,
+        "kib" => 1_024.0,
+        "mb" => 1_000_000.0,
+        "mib" => 1_048_576.0,
+        "gb" => 1_000_000_000.0,
+        "gib" => 1_073_741_824.0,
+        "tb" => 1_000_000_000_000.0,
+        "tib" => 1_099_511_627_776.0,
+        _ => bail!("Docker returned an unknown byte unit: {unit}"),
+    };
+    let bytes = number * multiplier;
+    if !bytes.is_finite() || bytes < 0.0 || bytes > i64::MAX as f64 {
+        bail!("Docker returned an invalid byte metric");
+    }
+    Ok(bytes.round() as i64)
+}
+
+fn parse_docker_df(input: &str) -> Result<(i64, i64)> {
+    let fields = input
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            (fields.len() >= 4 && fields.get(1)?.parse::<i64>().is_ok()).then_some(fields)
+        })
+        .last()
+        .context("Docker returned no filesystem metrics")?;
+    let capacity_kib = fields[1].parse::<i64>()?;
+    let used_kib = fields[2].parse::<i64>()?;
+    if capacity_kib < 0 || used_kib < 0 {
+        bail!("Docker returned negative filesystem metrics");
+    }
+    Ok((
+        used_kib
+            .checked_mul(1_024)
+            .context("Docker volume used metric overflowed")?,
+        capacity_kib
+            .checked_mul(1_024)
+            .context("Docker volume capacity metric overflowed")?,
+    ))
+}
+
+fn parse_docker_du(input: &str) -> Result<i64> {
+    let kib = input
+        .split_whitespace()
+        .next()
+        .context("Docker returned no directory usage metric")?
+        .parse::<i64>()?;
+    if kib < 0 {
+        bail!("Docker returned negative directory usage");
+    }
+    kib.checked_mul(1_024)
+        .context("Docker directory usage metric overflowed")
 }
 
 pub async fn provision(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
@@ -286,6 +511,36 @@ mod tests {
         assert_eq!(
             super::connection_host(super::PROVIDER_KUBERNETES, "localhost"),
             "localhost"
+        );
+    }
+
+    #[test]
+    fn parses_docker_runtime_metrics() {
+        let metrics = super::parse_docker_stats(
+            r#"{"CPUPerc":"2.50%","MemUsage":"10.5MiB / 1GiB","NetIO":"1.5kB / 2MiB","BlockIO":"3MB / 4GiB"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(metrics.cpu_percent, Some(2.5));
+        assert_eq!(metrics.memory_used_bytes, Some(11_010_048));
+        assert_eq!(metrics.memory_limit_bytes, Some(1_073_741_824));
+        assert_eq!(metrics.network_receive_bytes, Some(1_500));
+        assert_eq!(metrics.network_transmit_bytes, Some(2_097_152));
+        assert_eq!(metrics.disk_read_bytes, Some(3_000_000));
+        assert_eq!(metrics.disk_write_bytes, Some(4_294_967_296));
+    }
+
+    #[test]
+    fn parses_docker_filesystem_metrics() {
+        let metrics = super::parse_docker_df(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\noverlay 10485760 2048 10483712 1% /var/lib/postgresql/data\n",
+        )
+        .unwrap();
+
+        assert_eq!(metrics, (2_097_152, 10_737_418_240));
+        assert_eq!(
+            super::parse_docker_du("32768\t/var/lib/postgresql/data\n").unwrap(),
+            33_554_432
         );
     }
 }

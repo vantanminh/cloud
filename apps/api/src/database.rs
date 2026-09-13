@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -18,7 +18,13 @@ use sqlx::{
 };
 use uuid::Uuid;
 
-use crate::{auth, cluster, error::AppError, projects, security, state::AppState};
+use crate::{
+    auth, cluster,
+    error::AppError,
+    models::{DatabaseMetricPoint, DatabaseMetricsResponse},
+    projects, security,
+    state::AppState,
+};
 
 const STATUS_READY: &str = "ready";
 const PROVIDER_LEGACY_SHARED: &str = "legacy_shared";
@@ -28,6 +34,7 @@ const MAX_TABLE_COLUMNS: usize = 50;
 const DATABASE_POOL_MAX_CONNECTIONS: u32 = 4;
 const DATABASE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const DATABASE_POOL_MAX_LIFETIME: Duration = Duration::from_secs(1800);
+const MAX_METRIC_RESPONSE_POINTS: usize = 300;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TableListQuery {
@@ -140,6 +147,7 @@ struct DatabaseResourceRow {
     password_ciphertext: String,
     status: String,
     cluster_provider: String,
+    cluster_name: Option<String>,
     cluster_host: Option<String>,
     cluster_port: Option<i32>,
 }
@@ -179,6 +187,8 @@ struct ConfigRow {
 
 struct TargetDatabase {
     pool: PgPool,
+    cluster_provider: String,
+    cluster_name: Option<String>,
 }
 
 pub async fn list_tables(
@@ -439,6 +449,86 @@ pub async fn stats(
     }))
 }
 
+pub async fn metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+) -> Result<Json<DatabaseMetricsResponse>, AppError> {
+    let target = target_database(
+        &state,
+        &headers,
+        &workspace_slug,
+        &project_slug,
+        resource_id,
+    )
+    .await?;
+
+    let (database_size_result, runtime_metrics_result) = tokio::join!(
+        sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())::bigint",)
+            .fetch_one(&target.pool),
+        cluster::collect_runtime_metrics(
+            &state.config,
+            &target.cluster_provider,
+            target.cluster_name.as_deref(),
+        ),
+    );
+    let database_size_bytes =
+        database_size_result.map_err(|error| database_error("read database metric size", error))?;
+    let runtime_metrics = runtime_metrics_result.map_err(|error| {
+        tracing::warn!(
+            resource_id = %resource_id,
+            error = %error,
+            "could not collect project database runtime metrics"
+        );
+        AppError::ServiceUnavailable {
+            code: "METRICS_UNAVAILABLE",
+            message: "Runtime metrics are temporarily unavailable.",
+        }
+    })?;
+
+    let sample = DatabaseMetricPoint {
+        timestamp: unix_timestamp(),
+        cpu_percent: runtime_metrics.cpu_percent,
+        memory_used_bytes: runtime_metrics.memory_used_bytes,
+        memory_limit_bytes: runtime_metrics.memory_limit_bytes,
+        volume_used_bytes: runtime_metrics
+            .volume_used_bytes
+            .or(Some(database_size_bytes)),
+        volume_capacity_bytes: runtime_metrics.volume_capacity_bytes,
+        network_receive_bytes: runtime_metrics.network_receive_bytes,
+        network_transmit_bytes: runtime_metrics.network_transmit_bytes,
+        disk_read_bytes: runtime_metrics.disk_read_bytes,
+        disk_write_bytes: runtime_metrics.disk_write_bytes,
+    };
+    let system_metrics_available = sample.cpu_percent.is_some()
+        || sample.memory_used_bytes.is_some()
+        || sample.network_receive_bytes.is_some()
+        || sample.network_transmit_bytes.is_some()
+        || sample.disk_read_bytes.is_some()
+        || sample.disk_write_bytes.is_some();
+    let system_metrics_message = if system_metrics_available {
+        None
+    } else {
+        Some(
+            "CPU, memory, network, and disk metrics are not available for this cluster provider."
+                .to_owned(),
+        )
+    };
+    let points = downsample_metric_points(
+        state.record_database_metric(resource_id, sample),
+        MAX_METRIC_RESPONSE_POINTS,
+    );
+
+    Ok(Json(DatabaseMetricsResponse {
+        provider: target.cluster_provider,
+        system_metrics_available,
+        system_metrics_message,
+        sample_interval_seconds: 5,
+        retention_seconds: 24 * 60 * 60,
+        points,
+    }))
+}
+
 pub async fn config(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -598,7 +688,7 @@ async fn target_database(
         projects::accessible_project_id(state, user.id, workspace_slug, project_slug).await?;
     let resource = sqlx::query_as::<_, DatabaseResourceRow>(
         "SELECT database_name, role_name, host, port, password_ciphertext,
-                status, cluster_provider, cluster_host, cluster_port
+                status, cluster_provider, cluster_name, cluster_host, cluster_port
          FROM project_postgres_databases
          WHERE id = $1 AND project_id = $2",
     )
@@ -633,7 +723,11 @@ async fn target_database(
         .map_err(|_| AppError::internal("invalid database cluster port"))?;
 
     if let Some(pool) = state.cached_database_pool(resource_id) {
-        return Ok(TargetDatabase { pool });
+        return Ok(TargetDatabase {
+            pool,
+            cluster_provider: resource.cluster_provider,
+            cluster_name: resource.cluster_name,
+        });
     }
 
     let password = security::decrypt_secret(
@@ -675,7 +769,34 @@ async fn target_database(
 
     Ok(TargetDatabase {
         pool: state.cache_database_pool(resource_id, pool),
+        cluster_provider: resource.cluster_provider,
+        cluster_name: resource.cluster_name,
     })
+}
+
+fn unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or_default()
+}
+
+fn downsample_metric_points(
+    points: Vec<DatabaseMetricPoint>,
+    max_points: usize,
+) -> Vec<DatabaseMetricPoint> {
+    if max_points < 2 || points.len() <= max_points {
+        return points;
+    }
+
+    let last_index = points.len() - 1;
+    (0..max_points)
+        .map(|index| {
+            let source_index = index * last_index / (max_points - 1);
+            points[source_index].clone()
+        })
+        .collect()
 }
 
 async fn ensure_schema_and_table(

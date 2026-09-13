@@ -923,6 +923,17 @@
   background: var(--project-ok);
 }
 
+.resource-workspace-live-dot.paused {
+  background: var(--project-muted);
+}
+
+.resource-workspace-metric-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+}
+
 .resource-workspace-metrics-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -940,6 +951,50 @@
 
 .resource-workspace-metric-card h3 {
   margin: 0 0 12px;
+}
+
+.resource-workspace-metric-card > h3 {
+  font-size: 18px;
+}
+
+.resource-workspace-metric-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 4px;
+}
+
+.resource-workspace-metric-values > span {
+  display: grid;
+  gap: 2px;
+  min-width: 88px;
+}
+
+.resource-workspace-metric-values small {
+  color: var(--project-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.resource-workspace-metric-values strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.resource-workspace-metric-values .blue strong {
+  color: var(--project-accent);
+}
+
+.resource-workspace-metric-values .violet strong {
+  color: #7c3aed;
+}
+
+.resource-workspace-metric-values .green strong {
+  color: #15803d;
+}
+
+.resource-workspace-metric-values .orange strong {
+  color: #c2410c;
 }
 
 .resource-workspace-metric-legend {
@@ -980,6 +1035,14 @@
 
 .resource-workspace-chart-line.ink {
   stroke: var(--project-fg);
+}
+
+.resource-workspace-chart-line.green {
+  stroke: #15803d;
+}
+
+.resource-workspace-chart-line.orange {
+  stroke: #c2410c;
 }
 
 .resource-workspace-console {

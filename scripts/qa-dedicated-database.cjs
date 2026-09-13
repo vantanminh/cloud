@@ -70,6 +70,9 @@ async function main() {
   await resourceDialog.getByText('Connections').waitFor()
   await resourceDialog.getByRole('tab', { name: 'Config' }).click()
   await resourceDialog.getByText('server_version').waitFor()
+  await resourceDialog.getByRole('tab', { name: 'Metrics' }).click()
+  await resourceDialog.getByText('Network I/O').waitFor()
+  await resourceDialog.getByText('Disk I/O').waitFor()
 
     const inspected = execFileSync('docker', [
     'inspect',

@@ -91,3 +91,29 @@ pub struct CsrfResponse {
     #[serde(rename = "csrfToken")]
     pub csrf_token: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseMetricPoint {
+    pub timestamp: i64,
+    pub cpu_percent: Option<f64>,
+    pub memory_used_bytes: Option<i64>,
+    pub memory_limit_bytes: Option<i64>,
+    pub volume_used_bytes: Option<i64>,
+    pub volume_capacity_bytes: Option<i64>,
+    pub network_receive_bytes: Option<i64>,
+    pub network_transmit_bytes: Option<i64>,
+    pub disk_read_bytes: Option<i64>,
+    pub disk_write_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseMetricsResponse {
+    pub provider: String,
+    pub system_metrics_available: bool,
+    pub system_metrics_message: Option<String>,
+    pub sample_interval_seconds: u32,
+    pub retention_seconds: u32,
+    pub points: Vec<DatabaseMetricPoint>,
+}
