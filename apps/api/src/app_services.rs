@@ -251,11 +251,12 @@ pub async fn create(
     };
 
     let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-        "UPDATE project_app_services SET status = $1, host = $2, port = $3, container_name = $4, database_resource_id = $5, error_message = NULL, updated_at = now() WHERE id = $6 RETURNING {APP_SERVICE_COLUMNS}"
+        "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7 RETURNING {APP_SERVICE_COLUMNS}"
     ))
     .bind(STATUS_READY)
     .bind(&provisioned.host)
     .bind(i32::from(provisioned.port))
+    .bind(i32::from(provisioned.app_port))
     .bind(&provisioned.container_name)
     .bind(database_resource_id)
     .bind(service.id)
@@ -355,11 +356,12 @@ pub async fn reconcile_project_database_connection(
     match provisioned {
         Ok(provisioned) => {
             sqlx::query(
-                "UPDATE project_app_services SET status = $1, host = $2, port = $3, container_name = $4, database_resource_id = $5, error_message = NULL, updated_at = now() WHERE id = $6",
+                "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, error_message = NULL, updated_at = now() WHERE id = $7",
             )
             .bind(STATUS_READY)
             .bind(&provisioned.host)
             .bind(i32::from(provisioned.port))
+            .bind(i32::from(provisioned.app_port))
             .bind(&provisioned.container_name)
             .bind(database.id)
             .bind(service.id)
@@ -568,7 +570,37 @@ fn database_environment(
 struct ProvisionedAppService {
     host: String,
     port: u16,
+    app_port: u16,
     container_name: String,
+}
+
+fn parse_exposed_ports(output: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = output
+        .split(|character: char| !character.is_ascii_digit())
+        .filter_map(|token| {
+            if token.is_empty() {
+                return None;
+            }
+            let port = token.parse::<u16>().ok()?;
+            (port > 0).then_some(port)
+        })
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+fn resolve_container_port(requested: u16, exposed: &[u16]) -> u16 {
+    if exposed.is_empty() || exposed.contains(&requested) {
+        return requested;
+    }
+    if exposed.contains(&80) {
+        return 80;
+    }
+    if exposed.contains(&8080) {
+        return 8080;
+    }
+    exposed[0]
 }
 
 async fn provision_docker(
@@ -597,6 +629,9 @@ async fn provision_docker(
     } else {
         docker_pull(state, image).await?;
     }
+
+    let exposed = docker_image_exposed_ports(state, image).await?;
+    let app_port = resolve_container_port(app_port, &exposed);
 
     let container_name = format!("knotree-app-{}", project_id.simple());
     remove_existing_container(state, &container_name).await?;
@@ -646,8 +681,22 @@ async fn provision_docker(
     Ok(ProvisionedAppService {
         host: state.config.app_service_public_host.clone(),
         port,
+        app_port,
         container_name,
     })
+}
+
+async fn docker_image_exposed_ports(state: &AppState, image: &str) -> Result<Vec<u16>> {
+    let output = run_docker(
+        state,
+        [
+            "inspect".to_owned(),
+            "--format={{range $port, $_ := .Config.ExposedPorts}}{{$port}} {{end}}".to_owned(),
+            image.to_owned(),
+        ],
+    )
+    .await?;
+    Ok(parse_exposed_ports(&output))
 }
 
 async fn docker_pull(state: &AppState, image: &str) -> Result<()> {
@@ -808,6 +857,17 @@ mod tests {
         assert_eq!(validate_app_port(Some(8080)).unwrap(), 8080);
         assert!(validate_app_port(Some(0)).is_err());
         assert!(validate_app_port(Some(65_536)).is_err());
+    }
+
+    #[test]
+    fn maps_publish_port_to_image_expose_when_requested_port_is_absent() {
+        assert_eq!(parse_exposed_ports(r#"{"80/tcp":{}}"#), vec![80]);
+        assert_eq!(parse_exposed_ports("80/tcp 443/tcp"), vec![80, 443]);
+        assert_eq!(parse_exposed_ports(""), Vec::<u16>::new());
+        assert_eq!(resolve_container_port(8080, &[80]), 80);
+        assert_eq!(resolve_container_port(80, &[80, 443]), 80);
+        assert_eq!(resolve_container_port(3000, &[]), 3000);
+        assert_eq!(resolve_container_port(9000, &[8080, 8443]), 8080);
     }
 
     #[test]
