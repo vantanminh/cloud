@@ -13,18 +13,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
 use sqlx::{
-    Column, PgPool, Row, TypeInfo,
+    Column, Executor, PgPool, Row, TypeInfo,
     postgres::{PgConnectOptions, PgPoolOptions, PgRow},
 };
 use uuid::Uuid;
 
-use crate::{auth, error::AppError, projects, security, state::AppState};
+use crate::{auth, cluster, error::AppError, projects, security, state::AppState};
 
 const STATUS_READY: &str = "ready";
 const PROVIDER_LEGACY_SHARED: &str = "legacy_shared";
 const DEFAULT_TABLE_LIMIT: u32 = 50;
 const MAX_QUERY_BYTES: usize = 64 * 1024;
 const MAX_TABLE_COLUMNS: usize = 50;
+const DATABASE_POOL_MAX_CONNECTIONS: u32 = 4;
+const DATABASE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const DATABASE_POOL_MAX_LIFETIME: Duration = Duration::from_secs(1800);
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TableListQuery {
@@ -503,7 +506,7 @@ pub async fn execute_query(
         let result = sqlx::query(&sql)
             .execute(&target.pool)
             .await
-            .map_err(|error| database_error("execute database query", error))?;
+            .map_err(|error| database_query_error("execute database query", error))?;
         return Ok(Json(DatabaseQueryResponse {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -521,7 +524,19 @@ pub async fn execute_query(
     };
     let mut stream = sqlx::query(&query_sql).fetch(&target.pool);
     let mut rows = Vec::new();
-    let mut columns = Vec::new();
+    let mut columns = if wraps_rows {
+        target
+            .pool
+            .describe(&sql)
+            .await
+            .map_err(|error| database_query_error("describe database query result", error))?
+            .columns()
+            .iter()
+            .map(|column| column.name().to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let max_rows = usize::try_from(state.config.database_query_max_rows)
         .map_err(|_| AppError::internal("invalid database query row limit"))?;
     let mut truncated = false;
@@ -529,7 +544,7 @@ pub async fn execute_query(
     while let Some(row) = stream
         .try_next()
         .await
-        .map_err(|error| database_error("read database query result", error))?
+        .map_err(|error| database_query_error("read database query result", error))?
     {
         if rows.len() >= max_rows {
             truncated = true;
@@ -538,7 +553,7 @@ pub async fn execute_query(
         if wraps_rows {
             let raw = row
                 .try_get::<String, _>("row_json")
-                .map_err(|error| database_error("decode database query result", error))?;
+                .map_err(|error| database_query_error("decode database query result", error))?;
             let value = serde_json::from_str::<Value>(&raw).map_err(|_| {
                 AppError::Internal("database returned invalid JSON query data".to_owned())
             })?;
@@ -609,24 +624,34 @@ async fn target_database(
         });
     }
 
-    let host = resource.cluster_host.as_deref().unwrap_or(&resource.host);
+    let host = cluster::connection_host(
+        &resource.cluster_provider,
+        resource.cluster_host.as_deref().unwrap_or(&resource.host),
+    );
     let port_value = resource.cluster_port.unwrap_or(resource.port);
     let port = u16::try_from(port_value)
         .map_err(|_| AppError::internal("invalid database cluster port"))?;
+
+    if let Some(pool) = state.cached_database_pool(resource_id) {
+        return Ok(TargetDatabase { pool });
+    }
+
     let password = security::decrypt_secret(
         &resource.password_ciphertext,
         &state.config.database_credentials_encryption_key,
     )?;
     let options = PgConnectOptions::new()
-        .host(host)
+        .host(&host)
         .port(port)
         .database(&resource.database_name)
         .username(&resource.role_name)
         .password(&password);
     let timeout = format!("{}ms", state.config.database_query_timeout_ms);
     let pool = PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(DATABASE_POOL_MAX_CONNECTIONS)
         .min_connections(0)
+        .idle_timeout(DATABASE_POOL_IDLE_TIMEOUT)
+        .max_lifetime(DATABASE_POOL_MAX_LIFETIME)
         .acquire_timeout(Duration::from_secs(5))
         .after_connect(move |connection, _metadata| {
             let timeout = timeout.clone();
@@ -648,7 +673,9 @@ async fn target_database(
             }
         })?;
 
-    Ok(TargetDatabase { pool })
+    Ok(TargetDatabase {
+        pool: state.cache_database_pool(resource_id, pool),
+    })
 }
 
 async fn ensure_schema_and_table(
@@ -907,6 +934,37 @@ fn database_error(operation: &'static str, error: sqlx::Error) -> AppError {
     AppError::ServiceUnavailable {
         code: "DATABASE_OPERATION_FAILED",
         message: "The project database rejected the operation or is temporarily unavailable.",
+    }
+}
+
+fn database_query_error(operation: &'static str, error: sqlx::Error) -> AppError {
+    let code = error
+        .as_database_error()
+        .and_then(|database_error| database_error.code())
+        .map(|code| code.into_owned());
+    match code.as_deref() {
+        Some("42P01") | Some("3F000") => {
+            tracing::info!(operation, error = %error, "database query referenced a missing relation");
+            AppError::BadRequest {
+                code: "QUERY_RELATION_NOT_FOUND",
+                message: "The query references a table or schema that does not exist.",
+            }
+        }
+        Some("42703") => {
+            tracing::info!(operation, error = %error, "database query referenced a missing column");
+            AppError::BadRequest {
+                code: "QUERY_COLUMN_NOT_FOUND",
+                message: "The query references a column that does not exist.",
+            }
+        }
+        Some("42601") => {
+            tracing::info!(operation, error = %error, "database query has invalid syntax");
+            AppError::BadRequest {
+                code: "QUERY_SYNTAX_ERROR",
+                message: "The database could not parse this SQL statement.",
+            }
+        }
+        _ => database_error(operation, error),
     }
 }
 

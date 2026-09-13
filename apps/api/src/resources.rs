@@ -195,6 +195,7 @@ pub async fn create(
         .clone()
         .unwrap_or_else(|| internal_host.clone());
     let response_port = i32::from(provisioned.public_port.unwrap_or(provisioned.internal_port));
+    drop(state.remove_database_pool(resource.id));
     let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
         "UPDATE project_postgres_databases SET status = $1, error_message = NULL, host = $2, port = $3, cluster_provider = $4, cluster_name = $5, cluster_namespace = $6, cluster_volume = $7, cluster_host = $8, cluster_port = $9, public_host = $10, public_port = $11, updated_at = now() WHERE id = $12 RETURNING {RESOURCE_COLUMNS}"
     ))
@@ -240,7 +241,10 @@ fn resource_response(
     state: &AppState,
 ) -> Result<PostgresResourceResponse, AppError> {
     let port_value = resource.public_port.unwrap_or(resource.port);
-    let host = resource.public_host.as_deref().unwrap_or(&resource.host);
+    let host = cluster::connection_host(
+        &resource.cluster_provider,
+        resource.public_host.as_deref().unwrap_or(&resource.host),
+    );
     let port = u16::try_from(port_value)
         .map_err(|_| AppError::internal("invalid postgres resource port"))?;
     let connection_string = if resource.status == STATUS_READY {
@@ -249,7 +253,7 @@ fn resource_response(
             &state.config.database_credentials_encryption_key,
         )?;
         Some(connection_string(
-            host,
+            &host,
             port,
             &resource.database_name,
             &resource.role_name,

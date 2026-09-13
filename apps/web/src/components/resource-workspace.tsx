@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ActivityIcon,
   Clock3Icon,
@@ -90,6 +84,9 @@ type ResourceWorkspaceProps = {
   onToast: (message: string) => void
   onOpenLogs: () => void
 }
+
+const DEFAULT_QUERY = "SELECT 1"
+const TABLE_SEARCH_DEBOUNCE_MS = 250
 
 export function ResourceWorkspace({
   node,
@@ -391,13 +388,14 @@ function DatabasePane({
 }) {
   const [view, setView] = useState<"data" | "stats" | "config">("data")
   const [search, setSearch] = useState("")
+  const [tableSearch, setTableSearch] = useState("")
   const [tables, setTables] = useState<DatabaseTable[]>([])
   const [selectedTable, setSelectedTable] = useState<DatabaseTable | null>(null)
   const [tableOffset, setTableOffset] = useState(0)
   const [tableData, setTableData] = useState<DatabaseTableData | null>(null)
   const [stats, setStats] = useState<DatabaseStats | null>(null)
   const [config, setConfig] = useState<DatabaseConfig[]>([])
-  const [query, setQuery] = useState("SELECT * FROM public.your_table LIMIT 50")
+  const [query, setQuery] = useState(DEFAULT_QUERY)
   const [queryResult, setQueryResult] = useState<DatabaseQueryResult | null>(
     null
   )
@@ -405,22 +403,29 @@ function DatabasePane({
   const [queryRunning, setQueryRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [tablesRefreshKey, setTablesRefreshKey] = useState(0)
+  const tableRequestId = useRef(0)
   const resourceId = node.resource?.id
   const isReady = node.resource?.status === "ready"
+  const selectedTableName = selectedTable?.tableName
+  const selectedTableSchemaName = selectedTable?.schemaName
 
   const loadTables = useCallback(async () => {
     if (!resourceId || !isReady) {
       return
     }
-    setLoading(true)
-    setError(null)
+    const requestId = tableRequestId.current + 1
+    tableRequestId.current = requestId
     try {
       const nextTables = await listDatabaseTables(
         workspaceSlug,
         projectSlug,
         resourceId,
-        search
+        tableSearch
       )
+      if (requestId !== tableRequestId.current) {
+        return
+      }
       setTables(nextTables)
       setSelectedTable((current) =>
         current &&
@@ -432,57 +437,47 @@ function DatabasePane({
           ? current
           : null
       )
+      setQuery((current) =>
+        current === DEFAULT_QUERY && nextTables[0]
+          ? queryForTable(nextTables[0])
+          : current
+      )
     } catch (requestError) {
-      setError(databaseErrorMessage(requestError))
+      if (requestId === tableRequestId.current) {
+        setError(databaseErrorMessage(requestError))
+      }
     } finally {
-      setLoading(false)
+      if (requestId === tableRequestId.current) {
+        setLoading(false)
+      }
     }
-  }, [isReady, projectSlug, resourceId, search, workspaceSlug])
+  }, [isReady, projectSlug, resourceId, tableSearch, workspaceSlug])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setTableSearch(search.trim())
+    }, TABLE_SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timeoutId)
+  }, [search])
 
   useEffect(() => {
     if (!resourceId || !isReady) {
       return
     }
-    let active = true
-    void listDatabaseTables(
-      workspaceSlug,
-      projectSlug,
-      resourceId,
-      search
-    )
-      .then((nextTables) => {
-        if (!active) {
-          return
-        }
-        setTables(nextTables)
-        setSelectedTable((current) =>
-          current &&
-          nextTables.some(
-            (table) =>
-              table.schemaName === current.schemaName &&
-              table.tableName === current.tableName
-          )
-            ? current
-            : null
-        )
-      })
-      .catch((requestError: unknown) => {
-        if (active) {
-          setError(databaseErrorMessage(requestError))
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false)
-        }
-      })
-    return () => {
-      active = false
-    }
-  }, [isReady, projectSlug, resourceId, search, workspaceSlug])
+    const timeoutId = window.setTimeout(() => {
+      void loadTables()
+    }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [isReady, loadTables, resourceId, tablesRefreshKey])
 
   useEffect(() => {
-    if (!resourceId || !isReady || !selectedTable || view !== "data") {
+    if (
+      !resourceId ||
+      !isReady ||
+      !selectedTableName ||
+      !selectedTableSchemaName ||
+      view !== "data"
+    ) {
       return
     }
     let active = true
@@ -490,8 +485,8 @@ function DatabasePane({
       workspaceSlug,
       projectSlug,
       resourceId,
-      selectedTable.tableName,
-      selectedTable.schemaName,
+      selectedTableName,
+      selectedTableSchemaName,
       50,
       tableOffset
     )
@@ -514,7 +509,16 @@ function DatabasePane({
     return () => {
       active = false
     }
-  }, [isReady, projectSlug, resourceId, selectedTable, tableOffset, view, workspaceSlug])
+  }, [
+    isReady,
+    projectSlug,
+    resourceId,
+    selectedTableName,
+    selectedTableSchemaName,
+    tableOffset,
+    view,
+    workspaceSlug,
+  ])
 
   useEffect(() => {
     if (!resourceId || !isReady || view !== "stats") {
@@ -574,6 +578,7 @@ function DatabasePane({
     }
     setQueryRunning(true)
     setError(null)
+    setQueryResult(null)
     try {
       const result = await executeDatabaseQuery(
         workspaceSlug,
@@ -596,11 +601,14 @@ function DatabasePane({
 
   function handleCreatedTable() {
     setCreateOpen(false)
+    setLoading(true)
+    setError(null)
     setSearch("")
     setSelectedTable(null)
     setTableOffset(0)
     setTableData(null)
-    void loadTables()
+    setTableSearch("")
+    setTablesRefreshKey((current) => current + 1)
     onToast("Table created")
   }
 
@@ -623,7 +631,11 @@ function DatabasePane({
             type="button"
             role="tab"
             aria-selected={view === item}
-            onClick={() => setView(item)}
+            onClick={() => {
+              setView(item)
+              setLoading(true)
+              setError(null)
+            }}
           >
             {item[0].toUpperCase() + item.slice(1)}
           </button>
@@ -662,122 +674,151 @@ function DatabasePane({
             </div>
           )}
 
-      {view === "data" && (
-        <div>
-          <div className="resource-workspace-table-toolbar">
-            <div className="resource-workspace-search-field">
-              <strong>Tables</strong>
-              <div className="resource-workspace-input-wrap">
-                <SearchIcon aria-hidden="true" />
-                <Input
-                  aria-label="Search tables"
-                  value={search}
-                  placeholder="Search tables"
-                  onChange={(event) => setSearch(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="resource-workspace-toolbar-actions">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon-sm"
-                aria-label="Refresh tables"
-                onClick={() => void loadTables()}
-                disabled={loading}
-              >
-                <RefreshCwIcon />
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="resource-workspace-accent-button"
-                onClick={() => setCreateOpen(true)}
-              >
-                <PlusIcon data-icon="inline-start" />
-                New Table
-              </Button>
-            </div>
-          </div>
-          <div className="resource-workspace-query-editor">
-            <Textarea
-              aria-label="SQL query"
-              rows={2}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              spellCheck={false}
-            />
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => void handleRunQuery()}
-              disabled={queryRunning || !query.trim()}
-            >
-              <TerminalIcon data-icon="inline-start" />
-              {queryRunning ? "Running…" : "Run query"}
-            </Button>
-          </div>
-          {queryResult && (
-            <DatabaseQueryResultView result={queryResult} />
-          )}
-          {selectedTable && tableData ? (
-            <DatabaseTableView
-              data={tableData}
-              loading={loading}
-              onPageChange={setTableOffset}
-              onBack={() => {
-                setSelectedTable(null)
-                setTableData(null)
-              }}
-            />
-          ) : tables.length > 0 ? (
-            <div className="resource-workspace-table-grid">
-              {tables.map((table) => (
-                  <button
-                    key={`${table.schemaName}.${table.tableName}`}
+          {view === "data" && (
+            <div>
+              <div className="resource-workspace-table-toolbar">
+                <div className="resource-workspace-search-field">
+                  <strong>Tables</strong>
+                  <div className="resource-workspace-input-wrap">
+                    <SearchIcon aria-hidden="true" />
+                    <Input
+                      aria-label="Search tables"
+                      value={search}
+                      placeholder="Search tables"
+                      onChange={(event) => {
+                        setSearch(event.target.value)
+                        setLoading(true)
+                        setError(null)
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="resource-workspace-toolbar-actions">
+                  <Button
                     type="button"
-                    className="resource-workspace-table-card"
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label="Refresh tables"
                     onClick={() => {
-                      setQueryResult(null)
-                      setSelectedTable(table)
-                      setTableOffset(0)
+                      setLoading(true)
+                      setError(null)
+                      setTablesRefreshKey((current) => current + 1)
                     }}
+                    disabled={loading}
                   >
-                    <Table2Icon aria-hidden="true" />
-                    <span>{table.tableName}</span>
-                    <small>
-                      {table.schemaName} · {formatRowCount(table.estimatedRows)} rows
-                    </small>
-                  </button>
-                ))}
+                    <RefreshCwIcon />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="resource-workspace-accent-button"
+                    onClick={() => setCreateOpen(true)}
+                  >
+                    <PlusIcon data-icon="inline-start" />
+                    New Table
+                  </Button>
+                </div>
+              </div>
+              <div className="resource-workspace-query-editor">
+                <Textarea
+                  aria-label="SQL query"
+                  rows={2}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  spellCheck={false}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleRunQuery()}
+                  disabled={queryRunning || !query.trim()}
+                >
+                  <TerminalIcon data-icon="inline-start" />
+                  {queryRunning ? "Running…" : "Run query"}
+                </Button>
+              </div>
+              {queryResult && <DatabaseQueryResultView result={queryResult} />}
+              {selectedTable ? (
+                tableData ? (
+                  <DatabaseTableView
+                    data={tableData}
+                    loading={loading}
+                    onPageChange={setTableOffset}
+                    onBack={() => {
+                      setSelectedTable(null)
+                      setTableData(null)
+                    }}
+                  />
+                ) : (
+                  <ResourceEmptyState
+                    icon={<Table2Icon aria-hidden="true" />}
+                    title={loading ? "Loading rows…" : "No table data"}
+                    description="The selected table data will appear here when the database responds."
+                  />
+                )
+              ) : tables.length > 0 ? (
+                <div className="resource-workspace-table-grid">
+                  {tables.map((table) => (
+                    <button
+                      key={`${table.schemaName}.${table.tableName}`}
+                      type="button"
+                      className="resource-workspace-table-card"
+                      onClick={() => {
+                        setQueryResult(null)
+                        setLoading(true)
+                        setError(null)
+                        setSelectedTable(table)
+                        setTableOffset(0)
+                      }}
+                    >
+                      <Table2Icon aria-hidden="true" />
+                      <span>{table.tableName}</span>
+                      <small>
+                        {table.schemaName} ·{" "}
+                        {formatRowCount(table.estimatedRows)} rows
+                      </small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <ResourceEmptyState
+                  icon={<Table2Icon aria-hidden="true" />}
+                  title={
+                    loading
+                      ? "Loading tables…"
+                      : search
+                        ? "No tables match"
+                        : "No tables yet"
+                  }
+                  description={
+                    search
+                      ? "Try a different table name."
+                      : "Create a table here or connect your application to this dedicated PostgreSQL cluster."
+                  }
+                />
+              )}
             </div>
-          ) : (
-            <ResourceEmptyState
-              icon={<Table2Icon aria-hidden="true" />}
-              title={loading ? "Loading tables…" : search ? "No tables match" : "No tables yet"}
-              description={
-                search
-                  ? "Try a different table name."
-                  : "Create a table here or connect your application to this dedicated PostgreSQL cluster."
-              }
-            />
           )}
-        </div>
-      )}
-      {view === "stats" && (
-        stats ? <DatabaseStatsView stats={stats} /> : <ResourceEmptyState
-          icon={<ActivityIcon aria-hidden="true" />}
-          title={loading ? "Loading stats…" : "No stats available"}
-          description="Live statistics are read directly from this project database."
-        />
-      )}
-      {view === "config" && (
-        config.length > 0 ? <DatabaseConfigView config={config} /> : <ResourceEmptyState
-          icon={<Settings2Icon aria-hidden="true" />}
-          title={loading ? "Loading config…" : "No config available"}
-          description="The live PostgreSQL settings are read from this project database."
-        />
-      )}
+          {view === "stats" &&
+            (stats ? (
+              <DatabaseStatsView stats={stats} />
+            ) : (
+              <ResourceEmptyState
+                icon={<ActivityIcon aria-hidden="true" />}
+                title={loading ? "Loading stats…" : "No stats available"}
+                description="Live statistics are read directly from this project database."
+              />
+            ))}
+          {view === "config" &&
+            (config.length > 0 ? (
+              <DatabaseConfigView config={config} />
+            ) : (
+              <ResourceEmptyState
+                icon={<Settings2Icon aria-hidden="true" />}
+                title={loading ? "Loading config…" : "No config available"}
+                description="The live PostgreSQL settings are read from this project database."
+              />
+            ))}
           {createOpen && (
             <CreateTableForm
               onCancel={() => setCreateOpen(false)}
@@ -867,7 +908,8 @@ function DatabaseTableView({
           Previous
         </Button>
         <span className="resource-workspace-muted">
-          Rows {data.rowCount === 0 ? 0 : data.offset + 1}–{data.offset + data.rowCount}
+          Rows {data.rowCount === 0 ? 0 : data.offset + 1}–
+          {data.offset + data.rowCount}
         </span>
         <Button
           type="button"
@@ -887,7 +929,8 @@ function DatabaseQueryResultView({ result }: { result: DatabaseQueryResult }) {
   if (result.columns.length === 0) {
     return (
       <div className="resource-workspace-query-result" role="status">
-        Query completed in {result.durationMs}ms · {result.affectedRows} row(s) affected.
+        Query completed in {result.durationMs}ms · {result.affectedRows} row(s)
+        affected.
       </div>
     )
   }
@@ -896,7 +939,8 @@ function DatabaseQueryResultView({ result }: { result: DatabaseQueryResult }) {
       <div className="resource-workspace-data-head">
         <strong>Query result</strong>
         <span className="resource-workspace-muted">
-          {result.rowCount} rows · {result.durationMs}ms{result.truncated ? " · result truncated" : ""}
+          {result.rowCount} rows · {result.durationMs}ms
+          {result.truncated ? " · result truncated" : ""}
         </span>
       </div>
       <div className="resource-workspace-data-table-wrap">
@@ -904,7 +948,9 @@ function DatabaseQueryResultView({ result }: { result: DatabaseQueryResult }) {
           <thead>
             <tr>
               {result.columns.map((column) => (
-                <th key={column} scope="col">{column}</th>
+                <th key={column} scope="col">
+                  {column}
+                </th>
               ))}
             </tr>
           </thead>
@@ -1015,13 +1061,23 @@ function CreateTableForm({
             <h3 id="new-table-title">New table</h3>
             <p>Create a table in the {schemaName} schema.</p>
           </div>
-          <button type="button" className="resource-workspace-close" aria-label="Close new table" onClick={onCancel}>
+          <button
+            type="button"
+            className="resource-workspace-close"
+            aria-label="Close new table"
+            onClick={onCancel}
+          >
             <XIcon aria-hidden="true" />
           </button>
         </div>
         <label className="resource-workspace-form-field">
           Table name
-          <Input value={name} onChange={(event) => setName(event.target.value)} required autoFocus />
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            required
+            autoFocus
+          />
         </label>
         <div className="resource-workspace-form-section">
           <div className="resource-workspace-form-section-head">
@@ -1033,7 +1089,12 @@ function CreateTableForm({
               onClick={() =>
                 setColumns((current) => [
                   ...current,
-                  { name: `column_${current.length + 1}`, dataType: "text", primaryKey: false, nullable: true },
+                  {
+                    name: `column_${current.length + 1}`,
+                    dataType: "text",
+                    primaryKey: false,
+                    nullable: true,
+                  },
                 ])
               }
               disabled={columns.length >= 50}
@@ -1042,12 +1103,21 @@ function CreateTableForm({
             </Button>
           </div>
           {columns.map((column, index) => (
-            <div className="resource-workspace-column-row" key={`${index}-${column.name}`}>
+            <div
+              className="resource-workspace-column-row"
+              key={`${index}-${column.name}`}
+            >
               <Input
                 aria-label={`Column ${index + 1} name`}
                 value={column.name}
                 onChange={(event) =>
-                  setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))
+                  setColumns((current) =>
+                    current.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, name: event.target.value }
+                        : item
+                    )
+                  )
                 }
                 required
               />
@@ -1055,10 +1125,31 @@ function CreateTableForm({
                 aria-label={`Column ${index + 1} type`}
                 value={column.dataType}
                 onChange={(event) =>
-                  setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, dataType: event.target.value } : item))
+                  setColumns((current) =>
+                    current.map((item, itemIndex) =>
+                      itemIndex === index
+                        ? { ...item, dataType: event.target.value }
+                        : item
+                    )
+                  )
                 }
               >
-                {["text", "bigint", "integer", "boolean", "numeric", "date", "timestamptz", "uuid", "jsonb", "bytea"].map((type) => <option key={type} value={type}>{type}</option>)}
+                {[
+                  "text",
+                  "bigint",
+                  "integer",
+                  "boolean",
+                  "numeric",
+                  "date",
+                  "timestamptz",
+                  "uuid",
+                  "jsonb",
+                  "bytea",
+                ].map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
               </select>
               <label className="resource-workspace-checkbox">
                 <input
@@ -1066,7 +1157,13 @@ function CreateTableForm({
                   checked={column.nullable}
                   disabled={column.primaryKey}
                   onChange={(event) =>
-                    setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, nullable: event.target.checked } : item))
+                    setColumns((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, nullable: event.target.checked }
+                          : item
+                      )
+                    )
                   }
                 />
                 Nullable
@@ -1076,7 +1173,19 @@ function CreateTableForm({
                   type="checkbox"
                   checked={column.primaryKey}
                   onChange={(event) =>
-                    setColumns((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, primaryKey: event.target.checked, nullable: event.target.checked ? false : item.nullable } : item))
+                    setColumns((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? {
+                              ...item,
+                              primaryKey: event.target.checked,
+                              nullable: event.target.checked
+                                ? false
+                                : item.nullable,
+                            }
+                          : item
+                      )
+                    )
                   }
                 />
                 PK
@@ -1086,7 +1195,11 @@ function CreateTableForm({
                 variant="ghost"
                 size="icon-sm"
                 aria-label={`Remove column ${index + 1}`}
-                onClick={() => setColumns((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                onClick={() =>
+                  setColumns((current) =>
+                    current.filter((_, itemIndex) => itemIndex !== index)
+                  )
+                }
                 disabled={columns.length === 1}
               >
                 <XIcon />
@@ -1095,8 +1208,12 @@ function CreateTableForm({
           ))}
         </div>
         <div className="resource-workspace-modal-actions">
-          <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button type="submit" disabled={saving || !name.trim()}>{saving ? "Creating…" : "Create table"}</Button>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={saving || !name.trim()}>
+            {saving ? "Creating…" : "Create table"}
+          </Button>
         </div>
       </form>
     </div>
@@ -1107,6 +1224,14 @@ function databaseErrorMessage(error: unknown) {
   return error instanceof ApiError
     ? error.message
     : "The database operation failed. Please try again."
+}
+
+function queryForTable(table: DatabaseTable) {
+  return `SELECT * FROM ${quoteSqlIdentifier(table.schemaName)}.${quoteSqlIdentifier(table.tableName)} LIMIT 50`
+}
+
+function quoteSqlIdentifier(identifier: string) {
+  return `"${identifier.replaceAll('"', '""')}"`
 }
 
 function formatCell(value: unknown) {
@@ -1122,12 +1247,16 @@ function formatCell(value: unknown) {
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 function formatRowCount(value: number) {
-  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value)
 }
 
 function BackupsPane({ onToast }: { onToast: (message: string) => void }) {

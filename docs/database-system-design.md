@@ -47,11 +47,15 @@ the existing double-submit CSRF token.
 | GET | `database/config` | read a safe allowlist from `pg_settings` |
 | POST | `database/query` | execute one parsed SQL statement |
 
-The API resolves the resource against the authorized project before opening a
-short-lived pool to the dedicated endpoint. Every target connection receives
-the configured PostgreSQL `statement_timeout`. Table reads are identifier
-quoted after validation and limited to `DATABASE_QUERY_MAX_ROWS`. SQL console
-results are capped at the same limit and report truncation.
+The API resolves the resource against the authorized project before reusing a
+process-local connection pool for that dedicated endpoint. Pools keep zero
+minimum connections, expire idle connections after five minutes, and cap each
+resource at four connections. Every target connection receives the configured
+PostgreSQL `statement_timeout`. Docker development normalizes `localhost` to
+IPv4 loopback because Docker Desktop publishes the project port there. Table
+reads are identifier quoted after validation and limited to
+`DATABASE_QUERY_MAX_ROWS`. SQL console results are capped at the same limit
+and report truncation.
 
 The SQL console intentionally rejects cross-cluster administration and server
 escape operations (`CREATE/DROP DATABASE`, role administration, `COPY`,
@@ -63,9 +67,13 @@ credential.
 
 The resource workspace reads the tables from the selected project database,
 opens a table to show live rows, creates tables through the table builder,
-runs SQL through the query endpoint, and loads stats/config on demand. Loading,
-authorization, unavailable-database, and SQL errors are displayed as safe
-messages; the UI does not fabricate tables, metrics, or configuration values.
+runs SQL through the query endpoint, and loads stats/config on demand. Table
+search is debounced, identical in-flight reads are deduplicated, and stale
+table responses cannot overwrite newer searches. The starter query is `SELECT
+1` until a real table is available, then it is filled with a safely quoted
+schema/table name. Loading, authorization, unavailable-database, and SQL
+errors are displayed as safe messages; the UI does not fabricate tables,
+metrics, or configuration values.
 
 ## Migration note
 

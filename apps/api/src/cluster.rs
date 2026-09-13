@@ -10,6 +10,18 @@ use crate::config::Config;
 pub const PROVIDER_DOCKER: &str = "docker";
 pub const PROVIDER_KUBERNETES: &str = "kubernetes";
 
+/// Docker Desktop publishes the development database on IPv4 loopback. Using
+/// `localhost` lets some clients try `::1` first, which adds a multi-second
+/// connection fallback on hosts where Docker is not listening on IPv6.
+pub fn connection_host(provider: &str, host: &str) -> String {
+    if provider == PROVIDER_DOCKER
+        && host.trim().eq_ignore_ascii_case("localhost")
+    {
+        return "127.0.0.1".to_owned();
+    }
+    host.to_owned()
+}
+
 #[derive(Debug, Clone)]
 pub struct ClusterSpec {
     pub project_id: Uuid,
@@ -49,6 +61,7 @@ pub async fn provision_with_provider(
 async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
     let cluster_name = format!("knotree-pg-{}", spec.project_id.simple());
     let volume_name = format!("knotree-pg-data-{}", spec.project_id.simple());
+    let internal_host = connection_host(PROVIDER_DOCKER, &config.database_resource_host);
 
     ensure_docker_volume(config, &volume_name).await?;
 
@@ -99,7 +112,7 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
 
     let port = docker_port(config, &cluster_name).await?;
     wait_for_postgres(
-        &config.database_resource_host,
+        &internal_host,
         port,
         &spec.database_name,
         &spec.role_name,
@@ -111,7 +124,8 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
     let public_host = config
         .database_resource_public_host
         .clone()
-        .or_else(|| Some(config.database_resource_host.clone()));
+        .map(|host| connection_host(PROVIDER_DOCKER, &host))
+        .or_else(|| Some(internal_host.clone()));
     let public_port = config.database_resource_public_port.or(Some(port));
 
     Ok(ProvisionedCluster {
@@ -119,7 +133,7 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
         name: cluster_name,
         namespace: None,
         volume: Some(volume_name),
-        internal_host: config.database_resource_host.clone(),
+        internal_host,
         internal_port: port,
         public_host,
         public_port,
@@ -257,5 +271,21 @@ mod tests {
         assert!(name.chars().all(|character| character.is_ascii_lowercase()
             || character.is_ascii_digit()
             || character == '-'));
+    }
+
+    #[test]
+    fn normalizes_localhost_for_docker_port_forwarding() {
+        assert_eq!(
+            super::connection_host(super::PROVIDER_DOCKER, "localhost"),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            super::connection_host(super::PROVIDER_DOCKER, "db.internal"),
+            "db.internal"
+        );
+        assert_eq!(
+            super::connection_host(super::PROVIDER_KUBERNETES, "localhost"),
+            "localhost"
+        );
     }
 }

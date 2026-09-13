@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     }
 
     let bind_addr = config.bind_addr;
-    let state = AppState { db, config };
+    let state = AppState::new(db, config);
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!(%bind_addr, "knotree api listening");
 

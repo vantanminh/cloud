@@ -12,6 +12,31 @@ export type CreatePostgresResourceInput = {
   name: string
 }
 
+const inFlightDatabaseRequests = new Map<string, Promise<unknown>>()
+
+function deduplicateDatabaseRequest<T>(key: string, request: () => Promise<T>) {
+  const existing = inFlightDatabaseRequests.get(key)
+  if (existing) {
+    return existing as Promise<T>
+  }
+
+  const pending = request()
+  inFlightDatabaseRequests.set(key, pending)
+  void pending.then(
+    () => {
+      if (inFlightDatabaseRequests.get(key) === pending) {
+        inFlightDatabaseRequests.delete(key)
+      }
+    },
+    () => {
+      if (inFlightDatabaseRequests.get(key) === pending) {
+        inFlightDatabaseRequests.delete(key)
+      }
+    }
+  )
+  return pending
+}
+
 function resourcesPath(workspaceSlug: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/resources`
 }
@@ -55,8 +80,9 @@ export function listDatabaseTables(
   search?: string
 ) {
   const query = search ? `?search=${encodeURIComponent(search)}` : ""
-  return apiRequest<DatabaseTable[]>(
-    `${databasePath(workspaceSlug, projectSlug, resourceId, "tables")}${query}`
+  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "tables")}${query}`
+  return deduplicateDatabaseRequest(path, () =>
+    apiRequest<DatabaseTable[]>(path)
   )
 }
 
@@ -75,8 +101,9 @@ export function getDatabaseTableData(
     limit: String(limit),
     offset: String(offset),
   })
-  return apiRequest<DatabaseTableData>(
-    `${databasePath(workspaceSlug, projectSlug, resourceId, "table-data")}?${query.toString()}`
+  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "table-data")}?${query.toString()}`
+  return deduplicateDatabaseRequest(path, () =>
+    apiRequest<DatabaseTableData>(path)
   )
 }
 
@@ -108,9 +135,8 @@ export function getDatabaseStats(
   projectSlug: string,
   resourceId: string
 ) {
-  return apiRequest<DatabaseStats>(
-    databasePath(workspaceSlug, projectSlug, resourceId, "stats")
-  )
+  const path = databasePath(workspaceSlug, projectSlug, resourceId, "stats")
+  return deduplicateDatabaseRequest(path, () => apiRequest<DatabaseStats>(path))
 }
 
 export function getDatabaseConfig(
@@ -118,8 +144,9 @@ export function getDatabaseConfig(
   projectSlug: string,
   resourceId: string
 ) {
-  return apiRequest<DatabaseConfig[]>(
-    databasePath(workspaceSlug, projectSlug, resourceId, "config")
+  const path = databasePath(workspaceSlug, projectSlug, resourceId, "config")
+  return deduplicateDatabaseRequest(path, () =>
+    apiRequest<DatabaseConfig[]>(path)
   )
 }
 
