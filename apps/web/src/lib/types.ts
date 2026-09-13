@@ -79,12 +79,18 @@ export type DatabaseMetricPoint = {
   diskWriteBytes: number | null
 }
 
+export type DatabaseMetricsRange = "1h" | "6h" | "24h" | "7d" | "30d"
+
 export type DatabaseMetrics = {
   provider: string
   systemMetricsAvailable: boolean
   systemMetricsMessage: string | null
   sampleIntervalSeconds: number
   retentionSeconds: number
+  range: DatabaseMetricsRange
+  fromTimestamp: number
+  toTimestamp: number
+  resolutionSeconds: number
   points: DatabaseMetricPoint[]
 }
 

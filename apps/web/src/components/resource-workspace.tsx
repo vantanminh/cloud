@@ -35,6 +35,7 @@ import type {
   DatabaseConfig,
   DatabaseMetricPoint,
   DatabaseMetrics,
+  DatabaseMetricsRange,
   DatabaseStats,
   DatabaseTable,
   DatabaseTableData,
@@ -91,6 +92,16 @@ type ResourceWorkspaceProps = {
 const DEFAULT_QUERY = "SELECT 1"
 const TABLE_SEARCH_DEBOUNCE_MS = 250
 const METRICS_REFRESH_MS = 5_000
+const METRIC_RANGE_OPTIONS: Array<{
+  value: DatabaseMetricsRange
+  label: string
+}> = [
+  { value: "1h", label: "Last hour" },
+  { value: "6h", label: "Last 6 hours" },
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+]
 
 export function ResourceWorkspace({
   node,
@@ -1419,15 +1430,23 @@ function MetricsPane({
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [live, setLive] = useState(true)
+  const [range, setRange] = useState<DatabaseMetricsRange>("24h")
   const [error, setError] = useState<string | null>(null)
-  const requestInFlight = useRef(false)
+  const requestInFlight = useRef<string | null>(null)
+  const requestSequence = useRef(0)
 
   const loadMetrics = useCallback(
     async (silent: boolean) => {
-      if (!resourceId || !isReady || requestInFlight.current) {
+      if (!resourceId || !isReady) {
         return
       }
-      requestInFlight.current = true
+      const requestKey = `${resourceId}:${range}`
+      if (requestInFlight.current === requestKey) {
+        return
+      }
+      requestInFlight.current = requestKey
+      const sequence = requestSequence.current + 1
+      requestSequence.current = sequence
       if (silent) {
         setRefreshing(true)
       } else {
@@ -1437,19 +1456,28 @@ function MetricsPane({
         const nextMetrics = await getDatabaseMetrics(
           workspaceSlug,
           projectSlug,
-          resourceId
+          resourceId,
+          range
         )
-        setMetrics(nextMetrics)
-        setError(null)
+        if (sequence === requestSequence.current) {
+          setMetrics(nextMetrics)
+          setError(null)
+        }
       } catch (requestError) {
-        setError(databaseErrorMessage(requestError))
+        if (sequence === requestSequence.current) {
+          setError(databaseErrorMessage(requestError))
+        }
       } finally {
-        requestInFlight.current = false
-        setLoading(false)
-        setRefreshing(false)
+        if (requestInFlight.current === requestKey) {
+          requestInFlight.current = null
+        }
+        if (sequence === requestSequence.current) {
+          setLoading(false)
+          setRefreshing(false)
+        }
       }
     },
-    [isReady, projectSlug, resourceId, workspaceSlug]
+    [isReady, projectSlug, range, resourceId, workspaceSlug]
   )
 
   useEffect(() => {
@@ -1508,6 +1536,9 @@ function MetricsPane({
 
   const points = metrics?.points ?? []
   const current = points[points.length - 1] ?? null
+  const selectedRangeLabel =
+    METRIC_RANGE_OPTIONS.find((option) => option.value === range)?.label ??
+    "Last 24 hours"
   const lastUpdated = current
     ? new Date(current.timestamp * 1_000).toLocaleTimeString([], {
         hour: "2-digit",
@@ -1526,12 +1557,36 @@ function MetricsPane({
       <div className="resource-workspace-metric-toolbar">
         <div className="resource-workspace-metric-status">
           <span className="resource-workspace-muted">
-            Last 24 hours{lastUpdated ? ` · updated ${lastUpdated}` : ""}
+            {selectedRangeLabel}
+            {lastUpdated ? ` · updated ${lastUpdated}` : ""}
+          </span>
+          <span className="resource-workspace-muted">
+            Up to {Math.round((metrics?.retentionSeconds ?? 30 * 24 * 60 * 60) / (24 * 60 * 60))} days
           </span>
           {refreshing && (
             <span className="resource-workspace-muted">Refreshing…</span>
           )}
         </div>
+        <label className="resource-workspace-metric-range">
+          <span>Range</span>
+          <select
+            aria-label="Metric time range"
+            value={range}
+            onChange={(event) => {
+              const nextRange = event.target.value as DatabaseMetricsRange
+              setRange(nextRange)
+              setMetrics(null)
+              setError(null)
+              setLoading(true)
+            }}
+          >
+            {METRIC_RANGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <Button
           type="button"
           variant="outline"
@@ -1577,6 +1632,7 @@ function MetricsPane({
             legend="Container usage"
             accent="blue"
             points={points}
+            rangeLabel={selectedRangeLabel}
             series={[
               {
                 label: "CPU",
@@ -1593,6 +1649,7 @@ function MetricsPane({
             legend="Container usage"
             accent="violet"
             points={points}
+            rangeLabel={selectedRangeLabel}
             series={[
               {
                 label: "Used",
@@ -1614,6 +1671,7 @@ function MetricsPane({
             legend="Used · Capacity"
             accent="ink"
             points={points}
+            rangeLabel={selectedRangeLabel}
             series={[
               {
                 label: "Used",
@@ -1637,6 +1695,7 @@ function MetricsPane({
             legend="RX · TX totals"
             accent="green"
             points={points}
+            rangeLabel={selectedRangeLabel}
             series={[
               {
                 label: "RX",
@@ -1657,6 +1716,7 @@ function MetricsPane({
             legend="Read · Write totals"
             accent="orange"
             points={points}
+            rangeLabel={selectedRangeLabel}
             series={[
               {
                 label: "Read",
@@ -1692,6 +1752,7 @@ function MetricCard({
   accent,
   points,
   series,
+  rangeLabel,
   scaleMax,
   axisMaxLabel,
 }: {
@@ -1700,9 +1761,11 @@ function MetricCard({
   accent: "blue" | "violet" | "ink" | "green" | "orange"
   points: DatabaseMetricPoint[]
   series: MetricSeries[]
+  rangeLabel: string
   scaleMax?: number
   axisMaxLabel?: string
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const current = points[points.length - 1] ?? null
   const allValues = series.flatMap((item) =>
     points.flatMap((point) => {
@@ -1719,7 +1782,34 @@ function MetricCard({
   const xForIndex = (index: number) =>
     chartLeft +
     (points.length > 1 ? (index * chartWidth) / (points.length - 1) : chartWidth / 2)
+  const yForValue = (value: number) =>
+    chartBottom -
+    (Math.max(0, Math.min(value, chartMax)) / chartMax) * chartHeight
   const axisLabel = axisMaxLabel ?? formatBytes(chartMax)
+  const hoveredPoint =
+    hoveredIndex === null ? null : (points[hoveredIndex] ?? null)
+  const hoveredX = hoveredIndex === null ? null : xForIndex(hoveredIndex)
+
+  function handleChartMove(event: React.MouseEvent<SVGSVGElement>) {
+    if (!points.length) {
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width) {
+      setHoveredIndex(0)
+      return
+    }
+    const viewBoxX = ((event.clientX - rect.left) / rect.width) * 360
+    const progress = Math.max(
+      0,
+      Math.min(1, (viewBoxX - chartLeft) / chartWidth)
+    )
+    const index =
+      points.length === 1
+        ? 0
+        : Math.round(progress * (points.length - 1))
+    setHoveredIndex(index)
+  }
 
   return (
     <article className={cn("resource-workspace-metric-card", accent)}>
@@ -1727,67 +1817,131 @@ function MetricCard({
       <h3>{title}</h3>
       <div className="resource-workspace-metric-values">
         {series.map((item) => {
-          const value = current ? item.getValue(current) : null
-          const displayValue = current
-            ? (item.getDisplayValue?.(current) ??
-              (value === null ? "Unavailable" : item.formatValue(value)))
-            : "Waiting for sample…"
           return (
             <span key={item.label} className={item.colorClass}>
               <small>{item.label}</small>
-              <strong>{displayValue}</strong>
+              <strong>
+                {current
+                  ? metricSeriesDisplayValue(item, current)
+                  : "Waiting for sample…"}
+              </strong>
             </span>
           )
         })}
       </div>
-      <svg
-        viewBox="0 0 360 180"
-        role="img"
-        aria-label={`${title} usage, last 24 hours`}
-      >
-        <g className="resource-workspace-chart-grid">
-          <line x1="40" y1="20" x2="350" y2="20" />
-          <line x1="40" y1="55" x2="350" y2="55" />
-          <line x1="40" y1="90" x2="350" y2="90" />
-          <line x1="40" y1="125" x2="350" y2="125" />
-          <line x1="40" y1="160" x2="350" y2="160" />
-        </g>
-        <text x="0" y="24">
-          {axisLabel}
-        </text>
-        <text x="0" y="164">
-          0
-        </text>
-        {points.length > 0 &&
-          series.map((item) => {
-            const linePoints = points
-              .map((point, index) => {
-                const value = item.getValue(point)
-                if (value === null || !Number.isFinite(value)) {
-                  return null
-                }
-                const y =
-                  chartBottom -
-                  (Math.max(0, Math.min(value, chartMax)) / chartMax) *
-                    chartHeight
-                return `${xForIndex(index)},${y}`
-              })
-              .filter((point): point is string => point !== null)
-              .join(" ")
-            return linePoints ? (
-              <polyline
-                key={item.label}
-                className={cn(
-                  "resource-workspace-chart-line",
-                  item.colorClass
-                )}
-                points={linePoints}
-              />
-            ) : null
-          })}
-      </svg>
+      <div className="resource-workspace-chart-wrap">
+        <svg
+          viewBox="0 0 360 180"
+          preserveAspectRatio="none"
+          role="img"
+          aria-label={`${title} usage, ${rangeLabel.toLowerCase()}`}
+          onMouseMove={handleChartMove}
+          onMouseLeave={() => setHoveredIndex(null)}
+        >
+          <g className="resource-workspace-chart-grid">
+            <line x1="40" y1="20" x2="350" y2="20" />
+            <line x1="40" y1="55" x2="350" y2="55" />
+            <line x1="40" y1="90" x2="350" y2="90" />
+            <line x1="40" y1="125" x2="350" y2="125" />
+            <line x1="40" y1="160" x2="350" y2="160" />
+          </g>
+          <text x="0" y="24">
+            {axisLabel}
+          </text>
+          <text x="0" y="164">
+            0
+          </text>
+          {hoveredPoint && hoveredX !== null && (
+            <line
+              className="resource-workspace-chart-hover-line"
+              x1={hoveredX}
+              y1="20"
+              x2={hoveredX}
+              y2="160"
+            />
+          )}
+          {points.length > 0 &&
+            series.map((item) => {
+              const linePoints = points
+                .map((point, index) => {
+                  const value = item.getValue(point)
+                  if (value === null || !Number.isFinite(value)) {
+                    return null
+                  }
+                  return `${xForIndex(index)},${yForValue(value)}`
+                })
+                .filter((point): point is string => point !== null)
+                .join(" ")
+              return linePoints ? (
+                <polyline
+                  key={item.label}
+                  className={cn(
+                    "resource-workspace-chart-line",
+                    item.colorClass
+                  )}
+                  points={linePoints}
+                />
+              ) : null
+            })}
+          {hoveredPoint && hoveredX !== null &&
+            series.map((item) => {
+              const value = item.getValue(hoveredPoint)
+              return value === null || !Number.isFinite(value) ? null : (
+                <circle
+                  key={item.label}
+                  className={cn(
+                    "resource-workspace-chart-hover-point",
+                    item.colorClass
+                  )}
+                  cx={hoveredX}
+                  cy={yForValue(value)}
+                  r="4"
+                />
+              )
+            })}
+        </svg>
+        {hoveredPoint && hoveredX !== null && (
+          <div
+            className="resource-workspace-chart-tooltip"
+            role="status"
+            style={{
+              left: `${Math.min(92, Math.max(8, (hoveredX / 360) * 100))}%`,
+            }}
+          >
+            <time>{formatMetricTimestamp(hoveredPoint.timestamp)}</time>
+            {series.map((item) => (
+              <span key={item.label}>
+                <i className={item.colorClass} aria-hidden="true" />
+                <small>{item.label}</small>
+                <strong>{metricSeriesDisplayValue(item, hoveredPoint)}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </article>
   )
+}
+
+function metricSeriesDisplayValue(
+  series: MetricSeries,
+  point: DatabaseMetricPoint
+) {
+  const value = series.getValue(point)
+  return (
+    series.getDisplayValue?.(point) ??
+    (value === null ? "Unavailable" : series.formatValue(value))
+  )
+}
+
+function formatMetricTimestamp(timestamp: number) {
+  return new Date(timestamp * 1_000).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
 }
 
 function memoryPercent(point: DatabaseMetricPoint) {

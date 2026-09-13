@@ -60,7 +60,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/table-data`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/stats`
-- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/metrics`
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/metrics?range=1h|6h|24h|7d|30d`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/config`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/query`
 
@@ -89,9 +89,10 @@ administration statements such as role/database creation, `COPY`, `SET`, and
 
 The Metrics endpoint samples the selected project container's Docker runtime
 stats in development: CPU, memory, network receive/transmit totals, block
-disk read/write totals, and filesystem volume usage/capacity. The API retains
-up to 24 hours of samples per resource in process memory while it is being
-observed. Kubernetes providers return explicit unavailable runtime fields
+disk read/write totals, and filesystem volume usage/capacity. A background
+sampler persists ready-resource samples in the control-plane PostgreSQL for up
+to 30 days; `?range=1h|6h|24h|7d|30d` returns a bounded bucketed history for
+the charts. Kubernetes providers return explicit unavailable runtime fields
 until a cluster metrics adapter is configured; database volume size remains
 available from PostgreSQL.
 

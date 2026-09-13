@@ -115,5 +115,9 @@ pub struct DatabaseMetricsResponse {
     pub system_metrics_message: Option<String>,
     pub sample_interval_seconds: u32,
     pub retention_seconds: u32,
+    pub range: String,
+    pub from_timestamp: i64,
+    pub to_timestamp: i64,
+    pub resolution_seconds: u32,
     pub points: Vec<DatabaseMetricPoint>,
 }

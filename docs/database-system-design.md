@@ -44,7 +44,7 @@ the existing double-submit CSRF token.
 | POST | `database/tables` | create a table with validated identifiers and allowlisted types |
 | GET | `database/table-data?schema=&table=&limit=&offset=` | read paginated rows and column metadata |
 | GET | `database/stats` | read database size, connections, table count, and row estimate |
-| GET | `database/metrics` | sample live CPU, memory, volume, network RX/TX, and disk read/write metrics |
+| GET | `database/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live CPU, memory, volume, network RX/TX, and disk read/write metrics plus retained history |
 | GET | `database/config` | read a safe allowlist from `pg_settings` |
 | POST | `database/query` | execute one parsed SQL statement |
 
@@ -71,15 +71,18 @@ opens a table to show live rows, creates tables through the table builder,
 runs SQL through the query endpoint, loads stats/config on demand, and polls
 metrics every five seconds while the Metrics tab is live. In Docker
 development, the metrics collector reads the selected container's Docker
-runtime counters and mounted data-path filesystem usage. The API keeps a
-bounded in-process history and returns a downsampled 24-hour series; providers
-without a runtime adapter expose unavailable fields explicitly. Table search is
-debounced, identical in-flight reads are deduplicated, and stale table
-responses cannot overwrite newer searches. The starter query is `SELECT 1`
-until a real table is available, then it is filled with a safely quoted
-schema/table name. Loading, authorization, unavailable-database, and SQL
-errors are displayed as safe messages; the UI does not fabricate tables,
-metrics, or configuration values.
+runtime counters and mounted data-path filesystem usage. A background sampler
+records ready dedicated resources every five seconds in the control-plane
+`database_metric_samples` table, prunes samples older than 30 days, and the
+API returns a bounded, bucketed series for the requested `1h`, `6h`, `24h`,
+`7d`, or `30d` range. Hovering a chart selects the nearest real sample and
+shows its timestamp and metric values; providers without a runtime adapter
+expose unavailable fields explicitly. Table search is debounced, identical
+in-flight reads are deduplicated, and stale table responses cannot overwrite
+newer searches. The starter query is `SELECT 1` until a real table is
+available, then it is filled with a safely quoted schema/table name. Loading,
+authorization, unavailable-database, and SQL errors are displayed as safe
+messages; the UI does not fabricate tables, metrics, or configuration values.
 
 ## Migration note
 

@@ -2,6 +2,7 @@ import { apiRequest } from "@/lib/api"
 import type {
   DatabaseConfig,
   DatabaseMetrics,
+  DatabaseMetricsRange,
   DatabaseQueryResult,
   DatabaseStats,
   DatabaseTable,
@@ -143,9 +144,11 @@ export function getDatabaseStats(
 export function getDatabaseMetrics(
   workspaceSlug: string,
   projectSlug: string,
-  resourceId: string
+  resourceId: string,
+  range: DatabaseMetricsRange = "24h"
 ) {
-  const path = databasePath(workspaceSlug, projectSlug, resourceId, "metrics")
+  const query = new URLSearchParams({ range })
+  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "metrics")}?${query.toString()}`
   return apiRequest<DatabaseMetrics>(path)
 }
 

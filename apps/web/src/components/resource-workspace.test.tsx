@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -41,7 +41,11 @@ describe("ResourceWorkspace database pane", () => {
       systemMetricsAvailable: true,
       systemMetricsMessage: null,
       sampleIntervalSeconds: 5,
-      retentionSeconds: 86400,
+      retentionSeconds: 2_592_000,
+      range: "24h",
+      fromTimestamp: 1_697_408_000,
+      toTimestamp: 1_700_000_000,
+      resolutionSeconds: 288,
       points: [
         {
           timestamp: 1_700_000_000,
@@ -158,10 +162,42 @@ describe("ResourceWorkspace database pane", () => {
     expect(await within(dialog).findByText("3.33%")).toBeInTheDocument()
     expect(within(dialog).getByText("Network I/O")).toBeInTheDocument()
     expect(within(dialog).getByText("Disk I/O")).toBeInTheDocument()
+    const cpuChart = within(dialog).getByRole("img", {
+      name: "CPU usage, last 24 hours",
+    })
+    fireEvent.mouseMove(cpuChart, { clientX: 1 })
+    expect(within(dialog).getByRole("status")).toHaveTextContent("3.33%")
     expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
       "mimo-i-tech",
       "test-2",
-      "resource-id"
+      "resource-id",
+      "24h"
     )
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Metric time range"),
+      "7d"
+    )
+    await waitFor(() => {
+      expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "resource-id",
+        "7d"
+      )
+    })
+
+    await user.selectOptions(
+      within(dialog).getByLabelText("Metric time range"),
+      "30d"
+    )
+    await waitFor(() => {
+      expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "resource-id",
+        "30d"
+      )
+    })
   })
 })

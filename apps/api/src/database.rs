@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use futures_util::TryStreamExt;
+use futures_util::{TryStreamExt, future::join_all};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
@@ -35,6 +35,8 @@ const DATABASE_POOL_MAX_CONNECTIONS: u32 = 4;
 const DATABASE_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const DATABASE_POOL_MAX_LIFETIME: Duration = Duration::from_secs(1800);
 const MAX_METRIC_RESPONSE_POINTS: usize = 300;
+const METRIC_SAMPLE_INTERVAL_SECONDS: u64 = 5;
+const METRIC_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TableListQuery {
@@ -47,6 +49,11 @@ pub struct TableDataQuery {
     pub schema: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DatabaseMetricsQuery {
+    pub range: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +147,7 @@ pub struct CreatedTableResponse {
 
 #[derive(Debug, sqlx::FromRow)]
 struct DatabaseResourceRow {
+    id: Uuid,
     database_name: String,
     role_name: String,
     host: String,
@@ -185,10 +193,38 @@ struct ConfigRow {
     description: String,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct MetricHistoryRow {
+    sample_timestamp: i64,
+    cpu_percent: Option<f64>,
+    memory_used_bytes: Option<i64>,
+    memory_limit_bytes: Option<i64>,
+    volume_used_bytes: Option<i64>,
+    volume_capacity_bytes: Option<i64>,
+    network_receive_bytes: Option<i64>,
+    network_transmit_bytes: Option<i64>,
+    disk_read_bytes: Option<i64>,
+    disk_write_bytes: Option<i64>,
+}
+
 struct TargetDatabase {
     pool: PgPool,
     cluster_provider: String,
     cluster_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MetricRange {
+    key: &'static str,
+    seconds: i64,
+}
+
+impl MetricRange {
+    fn bucket_seconds(self) -> i64 {
+        (self.seconds + MAX_METRIC_RESPONSE_POINTS as i64 - 1)
+            .div_euclid(MAX_METRIC_RESPONSE_POINTS as i64)
+            .max(METRIC_SAMPLE_INTERVAL_SECONDS as i64)
+    }
 }
 
 pub async fn list_tables(
@@ -453,7 +489,9 @@ pub async fn metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Query(query): Query<DatabaseMetricsQuery>,
 ) -> Result<Json<DatabaseMetricsResponse>, AppError> {
+    let range = parse_metric_range(query.range.as_deref())?;
     let target = target_database(
         &state,
         &headers,
@@ -463,8 +501,91 @@ pub async fn metrics(
     )
     .await?;
 
+    let sample = collect_metric_sample(&state, resource_id, &target).await?;
+    let sample_timestamp = sample.timestamp;
+    persist_metric_sample(&state, resource_id, &sample).await?;
+    let system_metrics_available = has_system_metrics(&sample);
+    let system_metrics_message = if system_metrics_available {
+        None
+    } else {
+        Some(
+            "CPU, memory, network, and disk metrics are not available for this cluster provider."
+                .to_owned(),
+        )
+    };
+    let from_timestamp = sample_timestamp.saturating_sub(range.seconds);
+    let points =
+        load_metric_history(&state, resource_id, from_timestamp, sample_timestamp, range).await?;
+
+    Ok(Json(DatabaseMetricsResponse {
+        provider: target.cluster_provider,
+        system_metrics_available,
+        system_metrics_message,
+        sample_interval_seconds: METRIC_SAMPLE_INTERVAL_SECONDS as u32,
+        retention_seconds: METRIC_RETENTION_SECONDS as u32,
+        range: range.key.to_owned(),
+        from_timestamp,
+        to_timestamp: sample_timestamp,
+        resolution_seconds: range.bucket_seconds() as u32,
+        points,
+    }))
+}
+
+pub fn spawn_metrics_sampler(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(METRIC_SAMPLE_INTERVAL_SECONDS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            if let Err(error) = sample_ready_databases(&state).await {
+                tracing::warn!(error = %error, "could not enumerate databases for metric sampling");
+            }
+        }
+    })
+}
+
+async fn sample_ready_databases(state: &AppState) -> Result<(), sqlx::Error> {
+    let resources = sqlx::query_as::<_, DatabaseResourceRow>(
+        "SELECT id, database_name, role_name, host, port, password_ciphertext,
+                status, cluster_provider, cluster_name, cluster_host, cluster_port
+         FROM project_postgres_databases
+         WHERE status = $1 AND cluster_provider <> $2",
+    )
+    .bind(STATUS_READY)
+    .bind(PROVIDER_LEGACY_SHARED)
+    .fetch_all(&state.db)
+    .await?;
+
+    let results = join_all(
+        resources
+            .into_iter()
+            .map(|resource| sample_database(state, resource)),
+    )
+    .await;
+    for result in results {
+        if let Err(error) = result {
+            tracing::warn!(error = ?error, "could not persist project database metric sample");
+        }
+    }
+    Ok(())
+}
+
+async fn sample_database(state: &AppState, resource: DatabaseResourceRow) -> Result<(), AppError> {
+    let resource_id = resource.id;
+    let target = target_database_from_resource(state, resource).await?;
+    let sample = collect_metric_sample(state, resource_id, &target).await?;
+    persist_metric_sample(state, resource_id, &sample).await
+}
+
+async fn collect_metric_sample(
+    state: &AppState,
+    resource_id: Uuid,
+    target: &TargetDatabase,
+) -> Result<DatabaseMetricPoint, AppError> {
     let (database_size_result, runtime_metrics_result) = tokio::join!(
-        sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())::bigint",)
+        sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())::bigint")
             .fetch_one(&target.pool),
         cluster::collect_runtime_metrics(
             &state.config,
@@ -486,7 +607,7 @@ pub async fn metrics(
         }
     })?;
 
-    let sample = DatabaseMetricPoint {
+    Ok(DatabaseMetricPoint {
         timestamp: unix_timestamp(),
         cpu_percent: runtime_metrics.cpu_percent,
         memory_used_bytes: runtime_metrics.memory_used_bytes,
@@ -499,34 +620,132 @@ pub async fn metrics(
         network_transmit_bytes: runtime_metrics.network_transmit_bytes,
         disk_read_bytes: runtime_metrics.disk_read_bytes,
         disk_write_bytes: runtime_metrics.disk_write_bytes,
-    };
-    let system_metrics_available = sample.cpu_percent.is_some()
+    })
+}
+
+fn has_system_metrics(sample: &DatabaseMetricPoint) -> bool {
+    sample.cpu_percent.is_some()
         || sample.memory_used_bytes.is_some()
         || sample.network_receive_bytes.is_some()
         || sample.network_transmit_bytes.is_some()
         || sample.disk_read_bytes.is_some()
-        || sample.disk_write_bytes.is_some();
-    let system_metrics_message = if system_metrics_available {
-        None
-    } else {
-        Some(
-            "CPU, memory, network, and disk metrics are not available for this cluster provider."
-                .to_owned(),
-        )
-    };
-    let points = downsample_metric_points(
-        state.record_database_metric(resource_id, sample),
-        MAX_METRIC_RESPONSE_POINTS,
-    );
+        || sample.disk_write_bytes.is_some()
+}
 
-    Ok(Json(DatabaseMetricsResponse {
-        provider: target.cluster_provider,
-        system_metrics_available,
-        system_metrics_message,
-        sample_interval_seconds: 5,
-        retention_seconds: 24 * 60 * 60,
-        points,
-    }))
+async fn persist_metric_sample(
+    state: &AppState,
+    resource_id: Uuid,
+    sample: &DatabaseMetricPoint,
+) -> Result<(), AppError> {
+    let mut transaction = state.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO database_metric_samples (
+            resource_id, sampled_at, cpu_percent, memory_used_bytes, memory_limit_bytes,
+            volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
+            network_transmit_bytes, disk_read_bytes, disk_write_bytes
+         ) VALUES (
+            $1, to_timestamp($2::double precision), $3, $4, $5, $6, $7, $8, $9, $10, $11
+         )
+         ON CONFLICT (resource_id, sampled_at) DO UPDATE SET
+            cpu_percent = EXCLUDED.cpu_percent,
+            memory_used_bytes = EXCLUDED.memory_used_bytes,
+            memory_limit_bytes = EXCLUDED.memory_limit_bytes,
+            volume_used_bytes = EXCLUDED.volume_used_bytes,
+            volume_capacity_bytes = EXCLUDED.volume_capacity_bytes,
+            network_receive_bytes = EXCLUDED.network_receive_bytes,
+            network_transmit_bytes = EXCLUDED.network_transmit_bytes,
+            disk_read_bytes = EXCLUDED.disk_read_bytes,
+            disk_write_bytes = EXCLUDED.disk_write_bytes",
+    )
+    .bind(resource_id)
+    .bind(sample.timestamp)
+    .bind(sample.cpu_percent)
+    .bind(sample.memory_used_bytes)
+    .bind(sample.memory_limit_bytes)
+    .bind(sample.volume_used_bytes)
+    .bind(sample.volume_capacity_bytes)
+    .bind(sample.network_receive_bytes)
+    .bind(sample.network_transmit_bytes)
+    .bind(sample.disk_read_bytes)
+    .bind(sample.disk_write_bytes)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM database_metric_samples
+         WHERE resource_id = $1
+           AND sampled_at < now() - INTERVAL '30 days'",
+    )
+    .bind(resource_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn load_metric_history(
+    state: &AppState,
+    resource_id: Uuid,
+    from_timestamp: i64,
+    to_timestamp: i64,
+    range: MetricRange,
+) -> Result<Vec<DatabaseMetricPoint>, AppError> {
+    let rows = sqlx::query_as::<_, MetricHistoryRow>(
+        "WITH bucketed AS (
+            SELECT
+                EXTRACT(EPOCH FROM sampled_at)::bigint AS sample_timestamp,
+                cpu_percent,
+                memory_used_bytes,
+                memory_limit_bytes,
+                volume_used_bytes,
+                volume_capacity_bytes,
+                network_receive_bytes,
+                network_transmit_bytes,
+                disk_read_bytes,
+                disk_write_bytes,
+                ROW_NUMBER() OVER (
+                    PARTITION BY FLOOR(
+                        EXTRACT(EPOCH FROM sampled_at) / $4::double precision
+                    )
+                    ORDER BY sampled_at DESC
+                ) AS sample_rank
+            FROM database_metric_samples
+            WHERE resource_id = $1
+              AND sampled_at >= to_timestamp($2::double precision)
+              AND sampled_at <= to_timestamp($3::double precision)
+        )
+        SELECT sample_timestamp, cpu_percent, memory_used_bytes, memory_limit_bytes,
+               volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
+               network_transmit_bytes, disk_read_bytes, disk_write_bytes
+        FROM bucketed
+        WHERE sample_rank = 1
+        ORDER BY sample_timestamp ASC",
+    )
+    .bind(resource_id)
+    .bind(from_timestamp)
+    .bind(to_timestamp)
+    .bind(range.bucket_seconds())
+    .fetch_all(&state.db)
+    .await
+    .map_err(AppError::from)?;
+
+    Ok(downsample_metric_points(
+        rows.into_iter()
+            .map(|row| DatabaseMetricPoint {
+                timestamp: row.sample_timestamp,
+                cpu_percent: row.cpu_percent,
+                memory_used_bytes: row.memory_used_bytes,
+                memory_limit_bytes: row.memory_limit_bytes,
+                volume_used_bytes: row.volume_used_bytes,
+                volume_capacity_bytes: row.volume_capacity_bytes,
+                network_receive_bytes: row.network_receive_bytes,
+                network_transmit_bytes: row.network_transmit_bytes,
+                disk_read_bytes: row.disk_read_bytes,
+                disk_write_bytes: row.disk_write_bytes,
+            })
+            .collect(),
+        MAX_METRIC_RESPONSE_POINTS,
+    ))
 }
 
 pub async fn config(
@@ -687,7 +906,7 @@ async fn target_database(
     let project_id =
         projects::accessible_project_id(state, user.id, workspace_slug, project_slug).await?;
     let resource = sqlx::query_as::<_, DatabaseResourceRow>(
-        "SELECT database_name, role_name, host, port, password_ciphertext,
+        "SELECT id, database_name, role_name, host, port, password_ciphertext,
                 status, cluster_provider, cluster_name, cluster_host, cluster_port
          FROM project_postgres_databases
          WHERE id = $1 AND project_id = $2",
@@ -700,6 +919,15 @@ async fn target_database(
         code: "DATABASE_NOT_FOUND",
         message: "The requested database was not found.",
     })?;
+
+    target_database_from_resource(state, resource).await
+}
+
+async fn target_database_from_resource(
+    state: &AppState,
+    resource: DatabaseResourceRow,
+) -> Result<TargetDatabase, AppError> {
+    let resource_id = resource.id;
 
     if resource.cluster_provider == PROVIDER_LEGACY_SHARED {
         return Err(AppError::Conflict {
@@ -772,6 +1000,35 @@ async fn target_database(
         cluster_provider: resource.cluster_provider,
         cluster_name: resource.cluster_name,
     })
+}
+
+fn parse_metric_range(value: Option<&str>) -> Result<MetricRange, AppError> {
+    match value.unwrap_or("24h").trim() {
+        "1h" => Ok(MetricRange {
+            key: "1h",
+            seconds: 60 * 60,
+        }),
+        "6h" => Ok(MetricRange {
+            key: "6h",
+            seconds: 6 * 60 * 60,
+        }),
+        "24h" | "1d" => Ok(MetricRange {
+            key: "24h",
+            seconds: 24 * 60 * 60,
+        }),
+        "7d" | "1w" => Ok(MetricRange {
+            key: "7d",
+            seconds: 7 * 24 * 60 * 60,
+        }),
+        "30d" | "1m" => Ok(MetricRange {
+            key: "30d",
+            seconds: METRIC_RETENTION_SECONDS,
+        }),
+        _ => Err(AppError::BadRequest {
+            code: "INVALID_METRIC_RANGE",
+            message: "Metric range must be one of 1h, 6h, 24h, 7d, or 30d.",
+        }),
+    }
 }
 
 fn unix_timestamp() -> i64 {
@@ -1123,5 +1380,18 @@ mod tests {
         assert_eq!(validate_identifier(" public ", "schema").unwrap(), "public");
         assert!(validate_identifier("", "table").is_err());
         assert!(validate_identifier(&"x".repeat(64), "column").is_err());
+    }
+
+    #[test]
+    fn accepts_bounded_metric_ranges_and_computes_chart_resolution() {
+        assert_eq!(parse_metric_range(None).unwrap().key, "24h");
+        assert_eq!(parse_metric_range(Some("1h")).unwrap().seconds, 3_600);
+        assert_eq!(parse_metric_range(Some("1w")).unwrap().key, "7d");
+        assert_eq!(parse_metric_range(Some("1m")).unwrap().key, "30d");
+        assert_eq!(
+            parse_metric_range(Some("30d")).unwrap().bucket_seconds(),
+            8_640
+        );
+        assert!(parse_metric_range(Some("90d")).is_err());
     }
 }

@@ -381,7 +381,9 @@ theme uses the same layout and replaces the page-local surface tokens.
   polling at the server-provided sample interval, and renders CPU, memory,
   volume, network RX/TX, and disk read/write series. It displays current
   values, the last update time, loading/error states, and a Live/Paused control;
-  it never uses placeholder chart coordinates.
+  its range selector loads 1-hour, 6-hour, 24-hour, 7-day, or 30-day history,
+  and hovering any chart shows the nearest sample's timestamp and exact values.
+  It never uses placeholder chart coordinates.
 - Add → `Postgres` opens the creation dialog. The API generates the
   database identifier, login role, and strong password, provisions a dedicated
   per-project instance, and returns a connection string after a successful
@@ -403,13 +405,14 @@ theme uses the same layout and replaces the page-local surface tokens.
   search, and Live/Paused controls. It remains empty until log ingestion exists.
 - Metrics samples are scoped to the selected dedicated PostgreSQL resource. In
   Docker development, CPU/memory/network/block-I/O values come from that
-  container and volume usage comes from its mounted data path. The API keeps a
-  bounded in-process 24-hour history and the browser receives a downsampled
-  series. Providers without a runtime metrics adapter expose an explicit
-  unavailable message instead of fabricated values.
+  container and volume usage comes from its mounted data path. A background
+  sampler persists samples in the control-plane database for up to 30 days;
+  the browser requests a bounded bucketed series and can switch ranges without
+  losing the current project scope. Providers without a runtime metrics
+  adapter expose an explicit unavailable message instead of fabricated values.
 - Resource loading and provisioning failures keep the Add action available and
   show a safe, page-level message; raw database errors never reach the browser.
-- Activity, notifications, Agent, Metrics, Resources, Settings, undo/redo, and
+- Activity, notifications, Agent, Resources, Settings, undo/redo, and
   layers provide explicit placeholder feedback until their APIs exist.
 - Direct project lookup failures show `Project unavailable` and a `Back to
 workspace` action.
@@ -745,22 +748,31 @@ so a production build cannot silently point at localhost.
 | `POST` | `.../resources/:resourceId/database/tables`                 | Session + membership + CSRF | Create a validated project table                  |
 | `GET`  | `.../resources/:resourceId/database/table-data`             | Session + membership        | Read paginated rows and column metadata            |
 | `GET`  | `.../resources/:resourceId/database/stats`                  | Session + membership        | Load live database statistics                      |
-| `GET`  | `.../resources/:resourceId/database/metrics`                | Session + membership        | Load sampled CPU, memory, volume, network, and disk metrics |
+| `GET`  | `.../resources/:resourceId/database/metrics?range=1h\|6h\|24h\|7d\|30d` | Session + membership        | Load retained CPU, memory, volume, network, and disk metrics |
 | `GET`  | `.../resources/:resourceId/database/config`                 | Session + membership        | Load allowlisted PostgreSQL settings              |
 | `POST` | `.../resources/:resourceId/database/query`                  | Session + membership + CSRF | Run one bounded SQL statement                     |
 
-The metrics response returns a bounded, chronological `points` array. Runtime
-byte counters are cumulative totals from the selected dedicated container;
-`volumeUsedBytes` and `volumeCapacityBytes` are filesystem byte values. A
-provider that cannot expose runtime metrics returns `null` fields plus
-`systemMetricsAvailable: false` and a user-safe `systemMetricsMessage`.
+The metrics endpoint records ready dedicated resources every five seconds in
+the control-plane database and retains at most 30 days per resource. The
+`range` query selects one of `1h`, `6h`, `24h`, `7d`, or `30d`; the server
+chooses a bucket resolution and returns at most 300 chronological real sample
+points. Runtime byte counters are cumulative totals from the selected dedicated
+container; `volumeUsedBytes` and `volumeCapacityBytes` are filesystem byte
+values. The UI uses the returned timestamp/value pairs to show a nearest-point
+tooltip on hover. A provider that cannot expose runtime metrics returns `null`
+fields plus `systemMetricsAvailable: false` and a user-safe
+`systemMetricsMessage`.
 
 ```json
 {
   "provider": "docker",
   "systemMetricsAvailable": true,
   "sampleIntervalSeconds": 5,
-  "retentionSeconds": 86400,
+  "retentionSeconds": 2592000,
+  "range": "24h",
+  "fromTimestamp": 1778611200,
+  "toTimestamp": 1778697600,
+  "resolutionSeconds": 288,
   "points": [{
     "timestamp": 1778697600,
     "cpuPercent": 2.5,
@@ -1026,8 +1038,8 @@ Current behavior coverage includes:
   workspace tabs, connection copy, theme/log navigation, zoom controls,
   responsive bottom navigation, and no-overflow mobile layout.
 - The Metrics tab loads and renders live CPU, memory, volume, network, and disk
-  read/write data for a ready PostgreSQL resource, and exposes the live polling
-  control.
+  read/write data for a ready PostgreSQL resource, exposes the live polling and
+  range controls, and shows hover details for historical samples.
 
 Every new route or meaningful interaction should add:
 
@@ -1081,8 +1093,9 @@ When adding a feature to this frontend:
 - Add email verification UX and a resend path before turning the production
   verification flag on for real users.
 - Replace Logs, Console, Backups, and write-oriented Settings placeholders with
-  API-backed data and explicit loading/error contracts. Extend metrics history
-  to durable time-series storage when multi-instance API deployments require it.
+  API-backed data and explicit loading/error contracts. Add retention/rollup
+  jobs for larger-than-30-day observability needs when the product contract
+  expands.
 - Add a dedicated query/cache layer if workspace data becomes larger than the
   current session response.
 
