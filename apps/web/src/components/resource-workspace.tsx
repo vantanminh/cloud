@@ -2151,11 +2151,6 @@ function AppPortEditor({
   const isUnchanged = isValidPort && parsedPort === appService.appPort
   const isBusy = appService.status === "provisioning" || isSaving
 
-  useEffect(() => {
-    setAppPort(String(appService.appPort))
-    setError(null)
-  }, [appService.id, appService.appPort])
-
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!isValidPort) {
@@ -2331,6 +2326,7 @@ function SettingsPane({
                   </dl>
                   {section.id === "networking" && appService ? (
                     <AppPortEditor
+                      key={`${appService.id}:${appService.appPort}`}
                       appService={appService}
                       workspaceSlug={workspaceSlug}
                       projectSlug={projectSlug}
