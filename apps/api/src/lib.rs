@@ -18,7 +18,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
-    routing::{get, patch, post},
+    routing::{any, get, patch, post},
 };
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
@@ -60,6 +60,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/deployments/{deployment_id}/events",
             get(app_services::deployment_events),
+        )
+        .route(
+            "/public/app-services/{app_service_id}",
+            any(app_services::public_proxy_root),
+        )
+        .route(
+            "/public/app-services/{app_service_id}/{*path}",
+            any(app_services::public_proxy_path),
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/logs",

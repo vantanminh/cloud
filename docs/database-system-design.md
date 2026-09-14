@@ -94,7 +94,7 @@ the PostgreSQL resource contract:
 | PATCH | `app-services/{app_service_id}` | redeploy one service with a new container port |
 | PATCH | `app-services/{app_service_id}/auto-deploy` | enable or disable automatic GHCR image polling |
 | PATCH | `app-services/{app_service_id}/database` | assign or remove the service's PostgreSQL connection |
-| GET | `app-services/{app_service_id}/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live App service CPU, memory, volume, network RX/TX, and disk read/write metrics plus retained history |
+| GET | `app-services/{app_service_id}/metrics?range=1h\|6h\|24h\|7d\|30d` | sample live App service runtime metrics plus public traffic, requests, response time, and request error rate history |
 | GET | `auth/github/status` | report the signed-in user's package connection |
 | GET | `auth/github/start` | create OAuth state and return the GitHub authorization URL |
 | GET | `auth/github/callback` | exchange the OAuth code and store an encrypted package token |
@@ -144,8 +144,9 @@ OAuth, the API encrypts the returned package token with
 `DATABASE_CREDENTIALS_ENCRYPTION_KEY`, performs a short-lived Docker registry
 login for the pull, then logs out. Tokens are never sent to the browser or
 included in API responses. Docker development publishes each container on a
-random loopback port and returns the configured public host plus that port as
-`serviceUrl`. When a user has assigned a ready Docker PostgreSQL resource, the
+random loopback port. The returned `serviceUrl` is an API public gateway that
+forwards HTTP traffic to that container and records public payload bytes,
+request count, average response time, and 4xx/5xx error rate. When a user has assigned a ready Docker PostgreSQL resource, the
 same response includes `databaseConnection` with the internal network name,
 `postgres:5432`, the database identity, and the names of the assigned
 variables. This Docker implementation is enabled by default only in local

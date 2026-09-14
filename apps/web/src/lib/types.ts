@@ -133,6 +133,11 @@ export type ResourceMetricPoint = {
   networkTransmitBytes: number | null
   diskReadBytes: number | null
   diskWriteBytes: number | null
+  publicNetworkReceiveBytes?: number | null
+  publicNetworkTransmitBytes?: number | null
+  requests?: number | null
+  responseTimeMs?: number | null
+  requestErrorRate?: number | null
 }
 
 export type DatabaseMetricPoint = ResourceMetricPoint

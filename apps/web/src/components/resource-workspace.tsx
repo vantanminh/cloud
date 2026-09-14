@@ -1869,6 +1869,80 @@ function MetricsPane({
               },
             ]}
           />
+          {isAppService && (
+            <>
+              <MetricCard
+                title="Public Network Traffic"
+                legend="Inbound / Outbound payload"
+                accent="green"
+                points={points}
+                rangeLabel={selectedRangeLabel}
+                series={[
+                  {
+                    label: "Inbound",
+                    colorClass: "green",
+                    getValue: (point) =>
+                      point.publicNetworkReceiveBytes ?? null,
+                    formatValue: formatBytes,
+                  },
+                  {
+                    label: "Outbound",
+                    colorClass: "blue",
+                    getValue: (point) =>
+                      point.publicNetworkTransmitBytes ?? null,
+                    formatValue: formatBytes,
+                  },
+                ]}
+              />
+              <MetricCard
+                title="Requests"
+                legend="Public HTTP requests"
+                accent="blue"
+                points={points}
+                rangeLabel={selectedRangeLabel}
+                series={[
+                  {
+                    label: "Requests",
+                    colorClass: "blue",
+                    getValue: (point) => point.requests ?? null,
+                    formatValue: formatCount,
+                  },
+                ]}
+              />
+              <MetricCard
+                title="Response Time"
+                legend="Average latency"
+                accent="orange"
+                points={points}
+                rangeLabel={selectedRangeLabel}
+                series={[
+                  {
+                    label: "Average",
+                    colorClass: "orange",
+                    getValue: (point) => point.responseTimeMs ?? null,
+                    formatValue: (value) => `${value.toFixed(0)} ms`,
+                  },
+                ]}
+              />
+              <MetricCard
+                title="Request Error Rate"
+                legend="4xx / 5xx responses"
+                accent="violet"
+                points={points}
+                rangeLabel={selectedRangeLabel}
+                scaleMax={100}
+                axisMaxLabel="100%"
+                series={[
+                  {
+                    label: "Errors",
+                    colorClass: "violet",
+                    getValue: (point) => point.requestErrorRate ?? null,
+                    formatValue: (value) => `${value.toFixed(2)}%`,
+                  },
+                ]}
+              />
+            </>
+          )}
           <MetricCard
             title="Disk I/O"
             legend="Read · Write totals"
@@ -2101,6 +2175,12 @@ function formatMetricTimestamp(timestamp: number) {
     minute: "2-digit",
     second: "2-digit",
   })
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  }).format(Math.max(0, value))
 }
 
 function memoryPercent(point: ResourceMetricPoint) {

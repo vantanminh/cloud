@@ -95,6 +95,11 @@ describe("ResourceWorkspace database pane", () => {
           networkTransmitBytes: 120_000,
           diskReadBytes: 457_000_000,
           diskWriteBytes: 56_600_000,
+          publicNetworkReceiveBytes: 45_000,
+          publicNetworkTransmitBytes: 125_000,
+          requests: 1_248,
+          responseTimeMs: 86,
+          requestErrorRate: 1.2,
         },
       ],
     })
@@ -290,6 +295,21 @@ describe("ResourceWorkspace database pane", () => {
 
     expect(await within(dialog).findByText("3.33%")).toBeInTheDocument()
     expect(within(dialog).getByText("Network I/O")).toBeInTheDocument()
+    expect(
+      within(dialog).getByText("Public Network Traffic")
+    ).toBeInTheDocument()
+    expect(
+      within(dialog).getByRole("heading", { name: "Requests" })
+    ).toBeInTheDocument()
+    expect(
+      within(dialog).getByRole("heading", { name: "Response Time" })
+    ).toBeInTheDocument()
+    expect(
+      within(dialog).getByRole("heading", { name: "Request Error Rate" })
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText("1,248")).toBeInTheDocument()
+    expect(within(dialog).getByText("86 ms")).toBeInTheDocument()
+    expect(within(dialog).getByText("1.20%")).toBeInTheDocument()
     expect(within(dialog).getByText("Disk I/O")).toBeInTheDocument()
     expect(mocks.getAppServiceMetrics).toHaveBeenCalledWith(
       "mimo-i-tech",

@@ -192,6 +192,16 @@ pub struct ResourceMetricPoint {
     pub network_transmit_bytes: Option<i64>,
     pub disk_read_bytes: Option<i64>,
     pub disk_write_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_network_receive_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_network_transmit_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_time_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_error_rate: Option<f64>,
 }
 
 pub type DatabaseMetricPoint = ResourceMetricPoint;

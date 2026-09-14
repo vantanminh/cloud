@@ -753,6 +753,11 @@ async fn collect_metric_sample(
         network_transmit_bytes: runtime_metrics.network_transmit_bytes,
         disk_read_bytes: runtime_metrics.disk_read_bytes,
         disk_write_bytes: runtime_metrics.disk_write_bytes,
+        public_network_receive_bytes: None,
+        public_network_transmit_bytes: None,
+        requests: None,
+        response_time_ms: None,
+        request_error_rate: None,
     })
 }
 
@@ -866,6 +871,11 @@ async fn load_metric_history(
                 network_transmit_bytes: row.network_transmit_bytes,
                 disk_read_bytes: row.disk_read_bytes,
                 disk_write_bytes: row.disk_write_bytes,
+                public_network_receive_bytes: None,
+                public_network_transmit_bytes: None,
+                requests: None,
+                response_time_ms: None,
+                request_error_rate: None,
             })
             .collect(),
         MAX_METRIC_RESPONSE_POINTS,

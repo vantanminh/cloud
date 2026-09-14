@@ -71,6 +71,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `PATCH /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/auto-deploy`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/logs` (recent Docker runtime logs)
+- `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/metrics?range=1h|6h|24h|7d|30d`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/deployments/:deploymentId/events` (SSE deployment progress/log stream)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/resources/:resourceId/database/tables`
@@ -94,8 +95,9 @@ images are currently restricted to `ghcr.io` and require the signed-in user to
 connect GitHub from the account-level `/settings/integrations` page (or from the
 deploy dialog). Each Knotree user has an independent GitHub connection; the API
 stores that user's encrypted OAuth package token only long enough to authenticate
-the Docker pull and then logs out of the registry. The response includes the
-random published port and `serviceUrl`.
+the Docker pull and then logs out of the registry. Docker keeps the container
+on a random loopback port, while `serviceUrl` points to the API public gateway
+so public requests can be measured before being forwarded to the container.
 GitHub-sourced services can automatically poll their GHCR tag once per minute;
 when the pulled image identity changes, the API queues a normal redeployment.
 The Settings panel can enable or disable this watcher and reports the last
@@ -122,7 +124,10 @@ reconciled for existing containers; a one-second storage guard stops a
 resource at the 10 GB ceiling and marks it with a safe error instead of
 allowing host-wide growth. The Metrics tab and the corresponding
 `app-services/:id/metrics` endpoint expose the same CPU, memory, volume,
-network, and disk counters for App services as for PostgreSQL.
+network, and disk counters for App services as for PostgreSQL. App service
+metrics also include public inbound/outbound payload bytes, request count,
+average response time, and the percentage of public requests returning 4xx or
+5xx responses.
 
 Development uses the local Docker daemon and creates one container plus one
 named volume per project (`knotree-pg-<project-id>` and

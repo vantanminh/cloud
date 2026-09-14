@@ -2,13 +2,15 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     process::{Output, Stdio},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
+    body::{Body, to_bytes},
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderName, Request, StatusCode},
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
@@ -51,6 +53,7 @@ const STATUS_ERROR: &str = "error";
 const DEFAULT_APP_PORT: u16 = 3000;
 const MAX_APP_SERVICES_PER_PROJECT: i64 = 6;
 const AUTO_DEPLOY_INTERVAL_SECONDS: u64 = 60;
+const MAX_PUBLIC_PROXY_BODY_BYTES: usize = 64 * 1024 * 1024;
 const PROVISIONING_ERROR_MESSAGE: &str =
     "The Docker app service could not be deployed. Check the image and try again.";
 
@@ -121,6 +124,11 @@ struct AppServiceMetricHistoryRow {
     network_transmit_bytes: Option<i64>,
     disk_read_bytes: Option<i64>,
     disk_write_bytes: Option<i64>,
+    public_network_receive_bytes: Option<i64>,
+    public_network_transmit_bytes: Option<i64>,
+    requests: Option<i64>,
+    response_time_ms: Option<f64>,
+    request_error_rate: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -165,6 +173,7 @@ pub async fn list(
         response.push(app_service_response(
             service,
             &state.config.app_service_public_host,
+            state.config.bind_addr.port(),
             database,
             latest_deployment(&state.db, service.id).await?,
         )?);
@@ -352,6 +361,226 @@ pub async fn logs(
     }))
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct PublicProxyTarget {
+    port: Option<i32>,
+    status: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PublicTrafficMetricValues {
+    public_network_receive_bytes: Option<i64>,
+    public_network_transmit_bytes: Option<i64>,
+    requests: Option<i64>,
+    response_time_ms: Option<f64>,
+    request_error_rate: Option<f64>,
+}
+
+fn public_traffic_metric_values(
+    state: &AppState,
+    app_service_id: Uuid,
+) -> PublicTrafficMetricValues {
+    let traffic = state.public_app_service_traffic(app_service_id);
+    let requests = traffic.requests;
+    PublicTrafficMetricValues {
+        public_network_receive_bytes: Some(
+            i64::try_from(traffic.public_network_receive_bytes).unwrap_or(i64::MAX),
+        ),
+        public_network_transmit_bytes: Some(
+            i64::try_from(traffic.public_network_transmit_bytes).unwrap_or(i64::MAX),
+        ),
+        requests: Some(i64::try_from(requests).unwrap_or(i64::MAX)),
+        response_time_ms: (requests > 0).then(|| traffic.response_time_ms_total / requests as f64),
+        request_error_rate: (requests > 0)
+            .then(|| (traffic.request_errors.min(requests) as f64 / requests as f64) * 100.0),
+    }
+}
+
+pub async fn public_proxy_root(
+    State(state): State<AppState>,
+    Path(app_service_id): Path<Uuid>,
+    request: Request<Body>,
+) -> Result<Response, AppError> {
+    proxy_public_request(&state, app_service_id, request).await
+}
+
+pub async fn public_proxy_path(
+    State(state): State<AppState>,
+    Path((app_service_id, _path)): Path<(Uuid, String)>,
+    request: Request<Body>,
+) -> Result<Response, AppError> {
+    proxy_public_request(&state, app_service_id, request).await
+}
+
+async fn proxy_public_request(
+    state: &AppState,
+    app_service_id: Uuid,
+    request: Request<Body>,
+) -> Result<Response, AppError> {
+    let target = sqlx::query_as::<_, PublicProxyTarget>(
+        "SELECT port, status FROM project_app_services WHERE id = $1",
+    )
+    .bind(app_service_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+    let Some(port) = target.port else {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_NOT_READY",
+            message: "The app service is not ready to receive public traffic.",
+        });
+    };
+    if target.status != STATUS_READY {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_NOT_READY",
+            message: "The app service is not ready to receive public traffic.",
+        });
+    }
+    let port = u16::try_from(port).map_err(|_| AppError::internal("invalid app service port"))?;
+    let started_at = Instant::now();
+    let (parts, body) = request.into_parts();
+    let request_body = to_bytes(body, MAX_PUBLIC_PROXY_BODY_BYTES)
+        .await
+        .map_err(|_| {
+            state.record_public_app_service_request(
+                app_service_id,
+                0,
+                0,
+                started_at.elapsed().as_secs_f64() * 1_000.0,
+                true,
+            );
+            AppError::BadRequest {
+                code: "PUBLIC_REQUEST_TOO_LARGE",
+                message: "The public request body is too large.",
+            }
+        })?;
+    let request_bytes = request_body.len();
+    let upstream_path = public_upstream_path(&parts.uri);
+    let bind_host = url_host(&state.config.app_service_bind_address.to_string());
+    let upstream_url = format!("http://{bind_host}:{port}{upstream_path}");
+    let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).map_err(|_| {
+        AppError::BadRequest {
+            code: "PUBLIC_METHOD_UNSUPPORTED",
+            message: "The public request method is not supported.",
+        }
+    })?;
+    let mut upstream_request = state.public_proxy_client.request(method, upstream_url);
+    for (name, value) in &parts.headers {
+        if should_forward_public_header(name) {
+            upstream_request = upstream_request.header(name, value);
+        }
+    }
+    let upstream_response = match upstream_request.body(request_body).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                app_service_id = %app_service_id,
+                error = %error,
+                "public app service request could not reach the container"
+            );
+            state.record_public_app_service_request(
+                app_service_id,
+                request_bytes,
+                0,
+                started_at.elapsed().as_secs_f64() * 1_000.0,
+                true,
+            );
+            return Err(AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PUBLIC_UNAVAILABLE",
+                message: "The app service is temporarily unavailable.",
+            });
+        }
+    };
+    let status = upstream_response.status();
+    let response_headers = upstream_response.headers().clone();
+    let response_body = match upstream_response.bytes().await {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(
+                app_service_id = %app_service_id,
+                error = %error,
+                "public app service response could not be read"
+            );
+            state.record_public_app_service_request(
+                app_service_id,
+                request_bytes,
+                0,
+                started_at.elapsed().as_secs_f64() * 1_000.0,
+                true,
+            );
+            return Err(AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PUBLIC_UNAVAILABLE",
+                message: "The app service response is temporarily unavailable.",
+            });
+        }
+    };
+    let response_bytes = response_body.len();
+    state.record_public_app_service_request(
+        app_service_id,
+        request_bytes,
+        response_bytes,
+        started_at.elapsed().as_secs_f64() * 1_000.0,
+        status.is_client_error() || status.is_server_error(),
+    );
+
+    let mut response = Response::new(Body::from(response_body));
+    *response.status_mut() = status;
+    for (name, value) in &response_headers {
+        if should_forward_public_header(name) {
+            response.headers_mut().append(name.clone(), value.clone());
+        }
+    }
+    Ok(response)
+}
+
+fn should_forward_public_header(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+            | "content-length"
+    )
+}
+
+fn public_upstream_path(uri: &axum::http::Uri) -> String {
+    const PUBLIC_PROXY_PREFIXES: [&str; 2] =
+        ["/api/v1/public/app-services/", "/public/app-services/"];
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    let Some(service_and_path) = PUBLIC_PROXY_PREFIXES
+        .iter()
+        .find_map(|prefix| path_and_query.strip_prefix(prefix))
+    else {
+        return "/".to_owned();
+    };
+    let suffix = service_and_path.get(36..).unwrap_or_default();
+    match suffix {
+        "" => "/".to_owned(),
+        suffix if suffix.starts_with('?') => format!("/{suffix}"),
+        suffix => suffix.to_owned(),
+    }
+}
+
+fn url_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    }
+}
+
 pub async fn update_auto_deploy(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -427,6 +656,7 @@ pub async fn update_auto_deploy(
     Ok(Json(app_service_response(
         &service,
         &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -482,6 +712,7 @@ pub async fn metrics(
                     message: "Runtime metrics are temporarily unavailable.",
                 }
             })?;
+    let public_traffic = public_traffic_metric_values(&state, app_service_id);
     let sample = AppServiceMetricPoint {
         timestamp: unix_timestamp(),
         cpu_percent: runtime_metrics.cpu_percent,
@@ -495,6 +726,11 @@ pub async fn metrics(
         network_transmit_bytes: runtime_metrics.network_transmit_bytes,
         disk_read_bytes: runtime_metrics.disk_read_bytes,
         disk_write_bytes: runtime_metrics.disk_write_bytes,
+        public_network_receive_bytes: public_traffic.public_network_receive_bytes,
+        public_network_transmit_bytes: public_traffic.public_network_transmit_bytes,
+        requests: public_traffic.requests,
+        response_time_ms: public_traffic.response_time_ms,
+        request_error_rate: public_traffic.request_error_rate,
     };
     let sample_timestamp = sample.timestamp;
     persist_app_service_metric_sample(&state, app_service_id, &sample).await?;
@@ -637,6 +873,7 @@ pub async fn create(
     let response = app_service_response(
         &service,
         &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
         None,
         latest_deployment(&state.db, service.id).await?,
     )?;
@@ -720,6 +957,7 @@ pub async fn update(
             return Ok(Json(app_service_response(
                 &existing,
                 &state.config.app_service_public_host,
+                state.config.bind_addr.port(),
                 database.as_ref(),
                 latest_deployment(&state.db, existing.id).await?,
             )?));
@@ -820,6 +1058,7 @@ pub async fn update(
     Ok(Json(app_service_response(
         &service,
         &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -898,6 +1137,7 @@ pub async fn update_database_connection(
             return Ok(Json(app_service_response(
                 &existing,
                 &state.config.app_service_public_host,
+                state.config.bind_addr.port(),
                 database.as_ref(),
                 latest_deployment(&state.db, existing.id).await?,
             )?));
@@ -997,6 +1237,7 @@ pub async fn update_database_connection(
     Ok(Json(app_service_response(
         &service,
         &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -1078,6 +1319,7 @@ fn validate_app_port(value: Option<u32>) -> Result<u16, AppError> {
 fn app_service_response(
     service: &AppServiceRow,
     public_host: &str,
+    api_port: u16,
     database: Option<&DatabaseResourceRow>,
     deployment: Option<AppServiceDeploymentResponse>,
 ) -> Result<AppServiceResponse, AppError> {
@@ -1093,7 +1335,12 @@ fn app_service_response(
         .clone()
         .or_else(|| (service.status == STATUS_READY).then(|| public_host.to_owned()));
     let service_url = match (host.as_deref(), port) {
-        (Some(host), Some(port)) => Some(format!("http://{host}:{port}")),
+        (Some(_), Some(_)) => Some(format!(
+            "http://{}:{}/api/v1/public/app-services/{}",
+            url_host(public_host),
+            api_port,
+            service.id
+        )),
         _ => None,
     };
 
@@ -1571,9 +1818,12 @@ async fn persist_app_service_metric_sample(
         "INSERT INTO app_service_metric_samples (
             app_service_id, sampled_at, cpu_percent, memory_used_bytes, memory_limit_bytes,
             volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
-            network_transmit_bytes, disk_read_bytes, disk_write_bytes
+            network_transmit_bytes, disk_read_bytes, disk_write_bytes,
+            public_network_receive_bytes, public_network_transmit_bytes,
+            requests, response_time_ms, request_error_rate
          ) VALUES (
-            $1, to_timestamp($2::double precision), $3, $4, $5, $6, $7, $8, $9, $10, $11
+            $1, to_timestamp($2::double precision), $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            $12, $13, $14, $15, $16
          )
          ON CONFLICT (app_service_id, sampled_at) DO UPDATE SET
             cpu_percent = EXCLUDED.cpu_percent,
@@ -1584,7 +1834,12 @@ async fn persist_app_service_metric_sample(
             network_receive_bytes = EXCLUDED.network_receive_bytes,
             network_transmit_bytes = EXCLUDED.network_transmit_bytes,
             disk_read_bytes = EXCLUDED.disk_read_bytes,
-            disk_write_bytes = EXCLUDED.disk_write_bytes",
+            disk_write_bytes = EXCLUDED.disk_write_bytes,
+            public_network_receive_bytes = EXCLUDED.public_network_receive_bytes,
+            public_network_transmit_bytes = EXCLUDED.public_network_transmit_bytes,
+            requests = EXCLUDED.requests,
+            response_time_ms = EXCLUDED.response_time_ms,
+            request_error_rate = EXCLUDED.request_error_rate",
     )
     .bind(app_service_id)
     .bind(sample.timestamp)
@@ -1597,6 +1852,11 @@ async fn persist_app_service_metric_sample(
     .bind(sample.network_transmit_bytes)
     .bind(sample.disk_read_bytes)
     .bind(sample.disk_write_bytes)
+    .bind(sample.public_network_receive_bytes)
+    .bind(sample.public_network_transmit_bytes)
+    .bind(sample.requests)
+    .bind(sample.response_time_ms)
+    .bind(sample.request_error_rate)
     .execute(&mut *transaction)
     .await?;
 
@@ -1632,6 +1892,11 @@ async fn load_app_service_metric_history(
                 network_transmit_bytes,
                 disk_read_bytes,
                 disk_write_bytes,
+                public_network_receive_bytes,
+                public_network_transmit_bytes,
+                requests,
+                response_time_ms,
+                request_error_rate,
                 ROW_NUMBER() OVER (
                     PARTITION BY FLOOR(
                         EXTRACT(EPOCH FROM sampled_at) / $4::double precision
@@ -1645,7 +1910,9 @@ async fn load_app_service_metric_history(
         )
         SELECT sample_timestamp, cpu_percent, memory_used_bytes, memory_limit_bytes,
                volume_used_bytes, volume_capacity_bytes, network_receive_bytes,
-               network_transmit_bytes, disk_read_bytes, disk_write_bytes
+               network_transmit_bytes, disk_read_bytes, disk_write_bytes,
+               public_network_receive_bytes, public_network_transmit_bytes,
+               requests, response_time_ms, request_error_rate
         FROM bucketed
         WHERE sample_rank = 1
         ORDER BY sample_timestamp ASC",
@@ -1671,6 +1938,11 @@ async fn load_app_service_metric_history(
                 network_transmit_bytes: row.network_transmit_bytes,
                 disk_read_bytes: row.disk_read_bytes,
                 disk_write_bytes: row.disk_write_bytes,
+                public_network_receive_bytes: row.public_network_receive_bytes,
+                public_network_transmit_bytes: row.public_network_transmit_bytes,
+                requests: row.requests,
+                response_time_ms: row.response_time_ms,
+                request_error_rate: row.request_error_rate,
             })
             .collect(),
         MAX_METRIC_RESPONSE_POINTS,
@@ -1728,6 +2000,7 @@ async fn sample_app_service(
                     message: "Runtime metrics are temporarily unavailable.",
                 }
             })?;
+    let public_traffic = public_traffic_metric_values(state, service.id);
     persist_app_service_metric_sample(
         state,
         service.id,
@@ -1744,6 +2017,11 @@ async fn sample_app_service(
             network_transmit_bytes: runtime_metrics.network_transmit_bytes,
             disk_read_bytes: runtime_metrics.disk_read_bytes,
             disk_write_bytes: runtime_metrics.disk_write_bytes,
+            public_network_receive_bytes: public_traffic.public_network_receive_bytes,
+            public_network_transmit_bytes: public_traffic.public_network_transmit_bytes,
+            requests: public_traffic.requests,
+            response_time_ms: public_traffic.response_time_ms,
+            request_error_rate: public_traffic.request_error_rate,
         },
     )
     .await
@@ -2527,6 +2805,26 @@ mod tests {
             short_image_digest("sha256:0123456789abcdef"),
             "sha256:01234567…cdef"
         );
+    }
+
+    #[test]
+    fn routes_public_proxy_requests_to_the_container_path() {
+        let uri = "/api/v1/public/app-services/11111111-2222-3333-4444-555555555555/health?probe=1"
+            .parse::<axum::http::Uri>()
+            .unwrap();
+        assert_eq!(public_upstream_path(&uri), "/health?probe=1");
+
+        let nested_uri = "/public/app-services/11111111-2222-3333-4444-555555555555/health?probe=1"
+            .parse::<axum::http::Uri>()
+            .unwrap();
+        assert_eq!(public_upstream_path(&nested_uri), "/health?probe=1");
+
+        let root = "/api/v1/public/app-services/11111111-2222-3333-4444-555555555555"
+            .parse::<axum::http::Uri>()
+            .unwrap();
+        assert_eq!(public_upstream_path(&root), "/");
+        assert_eq!(url_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(url_host("::1"), "[::1]");
     }
 
     #[test]
