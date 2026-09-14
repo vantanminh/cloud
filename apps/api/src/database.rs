@@ -1080,7 +1080,19 @@ async fn target_database_from_resource(
         &resource.cluster_provider,
         resource.cluster_host.as_deref().unwrap_or(&resource.host),
     );
-    let port_value = resource.cluster_port.unwrap_or(resource.port);
+    let stored_port = resource.cluster_port.unwrap_or(resource.port);
+    let current_docker_port = refresh_docker_resource_port(
+        state,
+        resource.id,
+        &resource.cluster_provider,
+        resource.cluster_name.as_deref(),
+        resource.cluster_port,
+    )
+    .await;
+    if current_docker_port.is_some_and(|port| resource.cluster_port != Some(i32::from(port))) {
+        drop(state.remove_database_pool(resource_id));
+    }
+    let port_value = current_docker_port.map(i32::from).unwrap_or(stored_port);
     let port = u16::try_from(port_value)
         .map_err(|_| AppError::internal("invalid database cluster port"))?;
 
@@ -1134,6 +1146,59 @@ async fn target_database_from_resource(
         cluster_provider: resource.cluster_provider,
         cluster_name: resource.cluster_name,
     })
+}
+
+async fn refresh_docker_resource_port(
+    state: &AppState,
+    resource_id: Uuid,
+    cluster_provider: &str,
+    cluster_name: Option<&str>,
+    stored_cluster_port: Option<i32>,
+) -> Option<u16> {
+    if cluster_provider != cluster::PROVIDER_DOCKER {
+        return None;
+    }
+    let Some(cluster_name) = cluster_name else {
+        return None;
+    };
+    let current_port = match cluster::docker_port(&state.config, cluster_name).await {
+        Ok(port) => port,
+        Err(error) => {
+            tracing::debug!(
+                resource_id = %resource_id,
+                cluster_name,
+                error = %error,
+                "could not refresh Docker database port metadata"
+            );
+            return None;
+        }
+    };
+
+    if stored_cluster_port != Some(i32::from(current_port)) {
+        if let Err(error) = sqlx::query(
+            "UPDATE project_postgres_databases
+             SET cluster_port = $1,
+                 port = CASE WHEN port IS NOT DISTINCT FROM cluster_port THEN $1 ELSE port END,
+                 public_port = CASE WHEN public_port IS NOT DISTINCT FROM cluster_port THEN $1 ELSE public_port END,
+                 updated_at = now()
+             WHERE id = $2 AND cluster_provider = $3",
+        )
+        .bind(i32::from(current_port))
+        .bind(resource_id)
+        .bind(cluster::PROVIDER_DOCKER)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!(
+                resource_id = %resource_id,
+                current_port,
+                error = %error,
+                "could not persist refreshed Docker database port metadata"
+            );
+        }
+    }
+
+    Some(current_port)
 }
 
 async fn ensure_schema_and_table(

@@ -799,7 +799,7 @@ async fn docker_storage_limit_configured(config: &Config, container_name: &str) 
         .is_some_and(|size| size.eq_ignore_ascii_case(RESOURCE_VOLUME_LIMIT_DOCKER)))
 }
 
-async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
+pub async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
     let output = run_docker(
         config,
         [
