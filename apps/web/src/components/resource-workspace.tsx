@@ -1900,6 +1900,7 @@ function MetricsPane({
                 accent="blue"
                 points={points}
                 rangeLabel={selectedRangeLabel}
+                axisFormat={formatCount}
                 series={[
                   {
                     label: "Requests",
@@ -1915,6 +1916,7 @@ function MetricsPane({
                 accent="orange"
                 points={points}
                 rangeLabel={selectedRangeLabel}
+                axisFormat={formatMilliseconds}
                 series={[
                   {
                     label: "Average",
@@ -1987,6 +1989,7 @@ function MetricCard({
   rangeLabel,
   scaleMax,
   axisMaxLabel,
+  axisFormat,
 }: {
   title: string
   legend: string
@@ -1996,6 +1999,7 @@ function MetricCard({
   rangeLabel: string
   scaleMax?: number
   axisMaxLabel?: string
+  axisFormat?: (value: number) => string
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const current = points[points.length - 1] ?? null
@@ -2019,7 +2023,8 @@ function MetricCard({
   const yForValue = (value: number) =>
     chartBottom -
     (Math.max(0, Math.min(value, chartMax)) / chartMax) * chartHeight
-  const axisLabel = axisMaxLabel ?? formatBytes(chartMax)
+  const axisLabel =
+    axisMaxLabel ?? axisFormat?.(chartMax) ?? formatBytes(chartMax)
   const hoveredPoint =
     hoveredIndex === null ? null : (points[hoveredIndex] ?? null)
   const hoveredX = hoveredIndex === null ? null : xForIndex(hoveredIndex)
@@ -2181,6 +2186,10 @@ function formatCount(value: number) {
   return new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 0,
   }).format(Math.max(0, value))
+}
+
+function formatMilliseconds(value: number) {
+  return `${Math.round(Math.max(0, value))} ms`
 }
 
 function memoryPercent(point: ResourceMetricPoint) {

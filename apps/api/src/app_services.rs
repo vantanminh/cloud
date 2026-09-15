@@ -170,8 +170,24 @@ pub async fn list(
         let database = service
             .database_resource_id
             .and_then(|resource_id| databases.iter().find(|database| database.id == resource_id));
+        let mut response_service = service.clone();
+        if service.status == STATUS_READY {
+            if let Some(container_name) = service.container_name.as_deref() {
+                if let Ok(port) = current_app_service_port(
+                    &state,
+                    service.id,
+                    container_name,
+                    service.app_port,
+                    service.port,
+                )
+                .await
+                {
+                    response_service.port = Some(i32::from(port));
+                }
+            }
+        }
         response.push(app_service_response(
-            service,
+            &response_service,
             &state.config.app_service_public_host,
             state.config.bind_addr.port(),
             database,
@@ -363,7 +379,9 @@ pub async fn logs(
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct PublicProxyTarget {
+    app_port: i32,
     port: Option<i32>,
+    container_name: Option<String>,
     status: String,
 }
 
@@ -396,6 +414,55 @@ fn public_traffic_metric_values(
     }
 }
 
+async fn current_app_service_port(
+    state: &AppState,
+    app_service_id: Uuid,
+    container_name: &str,
+    app_port: i32,
+    stored_port: Option<i32>,
+) -> Result<u16, AppError> {
+    let app_port = u16::try_from(app_port)
+        .map_err(|_| AppError::internal("invalid app service container port"))?;
+    let current_port = docker_port(state, container_name, app_port, None)
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                app_service_id = %app_service_id,
+                container_name,
+                error = %error,
+                "could not resolve the app service published port"
+            );
+            AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PUBLIC_UNAVAILABLE",
+                message: "The app service is temporarily unavailable.",
+            }
+        })?;
+
+    if stored_port != Some(i32::from(current_port)) {
+        if let Err(error) = sqlx::query(
+            "UPDATE project_app_services
+             SET port = $1, updated_at = now()
+             WHERE id = $2 AND status = $3 AND container_name = $4",
+        )
+        .bind(i32::from(current_port))
+        .bind(app_service_id)
+        .bind(STATUS_READY)
+        .bind(container_name)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!(
+                app_service_id = %app_service_id,
+                current_port,
+                error = %error,
+                "could not persist the refreshed app service published port"
+            );
+        }
+    }
+
+    Ok(current_port)
+}
+
 pub async fn public_proxy_root(
     State(state): State<AppState>,
     Path(app_service_id): Path<Uuid>,
@@ -418,7 +485,9 @@ async fn proxy_public_request(
     request: Request<Body>,
 ) -> Result<Response, AppError> {
     let target = sqlx::query_as::<_, PublicProxyTarget>(
-        "SELECT port, status FROM project_app_services WHERE id = $1",
+        "SELECT app_port, port, container_name, status
+         FROM project_app_services
+         WHERE id = $1",
     )
     .bind(app_service_id)
     .fetch_optional(&state.db)
@@ -427,19 +496,26 @@ async fn proxy_public_request(
         code: "APP_SERVICE_NOT_FOUND",
         message: "The app service could not be found.",
     })?;
-    let Some(port) = target.port else {
-        return Err(AppError::ServiceUnavailable {
-            code: "APP_SERVICE_NOT_READY",
-            message: "The app service is not ready to receive public traffic.",
-        });
-    };
     if target.status != STATUS_READY {
         return Err(AppError::ServiceUnavailable {
             code: "APP_SERVICE_NOT_READY",
             message: "The app service is not ready to receive public traffic.",
         });
     }
-    let port = u16::try_from(port).map_err(|_| AppError::internal("invalid app service port"))?;
+    let Some(container_name) = target.container_name.as_deref() else {
+        return Err(AppError::ServiceUnavailable {
+            code: "APP_SERVICE_NOT_READY",
+            message: "The app service is not ready to receive public traffic.",
+        });
+    };
+    let port = current_app_service_port(
+        state,
+        app_service_id,
+        container_name,
+        target.app_port,
+        target.port,
+    )
+    .await?;
     let started_at = Instant::now();
     let (parts, body) = request.into_parts();
     let request_body = to_bytes(body, MAX_PUBLIC_PROXY_BODY_BYTES)
@@ -2510,11 +2586,14 @@ async fn docker_port(
         ],
     )
     .await?;
+    parse_published_port(&output).context("Docker did not publish an app service port")
+}
+
+fn parse_published_port(output: &str) -> Option<u16> {
     output
         .lines()
         .filter_map(|line| line.rsplit(':').next())
         .find_map(|value| value.trim().parse::<u16>().ok())
-        .context("Docker did not publish an app service port")
 }
 
 async fn run_docker_for_deployment(
@@ -2825,6 +2904,16 @@ mod tests {
         assert_eq!(public_upstream_path(&root), "/");
         assert_eq!(url_host("127.0.0.1"), "127.0.0.1");
         assert_eq!(url_host("::1"), "[::1]");
+    }
+
+    #[test]
+    fn parses_the_current_docker_published_port() {
+        assert_eq!(parse_published_port("127.0.0.1:53107\n"), Some(53107));
+        assert_eq!(
+            parse_published_port("0.0.0.0:53107\n[::]:53107\n"),
+            Some(53107)
+        );
+        assert_eq!(parse_published_port(""), None);
     }
 
     #[test]

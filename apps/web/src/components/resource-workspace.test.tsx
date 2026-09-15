@@ -307,9 +307,21 @@ describe("ResourceWorkspace database pane", () => {
     expect(
       within(dialog).getByRole("heading", { name: "Request Error Rate" })
     ).toBeInTheDocument()
-    expect(within(dialog).getByText("1,248")).toBeInTheDocument()
-    expect(within(dialog).getByText("86 ms")).toBeInTheDocument()
     expect(within(dialog).getByText("1.20%")).toBeInTheDocument()
+    const requestsCard = within(dialog)
+      .getByRole("heading", { name: "Requests" })
+      .closest("article")!
+    expect(within(requestsCard).getAllByText("1,248")).toHaveLength(2)
+    expect(
+      within(requestsCard).getByRole("img").querySelector("text")
+    ).toHaveTextContent("1,248")
+    const responseTimeCard = within(dialog)
+      .getByRole("heading", { name: "Response Time" })
+      .closest("article")!
+    expect(within(responseTimeCard).getAllByText("86 ms")).toHaveLength(2)
+    expect(
+      within(responseTimeCard).getByRole("img").querySelector("text")
+    ).toHaveTextContent("86 ms")
     expect(within(dialog).getByText("Disk I/O")).toBeInTheDocument()
     expect(mocks.getAppServiceMetrics).toHaveBeenCalledWith(
       "mimo-i-tech",
