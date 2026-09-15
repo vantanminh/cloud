@@ -2503,10 +2503,10 @@ async fn provision_docker(
     .await?;
     run_docker_for_deployment(state, logger, "Start container", docker_args).await?;
 
-    let running = docker_inspect_running(state, &container_name, logger).await?;
-    if running != "true" {
+    let container_state = docker_inspect_running(state, &container_name, logger).await?;
+    if !is_running_container_state(&container_state) {
         let _ = remove_existing_container(state, &container_name, logger).await;
-        bail!("Docker app container exited during startup");
+        bail!("Docker app container is not running (status: {container_state})");
     }
     let port = match docker_port(state, &container_name, app_port, logger).await {
         Ok(port) => port,
@@ -2692,7 +2692,12 @@ async fn docker_login(
     )
     .await?;
     if !output.status.success() {
-        bail!("Docker registry login failed");
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unknown Docker registry error");
+        bail!("Docker registry login failed: {detail}");
     }
     Ok(())
 }
@@ -2755,12 +2760,16 @@ async fn docker_inspect_running(
         "Verify container",
         vec![
             "inspect".to_owned(),
-            "--format={{.State.Running}}".to_owned(),
+            "--format={{.State.Status}}".to_owned(),
             container_name.to_owned(),
         ],
     )
     .await?;
     Ok(output.trim().to_owned())
+}
+
+fn is_running_container_state(state: &str) -> bool {
+    state.trim().eq_ignore_ascii_case("running")
 }
 
 async fn docker_port(
@@ -2928,7 +2937,7 @@ async fn docker_container_running(
         state,
         [
             "inspect".to_owned(),
-            "--format={{.State.Running}}".to_owned(),
+            "--format={{.State.Status}}".to_owned(),
             container_name.to_owned(),
         ],
     )
@@ -2946,9 +2955,7 @@ async fn docker_container_running(
     })?;
 
     Ok(output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .eq_ignore_ascii_case("true"))
+        && is_running_container_state(&String::from_utf8_lossy(&output.stdout)))
 }
 
 fn docker_log_lines(output: &Output) -> Vec<String> {
@@ -3030,6 +3037,14 @@ mod tests {
         assert_eq!(validate_app_port(Some(8080)).unwrap(), 8080);
         assert!(validate_app_port(Some(0)).is_err());
         assert!(validate_app_port(Some(65_536)).is_err());
+    }
+
+    #[test]
+    fn only_running_docker_states_are_ready_for_public_traffic() {
+        assert!(is_running_container_state("running"));
+        assert!(is_running_container_state("RUNNING\n"));
+        assert!(!is_running_container_state("restarting"));
+        assert!(!is_running_container_state("true"));
     }
 
     #[test]

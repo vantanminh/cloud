@@ -30,6 +30,10 @@ pub const RESOURCE_VOLUME_LIMIT_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 pub const RESOURCE_STORAGE_LIMIT_MESSAGE: &str =
     "This resource reached its 10 GiB storage limit and was stopped.";
 
+fn is_running_docker_state(state: &str) -> bool {
+    state.trim().eq_ignore_ascii_case("running")
+}
+
 pub fn docker_runtime_limit_args() -> Vec<String> {
     vec![
         "--cpus".to_owned(),
@@ -130,6 +134,12 @@ async fn collect_docker_runtime_metrics(
     cluster_name: &str,
     volume_path: &str,
 ) -> Result<RuntimeMetrics> {
+    let container_state = docker_container_status(config, cluster_name)
+        .await?
+        .context("Docker container was not found")?;
+    if !is_running_docker_state(&container_state) {
+        bail!("Docker container is not running (status: {container_state})");
+    }
     ensure_docker_runtime_limits(config, cluster_name).await?;
     let stats_output = docker_raw(
         config,
@@ -170,20 +180,10 @@ pub async fn enforce_docker_storage_limit(
     container_name: &str,
     volume_path: &str,
 ) -> Result<bool> {
-    let running = docker_raw(
-        config,
-        [
-            "inspect".to_owned(),
-            "--format={{.State.Running}}".to_owned(),
-            container_name.to_owned(),
-        ],
-    )
-    .await?;
-    if !running.status.success()
-        || !String::from_utf8_lossy(&running.stdout)
-            .trim()
-            .eq_ignore_ascii_case("true")
-    {
+    let Some(container_state) = docker_container_status(config, container_name).await? else {
+        return Ok(false);
+    };
+    if !is_running_docker_state(&container_state) {
         return Ok(false);
     }
 
@@ -538,10 +538,10 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
         docker_args.push(config.database_cluster_image.clone());
         run_docker(config, docker_args).await?;
     } else {
-        ensure_docker_runtime_limits(config, &cluster_name).await?;
-        if existing_state.as_deref() != Some("true") {
+        if existing_state.as_deref() != Some("running") {
             run_docker(config, ["start".to_owned(), cluster_name.clone()]).await?;
         }
+        ensure_docker_runtime_limits(config, &cluster_name).await?;
     }
 
     ensure_docker_network_attachment(
@@ -760,12 +760,16 @@ async fn ensure_docker_volume(config: &Config, volume_name: &str) -> Result<()> 
 }
 
 async fn docker_inspect(config: &Config, cluster_name: &str) -> Result<Option<String>> {
+    docker_container_status(config, cluster_name).await
+}
+
+async fn docker_container_status(config: &Config, container_name: &str) -> Result<Option<String>> {
     let output = docker_raw(
         config,
         [
             "inspect".to_owned(),
-            "--format={{.State.Running}}".to_owned(),
-            cluster_name.to_owned(),
+            "--format={{.State.Status}}".to_owned(),
+            container_name.to_owned(),
         ],
     )
     .await?;
@@ -881,6 +885,14 @@ async fn wait_for_postgres(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_running_docker_states_are_treated_as_running() {
+        assert!(super::is_running_docker_state("running"));
+        assert!(super::is_running_docker_state("RUNNING\n"));
+        assert!(!super::is_running_docker_state("restarting"));
+        assert!(!super::is_running_docker_state("true"));
+    }
+
     #[test]
     fn cluster_names_are_stable_and_dns_safe() {
         let project_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
