@@ -57,6 +57,10 @@ impl AppError {
         Self::Validation { fields }
     }
 
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
+    }
+
     pub fn internal(error: impl std::fmt::Display) -> Self {
         Self::Internal(error.to_string())
     }

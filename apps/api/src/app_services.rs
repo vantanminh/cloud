@@ -13,7 +13,7 @@ use axum::{
     http::{HeaderMap, HeaderName, Request, StatusCode, header},
     middleware::Next,
     response::{
-        IntoResponse, Response, Sse,
+        Html, IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
 };
@@ -57,6 +57,34 @@ const AUTO_DEPLOY_INTERVAL_SECONDS: u64 = 60;
 const MAX_PUBLIC_PROXY_BODY_BYTES: usize = 64 * 1024 * 1024;
 const PROVISIONING_ERROR_MESSAGE: &str =
     "The Docker app service could not be deployed. Check the image and try again.";
+const PUBLIC_DOMAIN_NOT_FOUND_HTML: &str = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>App not found · Knotree</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #f7f8ff; }
+      main { width: min(32rem, calc(100% - 3rem)); padding: 2rem; border: 1px solid #26304e; border-radius: 1.25rem; background: #121a31; box-shadow: 0 1.5rem 4rem #0006; }
+      .mark { color: #91a7ff; font-size: .8rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+      h1 { margin: 1rem 0 .75rem; font-size: clamp(2rem, 8vw, 3.25rem); line-height: 1; }
+      p { color: #b7c0db; line-height: 1.6; }
+      code { color: #d7def5; }
+      a { display: inline-block; margin-top: 1rem; color: #aebcff; font-weight: 700; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark">Knotree · 404</div>
+      <h1>App not found</h1>
+      <p>There is no public app service assigned to this domain. Check the URL or ask the owner for a new link.</p>
+      <a href="https://knotree.org">Back to Knotree</a>
+    </main>
+  </body>
+</html>
+"#;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AppServiceRow {
@@ -483,13 +511,6 @@ pub async fn public_proxy_path(
     proxy_public_request(&state, app_service_id, request).await
 }
 
-pub async fn public_domain_proxy(
-    State(state): State<AppState>,
-    request: Request<Body>,
-) -> Result<Response, AppError> {
-    proxy_public_domain_request(&state, request).await
-}
-
 pub async fn public_domain_fallback(
     State(state): State<AppState>,
     request: Request<Body>,
@@ -497,9 +518,7 @@ pub async fn public_domain_fallback(
     if !is_public_domain_request(&state, &request) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    public_domain_proxy(State(state), request)
-        .await
-        .into_response()
+    public_domain_proxy(State(state), request).await
 }
 
 pub async fn public_domain_router(
@@ -508,11 +527,27 @@ pub async fn public_domain_router(
     next: Next,
 ) -> Response {
     if is_public_domain_request(&state, &request) {
-        return proxy_public_domain_request(&state, request)
-            .await
-            .into_response();
+        return public_domain_proxy(State(state), request).await;
     }
     next.run(request).await
+}
+
+pub async fn public_domain_proxy(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Response {
+    let public_domain_request = is_public_domain_request(&state, &request);
+    match proxy_public_domain_request(&state, request).await {
+        Ok(response) => response,
+        Err(error) if public_domain_request && error.is_not_found() => {
+            public_domain_not_found_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+fn public_domain_not_found_response() -> Response {
+    (StatusCode::NOT_FOUND, Html(PUBLIC_DOMAIN_NOT_FOUND_HTML)).into_response()
 }
 
 async fn proxy_public_domain_request(
@@ -3196,6 +3231,23 @@ mod tests {
         assert_eq!(public_domain_upstream_path(&uri), "/api/v1/health?probe=1");
         let root = "/".parse::<axum::http::Uri>().unwrap();
         assert_eq!(public_domain_upstream_path(&root), "/");
+    }
+
+    #[tokio::test]
+    async fn renders_an_html_error_page_for_an_unknown_public_domain() {
+        let response = public_domain_not_found_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("App not found"));
+        assert!(body.contains("There is no public app service assigned to this domain"));
     }
 
     #[test]

@@ -59,6 +59,8 @@ and point the wildcard DNS record `*.knotree.org` to the API ingress. Knotree
 assigns each service a stable random subdomain such as
 `app-0123456789abcdef.knotree.org` and routes that hostname to the matching
 Docker container. The ingress TLS certificate must cover `*.knotree.org`.
+Requests to a wildcard host that is not assigned to an app service show a Knotree
+404 error page.
 
 ## API
 
