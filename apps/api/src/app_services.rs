@@ -17,7 +17,7 @@ use axum::{
         sse::{Event, KeepAlive},
     },
 };
-use futures_util::{future::join_all, stream};
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
@@ -34,7 +34,8 @@ use crate::{
     github::{self, GithubDockerCredentials},
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
-        downsample_metric_points, has_system_metrics, parse_metric_range, unix_timestamp,
+        downsample_metric_points, has_system_metrics, metric_sample_concurrency,
+        parse_metric_range, unix_timestamp,
     },
     models::{
         AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
@@ -2273,12 +2274,12 @@ pub(crate) async fn sample_ready_app_services(
     .fetch_all(&state.db)
     .await?;
 
-    let results = join_all(
-        services
-            .into_iter()
-            .map(|service| sample_app_service(state, service)),
-    )
-    .await;
+    let sample_concurrency = metric_sample_concurrency(state.config.database_max_connections);
+    let results = stream::iter(services)
+        .map(|service| sample_app_service(state, service))
+        .buffer_unordered(sample_concurrency)
+        .collect::<Vec<_>>()
+        .await;
     for result in results {
         if let Err(error) = result {
             tracing::warn!(error = ?error, "could not persist app service metric sample");

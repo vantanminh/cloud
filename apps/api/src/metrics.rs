@@ -5,6 +5,14 @@ use crate::{error::AppError, models::ResourceMetricPoint};
 pub const MAX_METRIC_RESPONSE_POINTS: usize = 300;
 pub const METRIC_SAMPLE_INTERVAL_SECONDS: u64 = 5;
 pub const METRIC_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub const METRIC_SAMPLE_MAX_CONCURRENCY: usize = 4;
+
+pub fn metric_sample_concurrency(database_max_connections: u32) -> usize {
+    usize::try_from(database_max_connections)
+        .unwrap_or(1)
+        .saturating_sub(2)
+        .clamp(1, METRIC_SAMPLE_MAX_CONCURRENCY)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MetricRange {
@@ -98,5 +106,13 @@ mod tests {
             8_640
         );
         assert!(parse_metric_range(Some("90d")).is_err());
+    }
+
+    #[test]
+    fn reserves_control_pool_connections_for_foreground_work() {
+        assert_eq!(metric_sample_concurrency(1), 1);
+        assert_eq!(metric_sample_concurrency(4), 2);
+        assert_eq!(metric_sample_concurrency(10), 4);
+        assert_eq!(metric_sample_concurrency(100), 4);
     }
 }

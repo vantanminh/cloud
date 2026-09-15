@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
-use futures_util::{TryStreamExt, future::join_all};
+use futures_util::{StreamExt, TryStreamExt, future::join_all, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlparser::{dialect::PostgreSqlDialect, parser::Parser};
@@ -23,8 +23,8 @@ use crate::{
     error::AppError,
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
-        MetricRange, downsample_metric_points, has_system_metrics, parse_metric_range,
-        unix_timestamp,
+        MetricRange, downsample_metric_points, has_system_metrics, metric_sample_concurrency,
+        parse_metric_range, unix_timestamp,
     },
     models::{DatabaseMetricPoint, DatabaseMetricsResponse},
     projects, security,
@@ -689,12 +689,12 @@ async fn sample_ready_databases(state: &AppState) -> Result<(), sqlx::Error> {
     .fetch_all(&state.db)
     .await?;
 
-    let results = join_all(
-        resources
-            .into_iter()
-            .map(|resource| sample_database(state, resource)),
-    )
-    .await;
+    let sample_concurrency = metric_sample_concurrency(state.config.database_max_connections);
+    let results = stream::iter(resources)
+        .map(|resource| sample_database(state, resource))
+        .buffer_unordered(sample_concurrency)
+        .collect::<Vec<_>>()
+        .await;
     for result in results {
         if let Err(error) = result {
             tracing::warn!(error = ?error, "could not persist project database metric sample");
