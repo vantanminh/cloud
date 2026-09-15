@@ -86,6 +86,10 @@ spec:
               value: {{ .Values.env.appServiceProvisioningEnabled | quote }}
             - name: APP_SERVICE_PUBLIC_HOST
               value: {{ .Values.env.appServicePublicHost | quote }}
+            - name: APP_SERVICE_PUBLIC_DOMAIN
+              value: {{ .Values.env.appServicePublicDomain | quote }}
+            - name: APP_SERVICE_PUBLIC_SCHEME
+              value: {{ .Values.env.appServicePublicScheme | quote }}
             - name: APP_SERVICE_BIND_ADDRESS
               value: {{ .Values.env.appServiceBindAddress | quote }}
             - name: GITHUB_OAUTH_REDIRECT_URI

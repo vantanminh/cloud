@@ -133,6 +133,7 @@ pub struct AppServiceResponse {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub service_url: Option<String>,
+    pub public_domain: Option<String>,
     pub container_name: Option<String>,
     pub error_message: Option<String>,
     pub auto_deploy_enabled: bool,

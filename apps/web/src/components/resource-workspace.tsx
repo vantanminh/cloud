@@ -364,7 +364,9 @@ function DeploymentsPane({
         <span>
           {postgresResource
             ? `${postgresResource.host} · ${postgresResource.port}`
-            : (appService?.serviceUrl ?? "No container deployed")}
+            : (appService?.serviceUrl ??
+              appService?.publicDomain ??
+              "No container deployed")}
         </span>
       </div>
       <article
@@ -420,7 +422,9 @@ function DeploymentsPane({
                 : "Deployment successful"
               : appService?.status === "error"
                 ? "Deployment failed — open Add to retry"
-                : "Deployment not started"}
+                : appService?.publicDomain
+                  ? `Domain assigned · ${appService.publicDomain}`
+                  : "Deployment not started"}
           </span>
           {isReady && appService?.serviceUrl && (
             <a
@@ -2675,6 +2679,7 @@ function SettingsPane({
           : appService
             ? [
                 ["Image", appService.image],
+                ["Public domain", appService.publicDomain ?? "Pending"],
                 ["Public URL", appService.serviceUrl ?? "Pending"],
                 ["Container", appService.containerName ?? "Pending"],
               ]

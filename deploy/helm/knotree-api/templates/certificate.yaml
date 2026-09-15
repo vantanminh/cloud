@@ -12,4 +12,7 @@ spec:
     kind: ClusterIssuer
   dnsNames:
     - {{ .Values.ingress.host | quote }}
+{{ if .Values.env.appServicePublicDomain }}
+    - {{ printf "*.%s" .Values.env.appServicePublicDomain | quote }}
+{{ end }}
 {{- end }}

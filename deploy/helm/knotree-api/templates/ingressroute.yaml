@@ -14,6 +14,13 @@ spec:
       services:
         - name: {{ include "knotree-api.fullname" . }}
           port: {{ .Values.service.port }}
+{{ if .Values.env.appServicePublicDomain }}
+    - match: HostRegexp(`^.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
+      kind: Rule
+      services:
+        - name: {{ include "knotree-api.fullname" . }}
+          port: {{ .Values.service.port }}
+{{ end }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
     secretName: {{ .Values.ingress.tls.secretName }}

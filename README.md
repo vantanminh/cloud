@@ -33,6 +33,9 @@ $env:DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS = "90"
   $env:DATABASE_QUERY_MAX_ROWS = "500"
   $env:APP_SERVICE_PROVISIONING_ENABLED = "true"
   $env:APP_SERVICE_PUBLIC_HOST = "localhost"
+  # Optional in development; production uses knotree.org with HTTPS.
+  $env:APP_SERVICE_PUBLIC_DOMAIN = ""
+  $env:APP_SERVICE_PUBLIC_SCHEME = "https"
   $env:APP_SERVICE_BIND_ADDRESS = "127.0.0.1"
   # Keep this stable so credentials remain readable after an API restart.
   $env:DATABASE_CREDENTIALS_ENCRYPTION_KEY = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
@@ -49,6 +52,12 @@ pnpm dev:web
 The web app is available at `http://localhost:5173`. In development, account
 registration logs the user in immediately and does not require email
 verification. A user without a workspace is sent to `/new/workspace`.
+
+For production public App services, set `APP_SERVICE_PUBLIC_DOMAIN=knotree.org`
+and point the wildcard DNS record `*.knotree.org` to the API ingress. Knotree
+assigns each service a stable random subdomain such as
+`app-0123456789abcdef.knotree.org` and routes that hostname to the matching
+Docker container. The ingress TLS certificate must cover `*.knotree.org`.
 
 ## API
 
@@ -70,6 +79,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `POST /workspaces/:workspaceSlug/projects/:projectSlug/app-services`
 - `PATCH /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/auto-deploy`
+- `ANY https://<publicSubdomain>.<APP_SERVICE_PUBLIC_DOMAIN>/*` (host-based public App service proxy)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/logs` (recent Docker runtime logs)
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/:appServiceId/metrics?range=1h|6h|24h|7d|30d`
 - `GET /workspaces/:workspaceSlug/projects/:projectSlug/app-services/deployments/:deploymentId/events` (SSE deployment progress/log stream)
@@ -193,7 +203,8 @@ VITE_API_BASE_URL=https://cloudapi.knotree.com/api/v1
 The API image is in `apps/api/Dockerfile`. The Helm chart in
 `deploy/helm/knotree-api` expects an existing secret containing `DATABASE_URL`,
 runs SQLx migrations as a pre-install/pre-upgrade hook, and exposes
-`cloudapi.knotree.com` through Traefik with a cert-manager `Certificate`.
+`cloudapi.knotree.com` plus the configured public App service wildcard through
+Traefik with a cert-manager `Certificate`.
 
 ```powershell
 kubectl create secret generic knotree-api-secrets `

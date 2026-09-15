@@ -25,6 +25,13 @@ network when the Docker provider is active. Both planes apply a hard allocation
 of at most 1 vCPU, 1 GiB RAM, and 10 GiB of writable storage; storage reaching
 the ceiling stops the resource so writes cannot continue consuming the host.
 
+When `APP_SERVICE_PUBLIC_DOMAIN` is configured, each App service also receives
+a stable random `public_subdomain`. The API ingress accepts the configured
+wildcard domain, resolves the single host label to that database record, and
+proxies the original request path to the service container. The generated
+hostname is returned as `publicDomain` and `serviceUrl`; the UUID-based public
+proxy path remains available as a compatibility fallback.
+
 ## Isolation boundary
 
 Creating a PostgreSQL resource is idempotent per project. The first request

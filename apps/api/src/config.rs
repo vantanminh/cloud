@@ -39,6 +39,8 @@ pub struct Config {
     pub database_query_max_rows: u32,
     pub app_service_provisioning_enabled: bool,
     pub app_service_public_host: String,
+    pub app_service_public_domain: Option<String>,
+    pub app_service_public_scheme: String,
     pub app_service_bind_address: IpAddr,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
@@ -141,6 +143,19 @@ impl Config {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "localhost".to_owned());
         validate_public_host("APP_SERVICE_PUBLIC_HOST", &app_service_public_host)?;
+        let app_service_public_domain = optional_env("APP_SERVICE_PUBLIC_DOMAIN")
+            .map(|value| validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", &value))
+            .transpose()?;
+        let app_service_public_scheme = optional_env("APP_SERVICE_PUBLIC_SCHEME")
+            .unwrap_or_else(|| {
+                if app_service_public_domain.is_some() {
+                    "https".to_owned()
+                } else {
+                    "http".to_owned()
+                }
+            })
+            .to_ascii_lowercase();
+        validate_public_scheme("APP_SERVICE_PUBLIC_SCHEME", &app_service_public_scheme)?;
         let app_service_bind_address = env::var("APP_SERVICE_BIND_ADDRESS")
             .unwrap_or_else(|_| "127.0.0.1".to_owned())
             .parse::<IpAddr>()
@@ -190,6 +205,8 @@ impl Config {
             database_query_max_rows,
             app_service_provisioning_enabled,
             app_service_public_host,
+            app_service_public_domain,
+            app_service_public_scheme,
             app_service_bind_address,
             github_client_id,
             github_client_secret,
@@ -357,6 +374,38 @@ fn validate_public_host(key: &str, host: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_public_domain(key: &str, value: &str) -> Result<String> {
+    let domain = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    if domain.is_empty()
+        || domain.len() > 253
+        || domain.starts_with('.')
+        || domain.contains("..")
+        || domain.contains("://")
+        || domain.contains('/')
+        || domain.contains(':')
+        || domain.contains('*')
+        || domain.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+                })
+        })
+    {
+        bail!("{key} must be a DNS domain without a scheme, port, path, or wildcard");
+    }
+    Ok(domain)
+}
+
+fn validate_public_scheme(key: &str, scheme: &str) -> Result<()> {
+    if !matches!(scheme, "http" | "https") {
+        bail!("{key} must be http or https");
+    }
+    Ok(())
+}
+
 fn validate_non_empty_token(key: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
         bail!("{key} must be non-empty and contain no control characters");
@@ -407,7 +456,7 @@ fn validate_storage_size(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_storage_size;
+    use super::{validate_public_domain, validate_public_scheme, validate_storage_size};
 
     #[test]
     fn rejects_storage_sizes_above_the_resource_cap() {
@@ -415,5 +464,25 @@ mod tests {
         assert!(validate_storage_size("512Mi").is_ok());
         assert!(validate_storage_size("11Gi").is_err());
         assert!(validate_storage_size("0Gi").is_err());
+    }
+
+    #[test]
+    fn normalizes_and_validates_public_domains() {
+        assert_eq!(
+            validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", " Knotree.Org. ").unwrap(),
+            "knotree.org"
+        );
+        assert!(validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", "*.knotree.org").is_err());
+        assert!(
+            validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", "https://knotree.org").is_err()
+        );
+        assert!(validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", "knotree..org").is_err());
+    }
+
+    #[test]
+    fn accepts_only_http_public_url_schemes() {
+        assert!(validate_public_scheme("APP_SERVICE_PUBLIC_SCHEME", "http").is_ok());
+        assert!(validate_public_scheme("APP_SERVICE_PUBLIC_SCHEME", "https").is_ok());
+        assert!(validate_public_scheme("APP_SERVICE_PUBLIC_SCHEME", "ftp").is_err());
     }
 }

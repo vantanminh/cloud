@@ -18,4 +18,6 @@ env:
   databaseClusterProvider: kubernetes
   databaseClusterServiceType: ClusterIP
   appServiceProvisioningEnabled: "false"
+  appServicePublicDomain: ""
+  appServicePublicScheme: http
   rustLog: info,knotree_api=debug

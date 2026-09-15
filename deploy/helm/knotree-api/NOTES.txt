@@ -9,3 +9,10 @@ Create it before installing:
 
 The migration hook runs before install and upgrade. The Traefik route is:
   https://{{ .Values.ingress.host }}
+{{- if .Values.env.appServicePublicDomain }}
+
+Public App service domains use:
+  https://<random-subdomain>.{{ .Values.env.appServicePublicDomain }}
+Point the wildcard DNS record *.{{ .Values.env.appServicePublicDomain }} to this ingress
+and ensure the TLS issuer can issue a wildcard certificate.
+{{- end }}

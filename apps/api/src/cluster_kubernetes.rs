@@ -353,6 +353,8 @@ mod tests {
             database_query_max_rows: 500,
             app_service_provisioning_enabled: false,
             app_service_public_host: "localhost".to_owned(),
+            app_service_public_domain: None,
+            app_service_public_scheme: "http".to_owned(),
             app_service_bind_address: "127.0.0.1".parse().unwrap(),
             github_client_id: None,
             github_client_secret: None,

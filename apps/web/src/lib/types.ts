@@ -75,6 +75,7 @@ export type AppService = {
   host: string | null
   port: number | null
   serviceUrl: string | null
+  publicDomain?: string | null
   containerName: string | null
   errorMessage?: string
   autoDeployEnabled?: boolean

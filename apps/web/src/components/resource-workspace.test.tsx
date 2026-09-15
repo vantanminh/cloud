@@ -489,6 +489,7 @@ describe("ResourceWorkspace settings pane", () => {
             host: "localhost",
             port: 51952,
             serviceUrl: "http://localhost:51952",
+            publicDomain: "app-0123456789abcdef.knotree.org",
             containerName: "knotree-app-project",
           },
         }}
@@ -506,6 +507,9 @@ describe("ResourceWorkspace settings pane", () => {
 
     const dialog = screen.getByRole("dialog")
     await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    expect(
+      within(dialog).getByText("app-0123456789abcdef.knotree.org")
+    ).toBeInTheDocument()
     const portInput = within(dialog).getByLabelText("Container port")
     expect(portInput).toHaveValue(8080)
     await user.clear(portInput)

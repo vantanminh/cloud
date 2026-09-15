@@ -10,7 +10,8 @@ use axum::{
     Json,
     body::{Body, to_bytes},
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderName, Request, StatusCode},
+    http::{HeaderMap, HeaderName, Request, StatusCode, header},
+    middleware::Next,
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
@@ -60,6 +61,7 @@ const PROVISIONING_ERROR_MESSAGE: &str =
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AppServiceRow {
     id: Uuid,
+    public_subdomain: String,
     project_id: Uuid,
     name: String,
     image: String,
@@ -136,7 +138,7 @@ pub struct AppServiceMetricsQuery {
     pub range: Option<String>,
 }
 
-const APP_SERVICE_COLUMNS: &str = "id, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
+const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
 const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -190,6 +192,8 @@ pub async fn list(
             &response_service,
             &state.config.app_service_public_host,
             state.config.bind_addr.port(),
+            state.config.app_service_public_domain.as_deref(),
+            &state.config.app_service_public_scheme,
             database,
             latest_deployment(&state.db, service.id).await?,
         )?);
@@ -479,10 +483,160 @@ pub async fn public_proxy_path(
     proxy_public_request(&state, app_service_id, request).await
 }
 
+pub async fn public_domain_proxy(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Result<Response, AppError> {
+    proxy_public_domain_request(&state, request).await
+}
+
+pub async fn public_domain_fallback(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Response {
+    if !is_public_domain_request(&state, &request) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    public_domain_proxy(State(state), request)
+        .await
+        .into_response()
+}
+
+pub async fn public_domain_router(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if is_public_domain_request(&state, &request) {
+        return proxy_public_domain_request(&state, request)
+            .await
+            .into_response();
+    }
+    next.run(request).await
+}
+
+async fn proxy_public_domain_request(
+    state: &AppState,
+    request: Request<Body>,
+) -> Result<Response, AppError> {
+    let public_domain =
+        state
+            .config
+            .app_service_public_domain
+            .as_deref()
+            .ok_or(AppError::NotFound {
+                code: "APP_SERVICE_PUBLIC_DOMAIN_NOT_CONFIGURED",
+                message: "Public app service domains are not configured.",
+            })?;
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AppError::NotFound {
+            code: "APP_SERVICE_DOMAIN_NOT_FOUND",
+            message: "The public app service domain could not be resolved.",
+        })?;
+    let public_subdomain =
+        public_subdomain_from_host(host, public_domain).ok_or(AppError::NotFound {
+            code: "APP_SERVICE_DOMAIN_NOT_FOUND",
+            message: "The public app service domain could not be resolved.",
+        })?;
+    let app_service_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM project_app_services WHERE public_subdomain = $1",
+    )
+    .bind(public_subdomain)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_DOMAIN_NOT_FOUND",
+        message: "The public app service domain could not be resolved.",
+    })?;
+
+    proxy_public_request_with_mode(state, app_service_id, request, true).await
+}
+
+fn is_public_domain_request(state: &AppState, request: &Request<Body>) -> bool {
+    let Some(public_domain) = state.config.app_service_public_domain.as_deref() else {
+        return false;
+    };
+    let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    host_matches_public_domain(host, public_domain)
+}
+
+fn host_matches_public_domain(host: &str, public_domain: &str) -> bool {
+    let Some(host) = host_without_port(host) else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let domain = public_domain.trim_end_matches('.').to_ascii_lowercase();
+    !host.is_empty() && (host == domain || host.ends_with(&format!(".{domain}")))
+}
+
+fn public_subdomain_from_host(host: &str, public_domain: &str) -> Option<String> {
+    let host = host_without_port(host)?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let domain = public_domain.trim_end_matches('.').to_ascii_lowercase();
+    let suffix = format!(".{domain}");
+    let subdomain = host.strip_suffix(&suffix)?;
+    if subdomain.contains('.') || !is_valid_public_subdomain(subdomain) {
+        return None;
+    }
+    Some(subdomain.to_owned())
+}
+
+fn host_without_port(host: &str) -> Option<&str> {
+    let host = host.trim();
+    if host.is_empty() || host.starts_with('[') {
+        return None;
+    }
+    match host.rsplit_once(':') {
+        Some((hostname, port)) if !hostname.contains(':') => {
+            if port.is_empty() || port.parse::<u16>().is_err() {
+                None
+            } else {
+                Some(hostname)
+            }
+        }
+        Some(_) => None,
+        None => Some(host),
+    }
+}
+
+fn is_valid_public_subdomain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+}
+
+fn new_public_subdomain() -> String {
+    let random = Uuid::new_v4().simple().to_string();
+    format!("app-{}", &random[..16])
+}
+
 async fn proxy_public_request(
     state: &AppState,
     app_service_id: Uuid,
     request: Request<Body>,
+) -> Result<Response, AppError> {
+    proxy_public_request_with_mode(state, app_service_id, request, false).await
+}
+
+async fn proxy_public_request_with_mode(
+    state: &AppState,
+    app_service_id: Uuid,
+    request: Request<Body>,
+    domain_request: bool,
 ) -> Result<Response, AppError> {
     let target = sqlx::query_as::<_, PublicProxyTarget>(
         "SELECT app_port, port, container_name, status
@@ -534,7 +688,11 @@ async fn proxy_public_request(
             }
         })?;
     let request_bytes = request_body.len();
-    let upstream_path = public_upstream_path(&parts.uri);
+    let upstream_path = if domain_request {
+        public_domain_upstream_path(&parts.uri)
+    } else {
+        public_upstream_path(&parts.uri)
+    };
     let bind_host = url_host(&state.config.app_service_bind_address.to_string());
     let upstream_url = format!("http://{bind_host}:{port}{upstream_path}");
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).map_err(|_| {
@@ -649,6 +807,13 @@ fn public_upstream_path(uri: &axum::http::Uri) -> String {
     }
 }
 
+fn public_domain_upstream_path(uri: &axum::http::Uri) -> String {
+    uri.path_and_query()
+        .map(|value| value.as_str().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/".to_owned())
+}
+
 fn url_host(host: &str) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
@@ -733,6 +898,8 @@ pub async fn update_auto_deploy(
         &service,
         &state.config.app_service_public_host,
         state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -895,7 +1062,7 @@ pub async fn create(
         }
 
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {APP_SERVICE_COLUMNS}"
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -903,6 +1070,7 @@ pub async fn create(
         .bind(&image)
         .bind(&image_source)
         .bind(i32::from(app_port))
+        .bind(new_public_subdomain())
         .bind(STATUS_PROVISIONING)
         .bind(auto_deploy_enabled)
         .bind(github_connection_user_id)
@@ -950,6 +1118,8 @@ pub async fn create(
         &service,
         &state.config.app_service_public_host,
         state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
         None,
         latest_deployment(&state.db, service.id).await?,
     )?;
@@ -1034,6 +1204,8 @@ pub async fn update(
                 &existing,
                 &state.config.app_service_public_host,
                 state.config.bind_addr.port(),
+                state.config.app_service_public_domain.as_deref(),
+                &state.config.app_service_public_scheme,
                 database.as_ref(),
                 latest_deployment(&state.db, existing.id).await?,
             )?));
@@ -1135,6 +1307,8 @@ pub async fn update(
         &service,
         &state.config.app_service_public_host,
         state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -1214,6 +1388,8 @@ pub async fn update_database_connection(
                 &existing,
                 &state.config.app_service_public_host,
                 state.config.bind_addr.port(),
+                state.config.app_service_public_domain.as_deref(),
+                &state.config.app_service_public_scheme,
                 database.as_ref(),
                 latest_deployment(&state.db, existing.id).await?,
             )?));
@@ -1314,6 +1490,8 @@ pub async fn update_database_connection(
         &service,
         &state.config.app_service_public_host,
         state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
@@ -1396,6 +1574,8 @@ fn app_service_response(
     service: &AppServiceRow,
     public_host: &str,
     api_port: u16,
+    public_domain: Option<&str>,
+    public_scheme: &str,
     database: Option<&DatabaseResourceRow>,
     deployment: Option<AppServiceDeploymentResponse>,
 ) -> Result<AppServiceResponse, AppError> {
@@ -1410,14 +1590,28 @@ fn app_service_response(
         .host
         .clone()
         .or_else(|| (service.status == STATUS_READY).then(|| public_host.to_owned()));
-    let service_url = match (host.as_deref(), port) {
-        (Some(_), Some(_)) => Some(format!(
-            "http://{}:{}/api/v1/public/app-services/{}",
-            url_host(public_host),
-            api_port,
-            service.id
-        )),
-        _ => None,
+    let public_domain = public_domain.map(|domain| {
+        format!(
+            "{}.{}",
+            service.public_subdomain,
+            domain.trim_end_matches('.')
+        )
+    });
+    let service_url = if service.status == STATUS_READY && service.container_name.is_some() {
+        public_domain
+            .as_deref()
+            .map(|domain| format!("{public_scheme}://{domain}"))
+            .or_else(|| match (host.as_deref(), port) {
+                (Some(_), Some(_)) => Some(format!(
+                    "http://{}:{}/api/v1/public/app-services/{}",
+                    url_host(public_host),
+                    api_port,
+                    service.id
+                )),
+                _ => None,
+            })
+    } else {
+        None
     };
 
     Ok(AppServiceResponse {
@@ -1431,6 +1625,7 @@ fn app_service_response(
         host,
         port,
         service_url,
+        public_domain,
         container_name: service.container_name.clone(),
         error_message: service.error_message.clone(),
         auto_deploy_enabled: service.auto_deploy_enabled,
@@ -2904,6 +3099,88 @@ mod tests {
         assert_eq!(public_upstream_path(&root), "/");
         assert_eq!(url_host("127.0.0.1"), "127.0.0.1");
         assert_eq!(url_host("::1"), "[::1]");
+    }
+
+    #[test]
+    fn resolves_one_random_subdomain_from_the_wildcard_host() {
+        assert_eq!(
+            public_subdomain_from_host("APP-0123456789ABCDEF.knotree.org:443", "knotree.org"),
+            Some("app-0123456789abcdef".to_owned())
+        );
+        assert!(host_matches_public_domain(
+            "app-0123456789abcdef.knotree.org",
+            "knotree.org"
+        ));
+        assert!(!host_matches_public_domain(
+            "app-0123456789abcdef.knotree.org.evil",
+            "knotree.org"
+        ));
+        assert_eq!(
+            public_subdomain_from_host("team.app-0123456789abcdef.knotree.org", "knotree.org"),
+            None
+        );
+        assert_eq!(
+            public_subdomain_from_host("knotree.org", "knotree.org"),
+            None
+        );
+    }
+
+    #[test]
+    fn generates_dns_safe_random_app_subdomains() {
+        let subdomain = new_public_subdomain();
+        assert!(subdomain.starts_with("app-"));
+        assert!(is_valid_public_subdomain(&subdomain));
+        assert_eq!(subdomain.len(), 20);
+    }
+
+    #[test]
+    fn returns_the_assigned_domain_for_a_ready_service() {
+        let service = AppServiceRow {
+            id: Uuid::new_v4(),
+            public_subdomain: "app-0123456789abcdef".to_owned(),
+            project_id: Uuid::new_v4(),
+            name: "Web app".to_owned(),
+            image: "nginx:alpine".to_owned(),
+            image_source: IMAGE_SOURCE_PUBLIC.to_owned(),
+            app_port: 80,
+            host: Some("localhost".to_owned()),
+            port: Some(53107),
+            container_name: Some("knotree-app-test".to_owned()),
+            status: STATUS_READY.to_owned(),
+            error_message: None,
+            database_resource_id: None,
+            auto_deploy_enabled: false,
+            deployed_image_digest: None,
+            auto_deploy_checked_at: None,
+            auto_deploy_error: None,
+        };
+
+        let response = app_service_response(
+            &service,
+            "localhost",
+            8080,
+            Some("knotree.org"),
+            "https",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            response.public_domain.as_deref(),
+            Some("app-0123456789abcdef.knotree.org")
+        );
+        assert_eq!(
+            response.service_url.as_deref(),
+            Some("https://app-0123456789abcdef.knotree.org")
+        );
+    }
+
+    #[test]
+    fn preserves_the_full_path_for_wildcard_domain_requests() {
+        let uri = "/api/v1/health?probe=1".parse::<axum::http::Uri>().unwrap();
+        assert_eq!(public_domain_upstream_path(&uri), "/api/v1/health?probe=1");
+        let root = "/".parse::<axum::http::Uri>().unwrap();
+        assert_eq!(public_domain_upstream_path(&root), "/");
     }
 
     #[test]

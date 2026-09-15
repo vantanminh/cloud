@@ -18,6 +18,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::StatusCode,
+    middleware,
     routing::{any, get, patch, post},
 };
 use serde::Serialize;
@@ -122,6 +123,11 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .nest("/api/v1", api)
+        .fallback(app_services::public_domain_fallback)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            app_services::public_domain_router,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(state.config.cors_layer())
         .with_state(state)
