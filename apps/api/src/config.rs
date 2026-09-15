@@ -11,6 +11,7 @@ use sqlx::postgres::PgConnectOptions;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const MAX_RESOURCE_STORAGE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const DEFAULT_APP_SERVICE_PUBLIC_DOMAIN: &str = "knotree.org";
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -143,9 +144,9 @@ impl Config {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "localhost".to_owned());
         validate_public_host("APP_SERVICE_PUBLIC_HOST", &app_service_public_host)?;
-        let app_service_public_domain = optional_env("APP_SERVICE_PUBLIC_DOMAIN")
-            .map(|value| validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", &value))
-            .transpose()?;
+        let app_service_public_domain_env = env::var("APP_SERVICE_PUBLIC_DOMAIN").ok();
+        let app_service_public_domain =
+            public_domain_setting(app_service_public_domain_env.as_deref())?;
         let app_service_public_scheme = optional_env("APP_SERVICE_PUBLIC_SCHEME")
             .unwrap_or_else(|| {
                 if app_service_public_domain.is_some() {
@@ -258,6 +259,18 @@ impl Config {
 
 fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn public_domain_setting(value: Option<&str>) -> Result<Option<String>> {
+    match value {
+        None => validate_public_domain(
+            "APP_SERVICE_PUBLIC_DOMAIN",
+            DEFAULT_APP_SERVICE_PUBLIC_DOMAIN,
+        )
+        .map(Some),
+        Some(value) if value.trim().is_empty() => Ok(None),
+        Some(value) => validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", value).map(Some),
+    }
 }
 
 fn env_bool(key: &str, default: bool) -> Result<bool> {
@@ -456,7 +469,10 @@ fn validate_storage_size(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_public_domain, validate_public_scheme, validate_storage_size};
+    use super::{
+        public_domain_setting, validate_public_domain, validate_public_scheme,
+        validate_storage_size,
+    };
 
     #[test]
     fn rejects_storage_sizes_above_the_resource_cap() {
@@ -477,6 +493,21 @@ mod tests {
             validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", "https://knotree.org").is_err()
         );
         assert!(validate_public_domain("APP_SERVICE_PUBLIC_DOMAIN", "knotree..org").is_err());
+    }
+
+    #[test]
+    fn defaults_public_domains_but_allows_an_explicit_opt_out() {
+        assert_eq!(
+            public_domain_setting(None).unwrap().as_deref(),
+            Some("knotree.org")
+        );
+        assert_eq!(public_domain_setting(Some(" ")).unwrap(), None);
+        assert_eq!(
+            public_domain_setting(Some("Example.COM"))
+                .unwrap()
+                .as_deref(),
+            Some("example.com")
+        );
     }
 
     #[test]

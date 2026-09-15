@@ -33,8 +33,9 @@ $env:DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS = "90"
   $env:DATABASE_QUERY_MAX_ROWS = "500"
   $env:APP_SERVICE_PROVISIONING_ENABLED = "true"
   $env:APP_SERVICE_PUBLIC_HOST = "localhost"
-  # Optional in development; production uses knotree.org with HTTPS.
-  $env:APP_SERVICE_PUBLIC_DOMAIN = ""
+  # Point *.knotree.org at the API ingress to use generated public URLs.
+  # Set the domain to "" to keep the localhost URL fallback.
+  $env:APP_SERVICE_PUBLIC_DOMAIN = "knotree.org"
   $env:APP_SERVICE_PUBLIC_SCHEME = "https"
   $env:APP_SERVICE_BIND_ADDRESS = "127.0.0.1"
   # Keep this stable so credentials remain readable after an API restart.
