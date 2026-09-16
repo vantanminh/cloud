@@ -1060,6 +1060,6 @@ mod tests {
             super::RESOURCE_VOLUME_LIMIT_BYTES,
             10 * 1024 * 1024 * 1024
         );
-        assert_eq!(limits::TENANT_RESOURCE_CAPS.cpu, "1");
+        assert_eq!(crate::limits::TENANT_RESOURCE_CAPS.cpu, "1");
     }
 }
