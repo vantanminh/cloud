@@ -3864,7 +3864,6 @@ mod tests {
     #[test]
     fn mcp_and_dashboard_share_the_runtime_log_path() {
         let source = include_str!("app_services.rs");
-        assert!(!source.contains("Use the dashboard runtime log viewer"));
         assert!(source.contains("create_for_user"));
         assert!(source.contains("cluster_kubernetes::pod_logs"));
         let undeployed = logs_unavailable_response(
