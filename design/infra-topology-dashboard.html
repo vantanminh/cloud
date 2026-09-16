@@ -1,0 +1,2456 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Topology · Product dashboard</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --accent: #1677ff;
+      --surface: #f7f8fa;
+      --muted: #6b7280;
+      --border: #d9dee7;
+      --accent-soft: color-mix(in oklch, var(--accent) 10%, var(--bg));
+      --accent-soft-strong: color-mix(in oklch, var(--accent) 16%, var(--bg));
+      --border-subtle: color-mix(in oklch, var(--border) 72%, transparent);
+      --shadow: 0 14px 32px color-mix(in oklch, var(--fg) 10%, transparent);
+      --shadow-soft: 0 5px 16px color-mix(in oklch, var(--fg) 7%, transparent);
+      --radius: 8px;
+      --rail-width: 64px;
+      --topbar-height: 64px;
+      --ease: cubic-bezier(.22, .61, .36, 1);
+      --ok: #16803c;
+      --ok-soft: #e9f7ee;
+      --warn: #b45309;
+      --danger: #c2410c;
+    }
+    html[data-theme="dark"] {
+      --bg: #0f1216;
+      --fg: #f4f6f8;
+      --accent: #3b8bff;
+      --surface: #171c22;
+      --muted: #9aa3af;
+      --border: #2a323c;
+      --ok: #3dd68c;
+      --ok-soft: #163024;
+      --warn: #f0b429;
+      --danger: #f07167;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Helvetica Neue, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible,
+    a:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .app-shell {
+      min-height: 100%;
+      background: var(--bg);
+    }
+    .topbar {
+      position: fixed;
+      inset: 0 0 auto 0;
+      z-index: 20;
+      height: var(--topbar-height);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in oklch, var(--bg) 96%, transparent);
+      backdrop-filter: blur(12px);
+    }
+    .topbar-left,
+    .topbar-right,
+    .workspace-switcher,
+    .workspace-name,
+    .topbar-actions,
+    .billing-badge {
+      display: flex;
+      align-items: center;
+    }
+    .topbar-left { min-width: 0; gap: 20px; }
+    .topbar-right { flex: 0 0 auto; gap: 18px; }
+    .brand-button,
+    .icon-button,
+    .context-trigger,
+    .rail-button,
+    .zoom-button,
+    .layers-button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+    .brand-button {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      padding: 0;
+    }
+    .brand-mark {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--fg);
+      border-radius: 50%;
+      background: var(--fg);
+    }
+    .brand-mark::before,
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      width: 14px;
+      height: 1px;
+      background: var(--bg);
+    }
+    .brand-mark::after { transform: translateY(5px); }
+    .brand-mark > span {
+      display: block;
+      width: 14px;
+      height: 1px;
+      background: var(--bg);
+      transform: translateY(-5px);
+    }
+    .topbar-divider {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+    }
+    .workspace-switcher { gap: 12px; min-width: 0; }
+    .workspace-name { gap: 8px; min-width: 0; }
+    .avatar-dot {
+      width: 20px;
+      height: 20px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: var(--surface);
+      color: var(--fg);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+    .context-trigger {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 8px;
+      border-radius: var(--radius);
+      font-weight: 700;
+      white-space: nowrap;
+      transition: background .2s var(--ease);
+    }
+    .context-trigger:hover { background: var(--surface); }
+    .workspace-name .context-trigger { padding-left: 0; }
+    .context-label { overflow: hidden; text-overflow: ellipsis; }
+    .environment-trigger { font-size: 16px; }
+    .chevron {
+      width: 14px;
+      height: 14px;
+      color: var(--muted);
+      transition: transform .2s var(--ease);
+    }
+    .context-trigger[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+    .topbar-actions { gap: 6px; }
+    .icon-button {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      border-radius: var(--radius);
+      transition: background .2s var(--ease), color .2s var(--ease);
+    }
+    .icon-button:hover { background: var(--surface); color: var(--fg); }
+    .theme-toggle .icon-moon { display: none; }
+    html[data-theme="dark"] .theme-toggle .icon-sun { display: none; }
+    html[data-theme="dark"] .theme-toggle .icon-moon { display: block; }
+    .billing-badge {
+      min-height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .billing-badge strong { color: var(--fg); font-weight: 700; }
+    .agent-button {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 2px 0 12px;
+      border-left: 1px solid var(--border);
+      color: var(--muted);
+      cursor: pointer;
+      background: transparent;
+      border-top: 0;
+      border-right: 0;
+      border-bottom: 0;
+      transition: color .2s var(--ease);
+    }
+    .agent-button:hover { color: var(--fg); }
+    .agent-avatar {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: var(--surface);
+      color: var(--fg);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .side-rail {
+      position: fixed;
+      inset: var(--topbar-height) auto 0 0;
+      z-index: 15;
+      width: var(--rail-width);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 0 16px;
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .rail-nav { display: grid; gap: 8px; }
+    .rail-button {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      border-radius: var(--radius);
+      transition: background .2s var(--ease), color .2s var(--ease), transform .2s var(--ease);
+    }
+    .rail-button:hover { background: var(--surface); color: var(--fg); }
+    .rail-button[aria-current="page"] {
+      color: var(--fg);
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 20%, var(--border));
+    }
+    .rail-button:active { transform: scale(.96); }
+    .account-button {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: var(--surface);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: border-color .2s var(--ease), background .2s var(--ease);
+    }
+    .account-button:hover { border-color: var(--fg); background: var(--bg); }
+
+    .main {
+      position: relative;
+      height: 100vh;
+      padding: calc(var(--topbar-height) + 8px) 8px 8px calc(var(--rail-width) + 8px);
+    }
+    .topology-shell {
+      position: relative;
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background-color: var(--bg);
+      background-image: radial-gradient(circle, color-mix(in oklch, var(--border) 82%, transparent) 1px, transparent 1px);
+      background-size: 24px 24px;
+      background-position: 12px 12px;
+    }
+    .canvas-toolbar {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      z-index: 8;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .add-wrap { position: relative; }
+    .primary-button {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 0 16px;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: var(--bg);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: var(--shadow-soft);
+      transition: background .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease);
+    }
+    .primary-button:hover { background: color-mix(in oklch, var(--accent) 88%, var(--fg)); border-color: color-mix(in oklch, var(--accent) 88%, var(--fg)); }
+    .primary-button:active { transform: translateY(1px); }
+    .add-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 220px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow);
+    }
+    .add-menu[hidden], .inspect-panel[hidden], .toast[hidden], .context-menu[hidden], .resource-overlay[hidden], .range-popover[hidden], .var-menu[hidden] { display: none; }
+    .menu-heading {
+      padding: 8px 10px 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .menu-option {
+      width: 100%;
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      transition: background .2s var(--ease);
+    }
+    .menu-option:hover { background: var(--surface); }
+    .menu-option span:last-child { font-weight: 700; }
+    .menu-icon {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+    }
+
+    .canvas-world,
+    .connector-layer {
+      position: absolute;
+      inset: 0;
+    }
+    .canvas-world {
+      z-index: 2;
+      transform-origin: 50% 50%;
+      transition: transform .28s var(--ease);
+    }
+    .connector-layer { z-index: 1; width: 100%; height: 100%; pointer-events: none; }
+    .connector {
+      fill: none;
+      stroke: var(--muted);
+      stroke-width: .12;
+      stroke-dasharray: .52  .72;
+      vector-effect: non-scaling-stroke;
+      opacity: .72;
+      transition: stroke .2s var(--ease), opacity .2s var(--ease);
+    }
+    .topology-shell.has-selection .connector { opacity: .3; }
+    .topology-shell.has-selection .connector.is-highlighted { stroke: var(--accent); opacity: 1; }
+    .node-card {
+      position: absolute;
+      width: 360px;
+      min-height: 212px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow-soft);
+      cursor: pointer;
+      transform: translate(-50%, 0);
+      transition: border-color .2s var(--ease), box-shadow .2s var(--ease), transform .2s var(--ease);
+    }
+    .node-card:hover { border-color: color-mix(in oklch, var(--fg) 32%, var(--border)); box-shadow: var(--shadow); }
+    .node-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    .node-card.is-selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft-strong), var(--shadow);
+    }
+    .node-card.postgres { left: 42%; top: 20%; }
+    .node-card.redis { left: 67%; top: 20%; }
+    .node-card.app { left: 42%; top: 53%; }
+    .node-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 36px;
+      padding: 28px 32px 24px;
+    }
+    .node-title {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .node-logo {
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+      object-fit: contain;
+    }
+    .node-heading {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+    .node-subtitle {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .node-status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--fg);
+      font-size: 16px;
+    }
+    .status-dot {
+      position: relative;
+      width: 12px;
+      height: 12px;
+      flex: 0 0 auto;
+      border: 3px solid var(--accent-soft-strong);
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .node-footer {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 32px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 16px;
+    }
+    .storage-icon { color: var(--muted); }
+    .selection-hint {
+      position: absolute;
+      left: 24px;
+      bottom: 20px;
+      z-index: 5;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: color-mix(in oklch, var(--bg) 92%, transparent);
+      color: var(--muted);
+      font-size: 12px;
+      pointer-events: none;
+      display: none;
+    }
+    .selection-hint kbd {
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 11px;
+    }
+    .zoom-dock {
+      position: absolute;
+      left: 20px;
+      bottom: 20px;
+      z-index: 8;
+      display: grid;
+      gap: 8px;
+    }
+    .zoom-group,
+    .history-group {
+      display: grid;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow-soft);
+    }
+    .zoom-button,
+    .layers-button {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      transition: background .2s var(--ease), color .2s var(--ease);
+    }
+    .zoom-button:hover,
+    .layers-button:hover { background: var(--surface); color: var(--fg); }
+    .zoom-button + .zoom-button { border-top: 1px solid var(--border); }
+    .history-group { margin-top: 4px; }
+    .history-group button + button { border-top: 1px solid var(--border); }
+    .zoom-readout {
+      position: absolute;
+      left: 54px;
+      top: 50%;
+      min-width: 48px;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .layers-button[aria-pressed="true"] { color: var(--fg); background: var(--accent-soft); }
+
+    .inspect-panel {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      z-index: 10;
+      width: 292px;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow);
+      animation: panel-in .24s var(--ease);
+    }
+    @keyframes panel-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    .inspect-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .inspect-kicker {
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .inspect-title { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+    .close-button {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--muted);
+      cursor: pointer;
+      transition: background .2s var(--ease), color .2s var(--ease);
+    }
+    .close-button:hover { background: var(--surface); color: var(--fg); }
+    .inspect-list { margin: 20px 0 0; border-top: 1px solid var(--border); }
+    .inspect-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .inspect-row dt { color: var(--muted); }
+    .inspect-row dd { margin: 0; font-weight: 700; text-align: right; }
+    .context-menu {
+      position: fixed;
+      top: 56px;
+      left: 84px;
+      z-index: 30;
+      width: 220px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+      box-shadow: var(--shadow);
+    }
+    .context-menu.environment { left: 304px; }
+    .context-menu button { width: 100%; min-height: 40px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; text-align: left; cursor: pointer; }
+    .context-menu button:hover { background: var(--surface); }
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 40;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--fg);
+      color: var(--bg);
+      box-shadow: var(--shadow);
+      animation: toast-in .24s var(--ease);
+    }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    .resource-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: color-mix(in oklch, var(--fg) 28%, transparent);
+    }
+    .resource-sheet {
+      width: min(1180px, 100%);
+      height: min(860px, 100%);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--bg);
+      box-shadow: var(--shadow);
+    }
+    .resource-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 22px 28px 0;
+    }
+    .resource-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .resource-identity img { width: 32px; height: 32px; }
+    .resource-identity h2 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
+    .resource-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 8px 28px 0;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    .resource-tab {
+      appearance: none;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .resource-tab:hover { color: var(--fg); }
+    .resource-tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
+    .resource-body { flex: 1; min-height: 0; overflow: auto; padding: 20px 28px 28px; }
+    .resource-pane[hidden] { display: none; }
+    .banner, .hint-banner, .deploy-card, .history-card, .table-card, .metric-card, .setting-block {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg);
+    }
+    .banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 52px;
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      background: var(--surface);
+    }
+    .banner p, .hint-banner p { margin: 0; }
+    .banner-actions { display: flex; align-items: center; gap: 12px; }
+    .ghost-link { color: var(--muted); background: none; border: 0; cursor: pointer; font: inherit; }
+    .ghost-link:hover { color: var(--fg); }
+    .solid-button {
+      min-height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--fg);
+      color: var(--bg);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .deploy-card { overflow: hidden; margin-bottom: 18px; }
+    .deploy-card.active { background: var(--ok-soft); border-color: color-mix(in oklch, var(--ok) 28%, var(--border)); }
+    .deploy-top, .deploy-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 16px;
+    }
+    .deploy-bottom { border-top: 1px solid color-mix(in oklch, var(--ok) 18%, var(--border)); color: var(--ok); font-weight: 600; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .04em;
+    }
+    .status-pill.active { background: var(--ok); color: #fff; }
+    .status-pill.removed { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+    .outline-button, .icon-chip {
+      min-height: 36px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      cursor: pointer;
+    }
+    .outline-button.accent { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
+    .history-head { display: flex; justify-content: space-between; margin: 8px 0 10px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    .history-card { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+    .sub-tabs { display: flex; gap: 18px; margin-bottom: 18px; }
+    .sub-tab { border: 0; background: none; min-height: 32px; color: var(--muted); font-weight: 700; cursor: pointer; }
+    .sub-tab[aria-selected="true"] { color: var(--fg); box-shadow: inset 0 -2px 0 var(--fg); }
+    .toolbar-row, .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .search-field { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .search-field input, .sql-bar, .settings-filter input, .console-form input {
+      width: 100%;
+      min-height: 40px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .sql-bar { margin-bottom: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted); }
+    .table-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+    .table-card {
+      min-height: 108px;
+      display: grid;
+      place-items: center;
+      gap: 8px;
+      text-align: center;
+      cursor: pointer;
+    }
+    .table-card:hover, .table-card.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+    .table-card svg { color: var(--accent); }
+    .table-card span { font-weight: 600; }
+    .empty-state { min-height: 360px; display: grid; place-items: center; text-align: center; color: var(--muted); }
+    .empty-state h3 { margin: 12px 0 6px; color: var(--fg); }
+    .hint-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      background: var(--accent-soft);
+      border-color: color-mix(in oklch, var(--accent) 24%, var(--border));
+    }
+    .var-list { margin: 0; padding: 0; list-style: none; }
+    .var-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 16px;
+      align-items: center;
+      min-height: 52px;
+      border-bottom: 1px solid var(--border);
+    }
+    .var-row code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .var-row .muted { color: var(--muted); }
+    .metric-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 16px; }
+    .segmented { display: flex; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
+    .segmented button { width: 40px; height: 36px; border: 0; background: var(--bg); color: var(--muted); cursor: pointer; }
+    .segmented button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+    .range-wrap { position: relative; }
+    .range-popover {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 320px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      box-shadow: var(--shadow);
+      z-index: 2;
+    }
+    .range-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 14px; }
+    .range-grid button { min-height: 36px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); cursor: pointer; }
+    .range-grid button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+    .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .metric-card { padding: 18px; min-height: 280px; }
+    .metric-card h3 { margin: 0 0 12px; }
+    .metric-legend { float: right; color: var(--muted); font-size: 12px; font-weight: 500; }
+    .console-pane { min-height: 420px; display: flex; flex-direction: column; }
+    .console-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .console-log {
+      flex: 1;
+      min-height: 280px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .console-form { display: flex; gap: 8px; }
+    .connected { color: var(--ok); }
+    .settings-layout { display: grid; grid-template-columns: 1fr 160px; gap: 32px; }
+    .settings-nav { display: grid; align-content: start; gap: 10px; color: var(--muted); }
+    .settings-nav a { color: inherit; text-decoration: none; }
+    .settings-nav a:hover { color: var(--fg); }
+    .setting-block { padding: 16px; margin: 10px 0 22px; }
+    .source-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .source-row p { margin: 0; }
+    .source-row small { color: var(--muted); }
+    .warn-note { color: var(--danger); font-weight: 600; margin: 10px 0 0; }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
+    .var-menu { position: absolute; right: 0; top: 36px; width: 160px; padding: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: var(--shadow); }
+
+    @media (max-width: 1080px) {
+      .topbar { padding: 0 16px; gap: 12px; }
+      .topbar-right { gap: 10px; }
+      .billing-badge { display: none; }
+      .node-card { width: 320px; }
+      .node-main { padding: 24px; }
+      .node-footer { padding: 0 24px; }
+    }
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .topbar { height: 60px; }
+      .topbar-left { gap: 12px; }
+      .topbar-divider { display: none; }
+      .environment-trigger { font-size: 14px; }
+      .workspace-name .context-trigger { max-width: 150px; }
+      .agent-button { display: none; }
+      .side-rail {
+        inset: auto 0 0 0;
+        z-index: 25;
+        width: 100%;
+        height: 60px;
+        flex-direction: row;
+        padding: 8px 12px;
+        border-top: 1px solid var(--border);
+        border-right: 0;
+      }
+      .rail-nav { width: 100%; display: flex; justify-content: space-between; gap: 6px; }
+      .rail-button { width: 44px; height: 44px; }
+      .account-button { display: none; }
+      .main { height: auto; min-height: calc(100vh - 60px); padding: 68px 8px 76px; }
+      .topology-shell { min-height: calc(100vh - 144px); height: auto; overflow: visible; background-size: 22px 22px; }
+      .canvas-toolbar { top: 16px; right: 16px; }
+      .canvas-world { position: relative; inset: auto; display: grid; gap: 16px; padding: 84px 16px 104px; transform: none !important; }
+      .connector-layer { display: none; }
+      .node-card,
+      .node-card.postgres,
+      .node-card.redis,
+      .node-card.app { position: relative; inset: auto; left: auto; top: auto; width: 100%; max-width: 440px; min-height: 196px; transform: none; justify-self: center; }
+      .node-main { gap: 28px; }
+      .selection-hint { display: none; }
+      .zoom-dock { left: 16px; bottom: 16px; }
+      .inspect-panel { position: fixed; top: auto; right: 16px; bottom: 76px; left: 16px; width: auto; }
+      .context-menu { top: 54px; left: 16px; }
+      .context-menu.environment { left: auto; right: 16px; }
+      .resource-overlay { padding: 0; }
+      .resource-sheet { width: 100%; height: 100%; border-radius: 0; }
+      .resource-head, .resource-tabs, .resource-body { padding-left: 16px; padding-right: 16px; }
+      .table-grid, .metrics-grid, .settings-layout, .var-row { grid-template-columns: 1fr; }
+      .banner, .deploy-top, .deploy-bottom, .meta-row { flex-wrap: wrap; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+    <header class="topbar" data-od-id="top-navigation">
+      <div class="topbar-left">
+        <button class="brand-button" type="button" aria-label="Open Product home" data-od-id="brand-home">
+          <span class="brand-mark" aria-hidden="true"><span></span></span>
+        </button>
+        <span class="topbar-divider" aria-hidden="true"></span>
+        <div class="workspace-switcher">
+          <div class="workspace-name">
+            <span class="avatar-dot" aria-hidden="true">H</span>
+            <button class="context-trigger" id="workspace-trigger" type="button" aria-expanded="false" aria-controls="workspace-menu" data-od-id="workspace-switcher">
+              <span class="context-label" id="workspace-label">hopeful-intuition</span>
+              <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          <button class="context-trigger environment-trigger" id="environment-trigger" type="button" aria-expanded="false" aria-controls="environment-menu" data-od-id="environment-switcher">
+            <span class="context-label" id="environment-label">production</span>
+            <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="topbar-actions" aria-label="Utility actions">
+          <button class="icon-button theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false" data-od-id="theme-toggle">
+            <svg class="icon-sun" width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.4v1.6M10 16v1.6M2.4 10h1.6M16 10h1.6M4.6 4.6l1.1 1.1M14.3 14.3l1.1 1.1M4.6 15.4l1.1-1.1M14.3 5.7l1.1-1.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <svg class="icon-moon" width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M15.2 12.6A6.2 6.2 0 0 1 7.4 4.8 6.4 6.4 0 1 0 15.2 12.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="icon-button" type="button" aria-label="Open activity" data-od-id="activity-button">
+            <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10h3l1.7-5.5L11 15l1.8-5H17.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="icon-button" type="button" aria-label="Open notifications" data-od-id="notifications-button">
+            <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 8.4a5 5 0 0 1 10 0c0 4.1 1.8 4.7 1.8 5.3H3.2C3.2 13.1 5 12.5 5 8.4Zm3.3 7.4h3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div class="billing-badge" aria-label="Trial status"><strong>30 days</strong>&nbsp;or $4.99 left</div>
+        <button class="agent-button" type="button" data-od-id="agent-button">
+          <span class="agent-avatar" aria-hidden="true">A</span>
+          <span>Agent</span>
+        </button>
+      </div>
+    </header>
+
+    <aside class="side-rail" data-od-id="side-navigation">
+      <nav class="rail-nav" aria-label="Primary">
+        <button class="rail-button" type="button" aria-current="page" aria-label="Topology" data-od-id="nav-topology">
+          <svg width="19" height="19" viewBox="0 0 20 20" aria-hidden="true"><rect x="8" y="2.5" width="4" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="2.5" y="13.5" width="4" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="13.5" y="13.5" width="4" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 6.5v3M4.5 13.5v-2h11v2M10 9.5H4.5M10 9.5h5.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="Metrics" data-od-id="nav-metrics">
+          <svg width="19" height="19" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16V9M8 16V4M12 16v-6M16 16V6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="Logs" data-od-id="nav-logs">
+          <svg width="19" height="19" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2.8h7l3 3V17H5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 2.8v3h3M8 9h4M8 12h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="Resources" data-od-id="nav-resources">
+          <svg width="19" height="19" viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.5 6.5 3.8v7.4L10 17.5l-6.5-3.8V6.3zM3.5 6.3 10 10l6.5-3.7M10 10v7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="rail-button" type="button" aria-label="Settings" data-od-id="nav-settings">
+          <svg width="19" height="19" viewBox="0 0 20 20" aria-hidden="true"><path d="M8.4 2.8h3.2l.5 2a6.2 6.2 0 0 1 1.4.8l2-.7 1.6 2.8-1.5 1.4a6.4 6.4 0 0 1 0 1.7l1.5 1.4-1.6 2.8-2-.7a6.2 6.2 0 0 1-1.4.8l-.5 2H8.4l-.5-2a6.2 6.2 0 0 1-1.4-.8l-2 .7-1.6-2.8 1.5-1.4a6.4 6.4 0 0 1 0-1.7L2.9 7.7l1.6-2.8 2 .7a6.2 6.2 0 0 1 1.4-.8z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>
+        </button>
+      </nav>
+      <button class="account-button" type="button" aria-label="Open account menu" data-od-id="account-button">A</button>
+    </aside>
+
+    <main class="main" data-od-id="topology-page" data-canvas-theme="light">
+      <style>
+        [data-od-id="topology-page"][data-canvas-theme="dark"] {
+          --bg: #0f1216;
+          --fg: #f4f6f8;
+          --accent: #3b8bff;
+          --surface: #171c22;
+          --muted: #9aa3af;
+          --border: #2a323c;
+          --ok: #3dd68c;
+          --ok-soft: #163024;
+          --warn: #f0b429;
+          --danger: #f07167;
+          color: var(--fg);
+        }
+        [data-od-id="topology-page"] .canvas-theme-toggle {
+          width: 44px;
+          height: 44px;
+          display: grid;
+          place-items: center;
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          background: var(--bg);
+          color: var(--muted);
+          box-shadow: var(--shadow-soft);
+          cursor: pointer;
+          transition: background .2s var(--ease), color .2s var(--ease);
+        }
+        [data-od-id="topology-page"] .canvas-theme-toggle:hover {
+          background: var(--surface);
+          color: var(--fg);
+        }
+        [data-od-id="topology-page"] .canvas-theme-toggle .icon-moon { display: none; }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .canvas-theme-toggle .icon-sun { display: none; }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .canvas-theme-toggle .icon-moon { display: block; }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .node-card.app .node-logo {
+          filter: invert(1);
+        }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .add-menu {
+          background: var(--surface);
+          border-color: var(--border);
+          color: var(--fg);
+          box-shadow: 0 14px 32px color-mix(in oklch, #000 45%, transparent);
+        }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .menu-heading {
+          color: var(--muted);
+        }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .menu-option {
+          color: var(--fg);
+          background: transparent;
+        }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .menu-option:hover {
+          background: color-mix(in oklch, var(--fg) 10%, var(--surface));
+          color: var(--fg);
+        }
+        [data-od-id="topology-page"][data-canvas-theme="dark"] .menu-icon {
+          color: var(--muted);
+          border-color: var(--border);
+          background: var(--bg);
+        }
+      </style>
+      <h1 class="sr-only" data-od-id="topology-heading">Infrastructure topology</h1>
+      <section class="topology-shell" id="topology-shell" aria-label="Production infrastructure topology" data-od-id="topology-canvas">
+        <div class="canvas-toolbar">
+          <button class="canvas-theme-toggle" id="canvas-theme-toggle" type="button" aria-label="Switch canvas to dark mode" aria-pressed="false" data-od-id="canvas-theme-toggle">
+            <svg class="icon-sun" width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.4v1.6M10 16v1.6M2.4 10h1.6M16 10h1.6M4.6 4.6l1.1 1.1M14.3 14.3l1.1 1.1M4.6 15.4l1.1-1.1M14.3 5.7l1.1-1.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <svg class="icon-moon" width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M15.2 12.6A6.2 6.2 0 0 1 7.4 4.8 6.4 6.4 0 1 0 15.2 12.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="add-wrap">
+            <button class="primary-button" id="add-button" type="button" aria-expanded="false" aria-controls="add-menu" data-od-id="add-resource">
+              <svg width="17" height="17" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <span>Add</span>
+            </button>
+            <div class="add-menu" id="add-menu" hidden data-od-id="add-menu">
+              <div class="menu-heading">Add resource</div>
+              <button class="menu-option" type="button" data-add="postgres"><span class="menu-icon">P</span><span>Postgres</span></button>
+              <button class="menu-option" type="button" data-add="redis"><span class="menu-icon">R</span><span>Redis</span></button>
+              <button class="menu-option" type="button" data-add="service"><span class="menu-icon">S</span><span>App service</span></button>
+            </div>
+          </div>
+        </div>
+
+        <svg class="connector-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <marker id="arrowhead" viewBox="0 0 5 5" refX="4.4" refY="2.5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M0 0 5 2.5 0 5z" fill="var(--muted)"/></marker>
+            <marker id="arrowhead-accent" viewBox="0 0 5 5" refX="4.4" refY="2.5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M0 0 5 2.5 0 5z" fill="var(--accent)"/></marker>
+          </defs>
+          <path class="connector connector-app-postgres" data-connector="app-postgres" d="M42 53 V46 H42 V44" marker-end="url(#arrowhead)" />
+          <path class="connector connector-app-redis" data-connector="app-redis" d="M42 53 V46 H67 V44" marker-end="url(#arrowhead)" />
+        </svg>
+
+        <div class="canvas-world" id="canvas-world">
+          <article class="node-card postgres" tabindex="0" role="button" aria-label="Postgres resource, online" data-node="postgres" data-od-id="resource-card-postgres">
+            <div class="node-main">
+              <div class="node-title">
+                <img class="node-logo" src="data:image/svg+xml;base64,PHN2ZyBmaWxsPSIjNDE2OUUxIiByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU+UG9zdGdyZVNRTDwvdGl0bGU+PHBhdGggZD0iTTIzLjU1OTQgMTQuNzIyOGEuNTI2OS41MjY5IDAgMCAwLS4wNTYzLS4xMTkxYy0uMTM5LS4yNjMyLS40NzY4LS4zNDE4LTEuMDA3NC0uMjMyMS0xLjY1MzMuMzQxMS0yLjI5MzUuMTMxMi0yLjUyNTYtLjAxOTEgMS4zNDItMi4wNDgyIDIuNDQ1LTQuNTIyIDMuMDQxMS02LjgyOTcuMjcxNC0xLjA1MDcuNzk4Mi0zLjUyMzcuMTIyMi00LjczMTZhMS41NjQxIDEuNTY0MSAwIDAgMC0uMTUwOS0uMjM1QzIxLjY5MzEuOTA4NiAxOS44MDA3LjAyNDggMTcuNTA5OS4wMDA1Yy0xLjQ5NDctLjAxNTgtMi43NzA1LjM0NjEtMy4xMTYxLjQ3OTRhOS40NDkgOS40NDkgMCAwIDAtLjUxNTktLjA4MTYgOC4wNDQgOC4wNDQgMCAwIDAtMS4zMTE0LS4xMjc4Yy0xLjE4MjItLjAxODQtMi4yMDM4LjI2NDItMy4wNDk4Ljg0MDYtLjg1NzMtLjMyMTEtNC43ODg4LTEuNjQ1LTcuMjIxOS4wNzg4Qy45MzU5IDIuMTUyNi4zMDg2IDMuODczMy40MzAyIDYuMzA0M2MuMDQwOS44MTguNTA2OSAzLjMzNCAxLjI0MjMgNS43NDM2LjQ1OTggMS41MDY1LjkzODcgMi43MDE5IDEuNDMzNCAzLjU4Mi41NTMuOTk0MiAxLjEyNTkgMS41OTMzIDEuNzE0MyAxLjc4OTUuNDQ3NC4xNDkxIDEuMTMyNy4xNDQxIDEuODU4MS0uNzI3OS44MDEyLS45NjM1IDEuNTkwMy0xLjgyNTggMS45NDQ2LTIuMjA2OS40MzUxLjIzNTUuOTA2NC4zNjI1IDEuMzkuMzc3MmEuMDU2OS4wNTY5IDAgMCAwIC4wMDA0LjAwNDEgMTEuMDMxMiAxMS4wMzEyIDAgMCAwLS4yNDcyLjMwNTRjLS4zMzg5LjQzMDItLjQwOTQuNTE5Ny0xLjUwMDIuNzQ0My0uMzEwMi4wNjQtMS4xMzQ0LjIzMzktMS4xNDY0LjgxMTUtLjAwMjUuMTIyNC4wMzI5LjIzMDkuMDkxOS4zMjY4LjIyNjkuNDIzMS45MjE2LjYwOTcgMS4wMTUuNjMzMSAxLjMzNDUuMzMzNSAyLjUwNDQuMDkyIDMuMzcxNC0uNjc4Ny0uMDE3IDIuMjMxLjA3NzUgNC40MTc0LjM0NTQgNS4wODc0LjIyMTIuNTUyOS43NjE4IDEuOTA0NSAyLjQ2OTIgMS45MDQzLjI1MDUgMCAuNTI2My0uMDI5MS44Mjk2LS4wOTQxIDEuNzgxOS0uMzgyMSAyLjU1NTctMS4xNjk2IDIuODU1LTIuOTA1OS4xNTAzLS44NzA3LjQwMTYtMi44NzUzLjUzODgtNC4xMDEyLjAxNjktLjA3MDMuMDM1Ny0uMTIwNy4wNTctLjEzNjIuMDAwNy0uMDAwNS4wNjk3LS4wNDcxLjQyNzIuMDMwN2EuMzY3My4zNjczIDAgMCAwIC4wNDQzLjAwNjhsLjI1MzkuMDIyMy4wMTQ5LjAwMWMuODQ2OC4wMzg0IDEuOTExNC0uMTQyNiAyLjUzMTItLjQzMDguNjQzOC0uMjk4OCAxLjgwNTctMS4wMzIzIDEuNTk1MS0xLjY2OTh6TTIuMzcxIDExLjg3NjVjLS43NDM1LTIuNDM1OC0xLjE3NzktNC44ODUxLTEuMjEyMy01LjU3MTktLjEwODYtMi4xNzE0LjQxNzEtMy42ODI5IDEuNTYyMy00LjQ5MjcgMS44MzY3LTEuMjk4NiA0LjgzOTgtLjU0MDggNi4xMDgtLjEzLS4wMDMyLjAwMzItLjAwNjYuMDA2MS0uMDA5OC4wMDk0LTIuMDIzOCAyLjA0NC0xLjk3NTggNS41MzYtMS45NzA4IDUuNzQ5NS0uMDAwMi4wODIzLjAwNjYuMTk4OS4wMTYyLjM1OTMuMDM0OC41ODczLjA5OTYgMS42ODA0LS4wNzM1IDIuOTE4NC0uMTYwOSAxLjE1MDQuMTkzNyAyLjI3NjQuOTcyOCAzLjA4OTIuMDgwNi4wODQxLjE2NDguMTYzMS4yNTE4LjIzNzQtLjM0NjguMzcxNC0xLjEwMDQgMS4xOTI2LTEuOTAyNSAyLjE1NzYtLjU2NzcuNjgyNS0uOTU5Ny41NTE3LTEuMDg4Ni41MDg3LS4zOTE5LS4xMzA3LS44MTMtLjU4NzEtMS4yMzgxLTEuMzIyMy0uNDc5Ni0uODM5LS45NjM1LTIuMDMxNy0xLjQxNTUtMy41MTI2em02LjAwNzIgNS4wODcxYy0uMTcxMS0uMDQyOC0uMzI3MS0uMTEzMi0uNDMyMi0uMTc3Mi4wODg5LS4wMzk0LjIzNzQtLjA5MDIuNDgzMy0uMTQwOSAxLjI4MzMtLjI2NDEgMS40ODE1LS40NTA2IDEuOTE0My0xLjAwMDIuMDk5Mi0uMTI2LjIxMTYtLjI2ODcuMzY3My0uNDQyNmEuMzU0OS4zNTQ5IDAgMCAwIC4wNzM3LS4xMjk4Yy4xNzA4LS4xNTEzLjI3MjQtLjEwOTkuNDM2OS0uMDQxNy4xNTYuMDY0Ni4zMDc4LjI2LjM2OTUuNDc1Mi4wMjkxLjEwMTYuMDYxOS4yOTQ1LS4wNDUyLjQ0NDQtLjkwNDMgMS4yNjU4LTIuMjIxNiAxLjI0OTQtMy4xNjc2IDEuMDEyOHptMi4wOTQtMy45ODgtLjA1MjUuMTQxYy0uMTMzLjM1NjYtLjI1NjcuNjg4MS0uMzMzNCAxLjAwMy0uNjY3NC0uMDAyMS0xLjMxNjgtLjI4NzItMS44MTA1LS44MDI0LS42Mjc5LS42NTUxLS45MTMxLTEuNTY2NC0uNzgyNS0yLjUwMDQuMTgyOC0xLjMwNzkuMTE1My0yLjQ0NjguMDc5LTMuMDU4Ni0uMDA1LS4wODU3LS4wMDk1LS4xNjA3LS4wMTIyLS4yMTk5LjI5NTctLjI2MjEgMS42NjU5LS45OTYyIDIuNjQyOS0uNzcyNC40NDU5LjEwMjIuNzE3Ni40MDU3LjgzMDUuOTI4LjU4NDYgMi43MDM4LjA3NzQgMy44MzA3LS4zMzAyIDQuNzM2My0uMDg0LjE4NjYtLjE2MzMuMzYyOS0uMjMxMS41NDU0em03LjM2MzcgNC41NzI1Yy0uMDE2OS4xNzY4LS4wMzU4LjM3Ni0uMDYxOC41OTU5bC0uMTQ2LjQzODNhLjM1NDcuMzU0NyAwIDAgMC0uMDE4Mi4xMDc3Yy0uMDA1OS40NzQ3LS4wNTQuNjQ4OS0uMTE1Ljg2OTMtLjA2MzQuMjI5Mi0uMTM1My40ODkxLS4xNzk0IDEuMDU3NS0uMTEgMS40MTQzLS44NzgyIDIuMjI2Ny0yLjQxNzIgMi41NTY1LTEuNTE1NS4zMjUxLTEuNzg0My0uNDk2OC0yLjAyMTItMS4yMjE3YTYuNTgyNCA2LjU4MjQgMCAwIDAtLjA3NjktLjIyNjZjLS4yMTU0LS41ODU4LS4xOTExLTEuNDExOS0uMTU3NC0yLjU1NTEuMDE2NS0uNTYxMi0uMDI0OS0xLjkwMTMtLjMzMDItMi42NDYyLjAwNDQtLjI5MzIuMDEwNi0uNTkwOS4wMTktLjg5MThhLjM1MjkuMzUyOSAwIDAgMC0uMDE1My0uMTEyNiAxLjQ5MjcgMS40OTI3IDAgMCAwLS4wNDM5LS4yMDhjLS4xMjI2LS40MjgzLS40MjEzLS43ODY2LS43Nzk3LS45MzUxLS4xNDI0LS4wNTktLjQwMzgtLjE2NzItLjcxNzgtLjA4NjkuMDY3LS4yNzYuMTgzMS0uNTg3NS4zMDktLjkyNDlsLjA1MjktLjE0MmMuMDU5NS0uMTYuMTM0LS4zMjU3LjIxMy0uNTAxMi40MjY1LS45NDc2IDEuMDEwNi0yLjI0NTMuMzc2Ni01LjE3NzItLjIzNzQtMS4wOTgxLTEuMDMwNC0xLjYzNDMtMi4yMzI0LTEuNTA5OC0uNzIwNy4wNzQ2LTEuMzc5OS4zNjU0LTEuNzA4OC41MzIxYTUuNjcxNiA1LjY3MTYgMCAwIDAtLjE5NTguMTA0MWMuMDkxOC0xLjEwNjQuNDM4Ni0zLjE3NDEgMS43MzU3LTQuNDgyM2E0LjAzMDYgNC4wMzA2IDAgMCAxIC4zMDMzLS4yNzYuMzUzMi4zNTMyIDAgMCAwIC4xNDQ3LS4wNjQ0Yy43NTI0LS41NzA2IDEuNjk0NS0uODUwNiAyLjgwMi0uODMyNS40MDkxLjAwNjcuODAxNy4wMzM5IDEuMTc0Mi4wODEgMS45MzkuMzU0NCAzLjI0MzkgMS40NDY4IDQuMDM1OSAyLjM4MjcuODE0My45NjIzIDEuMjU1MiAxLjkzMTUgMS40MzEyIDIuNDU0My0xLjMyMzItLjEzNDYtMi4yMjM0LjEyNjgtMi42Nzk3Ljc3OS0uOTkyNiAxLjQxODkuNTQzIDQuMTcyOSAxLjI4MTEgNS40OTY0LjEzNTMuMjQyNi4yNTIyLjQ1MjIuMjg4OS41NDEzLjI0MDMuNTgyNS41NTE1Ljk3MTMuNzc4NyAxLjI1NTIuMDY5Ni4wODcuMTM3Mi4xNzE0LjE4ODUuMjQ1LS40MDA4LjExNTUtMS4xMjA4LjM4MjUtMS4wNTUyIDEuNzE3LS4wMTIzLjE1NjMtLjA0MjMuNDQ2OS0uMDgzNC44MTQ4LS4wNDYxLjIwNzctLjA3MDIuNDYwMy0uMDk5NC43NjYyem0uODkwNS0xLjYyMTFjLS4wNDA1LS44MzE2LjI2OTEtLjkxODUuNTk2Ny0xLjAxMDVhMi44NTY2IDIuODU2NiAwIDAgMCAuMTM1LS4wNDA2IDEuMjAyIDEuMjAyIDAgMCAwIC4xMzQyLjEwM2MuNTcwMy4zNzY1IDEuNTgyMy40MjEzIDMuMDA2OC4xMzQ0LS4yMDE2LjE3NjktLjUxODkuMzk5NC0uOTUzMy42MDExLS40MDk4LjE5MDMtMS4wOTU3LjMzMy0xLjc0NzMuMzYzNi0uNzE5Ny4wMzM2LTEuMDg1OS0uMDgwNy0xLjE3MjEtLjE1MXptLjU2OTUtOS4yNzEyYy0uMDA1OS4zNTA4LS4wNTQyLjY2OTItLjEwNTQgMS4wMDE3LS4wNTUuMzU3Ni0uMTEyLjcyNzQtLjEyNjQgMS4xNzYyLS4wMTQyLjQzNjguMDQwNC44OTA5LjA5MzIgMS4zMzAxLjEwNjYuODg3LjIxNiAxLjgwMDMtLjIwNzUgMi43MDE0YTMuNTI3MiAzLjUyNzIgMCAwIDEtLjE4NzYtLjM4NTZjLS4wNTI3LS4xMjc2LS4xNjY5LS4zMzI2LS4zMjUxLS42MTYyLS42MTU2LTEuMTA0MS0yLjA1NzQtMy42ODk2LTEuMzE5My00Ljc0NDYuMzc5NS0uNTQyNyAxLjM0MDgtLjU2NjEgMi4xNzgxLS40NjN6bS4yMjg0IDcuMDEzN2ExMi4zNzYyIDEyLjM3NjIgMCAwIDAtLjA4NTMtLjEwNzRsLS4wMzU1LS4wNDQ0Yy43MjYyLTEuMTk5NS41ODQyLTIuMzg2Mi40NTc4LTMuNDM4NS0uMDUxOS0uNDMxOC0uMTAwOS0uODM5Ni0uMDg4NS0xLjIyMjYuMDEyOS0uNDA2MS4wNjY2LS43NTQzLjExODUtMS4wOTExLjA2MzktLjQxNS4xMjg4LS44NDQzLjExMDktMS4zNTA1LjAxMzQtLjA1MzEuMDE4OC0uMTE1OC4wMTE4LS4xOTAyLS4wNDU3LS40ODU1LS41OTk5LTEuOTM4LTEuNzI5NC0zLjI1My0uNjA3Ni0uNzA3My0xLjQ4OTYtMS40OTcyLTIuNjg4OS0yLjAzOTUuNTI1MS0uMTA2NiAxLjIzMjgtLjIwMzUgMi4wMjQ0LS4xODU5IDIuMDUxNS4wNDU2IDMuNjc0Ni44MTM1IDQuODI0MiAyLjI4MjRhLjkwOC45MDggMCAwIDEgLjA2NjcuMTAwMmMuNzIzMSAxLjM1NTYtLjI3NjIgNi4yNzUxLTIuOTg2NyAxMC41NDA1em0tOC44MTY2LTYuMTE2MmMtLjAyNS4xNzk0LS4zMDg5LjQyMjUtLjYyMTEuNDIyNWEuNTgyMS41ODIxIDAgMCAxLS4wODA5LS4wMDU2Yy0uMTg3My0uMDI2LS4zNzY1LS4xNDQtLjUwNTktLjMxNTYtLjA0NTgtLjA2MDUtLjEyMDMtLjE3OC0uMTA1NS0uMjg0NC4wMDU1LS4wNDAxLjAyNjEtLjA5ODUuMDkyNS0uMTQ4OC4xMTgyLS4wODk0LjM1MTgtLjEyMjYuNjA5Ni0uMDg2Ny4zMTYzLjA0NDEuNjQyNi4xOTM4LjYxMTMuNDE4NnptNy45MzA1LS40MTE0Yy4wMTExLjA3OTItLjA0OS4yMDEtLjE1MzEuMzEwMi0uMDY4My4wNzE3LS4yMTIuMTk2MS0uNDA3OS4yMjMyYS41NDU2LjU0NTYgMCAwIDEtLjA3NS4wMDUyYy0uMjkzNSAwLS41NDE0LS4yMzQ0LS41NjA3LS4zNzE3LS4wMjQtLjE3NjUuMjY0MS0uMzEwNi41NjExLS4zNTIuMjk3LS4wNDE0LjYxMTEuMDA4OC42MzU2LjE4NTF6Ii8+PC9zdmc+" width="28" height="28" alt="PostgreSQL" />
+                <div><h2 class="node-heading" data-od-id="resource-heading-postgres">Postgres</h2></div>
+              </div>
+              <div class="node-status"><span class="status-dot" aria-hidden="true"></span><span>Online</span></div>
+            </div>
+            <div class="node-footer">
+              <svg class="storage-icon" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4.5 8.5h13l1.5 3v5h-16v-5zM4.5 8.5 6.2 5h9.6l1.7 3.5M4 13.5h14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round"/></svg>
+              <span>postgres-volume</span>
+            </div>
+          </article>
+
+          <article class="node-card redis" tabindex="0" role="button" aria-label="Redis resource, online" data-node="redis" data-od-id="resource-card-redis">
+            <div class="node-main">
+              <div class="node-title">
+                <img class="node-logo" src="data:image/svg+xml;base64,PHN2ZyBmaWxsPSIjREMzODJEIiByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU+UmVkaXM8L3RpdGxlPjxwYXRoIGQ9Ik0yMi43MSAxMy4xNDVjLTEuNjYgMi4wOTItMy40NTIgNC40ODMtNy4wMzggNC40ODMtMy4yMDMgMC00LjM5Ny0yLjgyNS00LjQ4LTUuMTIuNzAxIDEuNDg0IDIuMDczIDIuNjg1IDQuMjE0IDIuNjMgNC4xMTctLjEzMyA2Ljk0LTMuODUyIDYuOTQtNy4yMzkgMC00LjA1LTMuMDIyLTYuOTcyLTguMjY4LTYuOTcyLTMuNzUyIDAtOC40IDEuNDI4LTExLjQ1NSAzLjY4NUMyLjU5IDYuOTM3IDMuODg1IDkuOTU4IDQuMzUgOS42MjZjMi42NDgtMS45MDQgNC43NDgtMy4xMyA2Ljc4NC0zLjc0NEM4LjEyIDkuMjQ0Ljg4NiAxNy4wNSAwIDE4LjQyNWMuMSAxLjI2MSAxLjY2IDQuNjQ4IDIuNDI0IDQuNjQ4LjIzMiAwIC40MzEtLjEzMy42NjQtLjM2NWExMDAuNDkgMTAwLjQ5IDAgMCAwIDUuNTQtNi43NjVjLjIyMiAzLjEwNCAxLjc0OCA2Ljg5OCA2LjAxNCA2Ljg5OCAzLjgxOSAwIDcuNjA0LTIuNzU2IDkuMzMtOC45NjUuMi0uNzY0LS43My0xLjM2MS0xLjI2MS0uNzN6bS00LjM0OS01LjAxM2MwIDEuOTU5LTEuOTI2IDIuOTIyLTMuNjg1IDIuOTIyLS45NDEgMC0xLjY2NC0uMjQ3LTIuMjM1LS41NjggMS4wNTEtMS41OTIgMi4wOTItMy4yMjUgMy4yMS00Ljk3MyAxLjk3Mi4zMzQgMi43MSAxLjQzIDIuNzEgMi42MTl6Ii8+PC9zdmc+" width="28" height="28" alt="Redis" />
+                <div><h2 class="node-heading" data-od-id="resource-heading-redis">Redis</h2></div>
+              </div>
+              <div class="node-status"><span class="status-dot" aria-hidden="true"></span><span>Online</span></div>
+            </div>
+            <div class="node-footer">
+              <svg class="storage-icon" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4.5 8.5h13l1.5 3v5h-16v-5zM4.5 8.5 6.2 5h9.6l1.7 3.5M4 13.5h14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round"/></svg>
+              <span>redis-volume</span>
+            </div>
+          </article>
+
+          <article class="node-card app" tabindex="0" role="button" aria-label="knotree-study application, online" data-node="app" data-od-id="resource-card-app">
+            <div class="node-main">
+              <div class="node-title">
+                <img class="node-logo" src="data:image/svg+xml;base64,PHN2ZyBmaWxsPSIjMTExMTExIiByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU+R2l0SHViPC90aXRsZT48cGF0aCBkPSJNMTIgLjI5N2MtNi42MyAwLTEyIDUuMzczLTEyIDEyIDAgNS4zMDMgMy40MzggOS44IDguMjA1IDExLjM4NS42LjExMy44Mi0uMjU4LjgyLS41NzcgMC0uMjg1LS4wMS0xLjA0LS4wMTUtMi4wNC0zLjMzOC43MjQtNC4wNDItMS42MS00LjA0Mi0xLjYxQzQuNDIyIDE4LjA3IDMuNjMzIDE3LjcgMy42MzMgMTcuN2MtMS4wODctLjc0NC4wODQtLjcyOS4wODQtLjcyOSAxLjIwNS4wODQgMS44MzggMS4yMzYgMS44MzggMS4yMzYgMS4wNyAxLjgzNSAyLjgwOSAxLjMwNSAzLjQ5NS45OTguMTA4LS43NzYuNDE3LTEuMzA1Ljc2LTEuNjA1LTIuNjY1LS4zLTUuNDY2LTEuMzMyLTUuNDY2LTUuOTMgMC0xLjMxLjQ2NS0yLjM4IDEuMjM1LTMuMjItLjEzNS0uMzAzLS41NC0xLjUyMy4xMDUtMy4xNzYgMCAwIDEuMDA1LS4zMjIgMy4zIDEuMjMuOTYtLjI2NyAxLjk4LS4zOTkgMy0uNDA1IDEuMDIuMDA2IDIuMDQuMTM4IDMgLjQwNSAyLjI4LTEuNTUyIDMuMjg1LTEuMjMgMy4yODUtMS4yMy42NDUgMS42NTMuMjQgMi44NzMuMTIgMy4xNzYuNzY1Ljg0IDEuMjMgMS45MSAxLjIzIDMuMjIgMCA0LjYxLTIuODA1IDUuNjI1LTUuNDc1IDUuOTIuNDIuMzYuODEgMS4wOTYuODEgMi4yMiAwIDEuNjA2LS4wMTUgMi44OTYtLjAxNSAzLjI4NiAwIC4zMTUuMjEuNjkuODI1LjU3QzIwLjU2NSAyMi4wOTIgMjQgMTcuNTkyIDI0IDEyLjI5N2MwLTYuNjI3LTUuMzczLTEyLTEyLTEyIi8+PC9zdmc+" width="28" height="28" alt="GitHub" />
+                <div>
+                  <h2 class="node-heading" data-od-id="resource-heading-app">knotree-study</h2>
+                  <p class="node-subtitle">lnsapi.knotree.com</p>
+                </div>
+              </div>
+              <div class="node-status"><span class="status-dot" aria-hidden="true"></span><span>Online</span></div>
+            </div>
+            <div class="node-footer">
+              <svg class="storage-icon" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4.5 8.5h13l1.5 3v5h-16v-5zM4.5 8.5 6.2 5h9.6l1.7 3.5M4 13.5h14" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" stroke-linecap="round"/></svg>
+              <span>knotree-study-volume</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="selection-hint" aria-hidden="true"><kbd>Click</kbd> a resource to inspect</div>
+        <div class="zoom-dock" data-od-id="canvas-controls">
+          <div class="zoom-group">
+            <button class="zoom-button" id="zoom-in" type="button" aria-label="Zoom in" data-od-id="zoom-in"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            <button class="zoom-button" id="zoom-out" type="button" aria-label="Zoom out" data-od-id="zoom-out"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          </div>
+          <div class="history-group">
+            <button class="zoom-button" id="fit-view" type="button" aria-label="Fit topology to view" data-od-id="fit-view"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4M13 3h4v4M3 13v4h4M17 13v4h-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="zoom-button" id="undo-view" type="button" aria-label="Undo view change" data-od-id="undo-view"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 7H3.5l3-3M3.7 7.2a6.8 6.8 0 1 1 1.1 7.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="zoom-button" id="redo-view" type="button" aria-label="Redo view change" data-od-id="redo-view"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="M13.5 7h3l-3-3M16.3 7.2a6.8 6.8 0 1 0-1.1 7.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+          <button class="layers-button" id="layers-button" type="button" aria-label="Toggle layer guidance" aria-pressed="false" data-od-id="layers-toggle"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><path d="m10 3 7 3.8-7 3.8-7-3.8zM3 10.1l7 3.8 7-3.8M3 13.4l7 3.8 7-3.8" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg></button>
+          <span class="zoom-readout" id="zoom-readout">100%</span>
+        </div>
+
+      </section>
+      <script>
+        (function () {
+          var page = document.querySelector('[data-od-id="topology-page"]');
+          var button = document.getElementById('canvas-theme-toggle');
+          var key = 'product-topology-canvas-theme';
+          function applyCanvasTheme(theme) {
+            var next = theme === 'dark' ? 'dark' : 'light';
+            page.setAttribute('data-canvas-theme', next);
+            var overlay = document.getElementById('resource-overlay');
+            if (overlay) overlay.setAttribute('data-canvas-theme', next);
+            try { localStorage.setItem(key, next); } catch (e) {}
+            if (button) {
+              button.setAttribute('aria-pressed', String(next === 'dark'));
+              button.setAttribute('aria-label', next === 'dark' ? 'Switch canvas to light mode' : 'Switch canvas to dark mode');
+            }
+          }
+          var stored = 'light';
+          try { stored = localStorage.getItem(key) || 'light'; } catch (e) {}
+          applyCanvasTheme(stored);
+          if (button) {
+            button.addEventListener('click', function (event) {
+              event.stopPropagation();
+              applyCanvasTheme(page.getAttribute('data-canvas-theme') === 'dark' ? 'light' : 'dark');
+            });
+          }
+        })();
+      </script>
+    </main>
+
+    <main class="main" id="logs-page" data-od-id="logs-page" hidden>
+      <style>
+        [data-od-id="logs-page"][hidden],
+        [data-od-id="topology-page"][hidden] { display: none !important; }
+        [data-od-id="logs-page"] {
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+        }
+        [data-od-id="logs-page"] .logs-shell {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 0;
+          overflow: hidden;
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          background: var(--bg);
+        }
+        [data-od-id="logs-page"] .logs-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px;
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: var(--surface);
+        }
+        [data-od-id="logs-page"] .logs-title {
+          margin: 0 auto 0 0;
+          font-size: 16px;
+          font-weight: 700;
+          letter-spacing: -.02em;
+        }
+        [data-od-id="logs-page"] .logs-toolbar select,
+        [data-od-id="logs-page"] .logs-toolbar input[type="search"] {
+          min-height: 36px;
+          padding: 0 10px;
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          background: var(--bg);
+          color: var(--fg);
+        }
+        [data-od-id="logs-page"] .logs-toolbar input[type="search"] { width: 220px; }
+        [data-od-id="logs-page"] .logs-live {
+          min-height: 36px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 0 12px;
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          background: var(--bg);
+          color: var(--fg);
+          cursor: pointer;
+        }
+        [data-od-id="logs-page"] .logs-live[aria-pressed="true"] {
+          border-color: color-mix(in oklch, var(--ok) 40%, var(--border));
+          background: var(--ok-soft);
+        }
+        [data-od-id="logs-page"] .logs-stream {
+          flex: 1;
+          min-height: 0;
+          overflow: auto;
+          margin: 0;
+          padding: 12px 16px 20px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+          font-size: 12.5px;
+          line-height: 1.7;
+          background: var(--bg);
+        }
+        [data-od-id="logs-page"] .log-line { display: grid; grid-template-columns: 168px 56px 120px 1fr; gap: 12px; }
+        [data-od-id="logs-page"] .log-time { color: var(--muted); }
+        [data-od-id="logs-page"] .log-level { font-weight: 700; }
+        [data-od-id="logs-page"] .log-level.info { color: var(--accent); }
+        [data-od-id="logs-page"] .log-level.warn { color: var(--warn); }
+        [data-od-id="logs-page"] .log-level.error { color: var(--danger); }
+        [data-od-id="logs-page"] .log-service { color: var(--muted); }
+        [data-od-id="logs-page"] .log-msg { color: var(--fg); word-break: break-word; }
+        [data-od-id="logs-page"] .logs-empty { color: var(--muted); padding: 24px 4px; }
+        @media (max-width: 760px) {
+          [data-od-id="logs-page"] .log-line { grid-template-columns: 1fr; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+        }
+      </style>
+      <section class="logs-shell" aria-label="Workspace logs" data-od-id="logs-workspace">
+        <div class="logs-toolbar">
+          <h1 class="logs-title" data-od-id="logs-heading">Logs</h1>
+          <label class="sr-only" for="logs-resource">Resource</label>
+          <select id="logs-resource" data-od-id="logs-resource-filter">
+            <option value="all">All resources</option>
+            <option value="postgres">Postgres</option>
+            <option value="redis">Redis</option>
+            <option value="app">knotree-study</option>
+          </select>
+          <label class="sr-only" for="logs-search">Search logs</label>
+          <input id="logs-search" type="search" placeholder="Filter messages…" data-od-id="logs-search" />
+          <button class="logs-live" type="button" id="logs-live" aria-pressed="true" data-od-id="logs-live">
+            <span class="live-dot" aria-hidden="true"></span>
+            Live
+          </button>
+        </div>
+        <div class="logs-stream" id="logs-stream" data-od-id="logs-stream" role="log" aria-live="polite"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="resource-overlay" id="resource-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="resource-title" data-od-id="resource-workspace" data-canvas-theme="light">
+    <style>
+      .resource-overlay[data-canvas-theme="dark"] {
+        --bg: #0f1216;
+        --fg: #f4f6f8;
+        --accent: #3b8bff;
+        --surface: #171c22;
+        --muted: #9aa3af;
+        --border: #2a323c;
+        --ok: #3dd68c;
+        --ok-soft: #163024;
+        --warn: #f0b429;
+        --danger: #f07167;
+        color: var(--fg);
+      }
+      .resource-overlay[data-canvas-theme="dark"] #deploy-image,
+      .resource-overlay[data-canvas-theme="dark"] .deploy-card strong {
+        color: var(--fg);
+      }
+    </style>
+    <div class="resource-sheet">
+      <div class="resource-head">
+        <div class="resource-identity">
+          <img id="resource-logo" alt="" width="32" height="32" />
+          <h2 id="resource-title">Postgres</h2>
+        </div>
+        <button class="close-button" id="close-resource" type="button" aria-label="Close resource workspace"><svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+      </div>
+      <div class="resource-tabs" role="tablist" aria-label="Resource sections">
+        <button class="resource-tab" type="button" role="tab" id="tab-deployments" aria-controls="pane-deployments" aria-selected="true" data-tab="deployments">Deployments</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-database" aria-controls="pane-database" aria-selected="false" data-tab="database">Database</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-backups" aria-controls="pane-backups" aria-selected="false" data-tab="backups">Backups</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-variables" aria-controls="pane-variables" aria-selected="false" data-tab="variables">Variables</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-metrics" aria-controls="pane-metrics" aria-selected="false" data-tab="metrics">Metrics</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-console" aria-controls="pane-console" aria-selected="false" data-tab="console">Console</button>
+        <button class="resource-tab" type="button" role="tab" id="tab-settings" aria-controls="pane-settings" aria-selected="false" data-tab="settings">Settings</button>
+      </div>
+      <div class="resource-body">
+        <section class="resource-pane" id="pane-deployments" role="tabpanel" data-pane="deployments">
+          <div class="banner">
+            <p>This service was migrated from US West to Southeast Asia</p>
+            <div class="banner-actions">
+              <button class="ghost-link" type="button" id="migration-wrong">Something's wrong</button>
+              <button class="solid-button" type="button" id="migration-ok">Looks good</button>
+            </div>
+          </div>
+          <div class="meta-row">
+            <span>Unexposed service</span>
+            <span>Southeast Asia · 1 replica</span>
+          </div>
+          <article class="deploy-card active">
+            <div class="deploy-top">
+              <div style="display:flex;gap:12px;align-items:center;min-width:0">
+                <span class="status-pill active">ACTIVE</span>
+                <div>
+                  <strong id="deploy-image">ghcr.io/knotree-templates/postgres-ssl:18</strong>
+                  <div class="muted" style="color:var(--muted);font-size:13px">9 hours ago via Docker</div>
+                </div>
+              </div>
+              <button class="outline-button accent" type="button" id="view-logs">View logs</button>
+            </div>
+            <div class="deploy-bottom">Deployment successful</div>
+          </article>
+          <div class="history-head"><span>HISTORY</span><button class="ghost-link" type="button" id="toggle-skipped">Hide skipped</button></div>
+          <article class="history-card" id="skipped-history">
+            <div style="display:flex;gap:12px;align-items:center">
+              <span class="status-pill removed">REMOVED</span>
+              <div>
+                <strong>ghcr.io/railwayapp-templates/postgres-ssl:18</strong>
+                <div style="color:var(--muted);font-size:13px">9 hours ago via Docker</div>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section class="resource-pane" id="pane-database" role="tabpanel" hidden data-pane="database">
+          <div class="sub-tabs" role="tablist" aria-label="Database views">
+            <button class="sub-tab" type="button" aria-selected="true" data-dbview="data">Data</button>
+            <button class="sub-tab" type="button" aria-selected="false" data-dbview="stats">Stats</button>
+            <button class="sub-tab" type="button" aria-selected="false" data-dbview="config">Config</button>
+            <span style="margin-left:auto"><button class="ghost-link" type="button" id="connect-db">Connect</button></span>
+          </div>
+          <div id="db-data">
+            <div class="table-toolbar">
+              <div class="search-field">
+                <strong>Tables</strong>
+                <label class="sr-only" for="table-search">Search tables</label>
+                <input id="table-search" type="search" placeholder="Search tables" />
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="icon-chip" type="button" id="refresh-tables" aria-label="Refresh tables">↻</button>
+                <button class="outline-button accent" type="button" id="new-table">+ New Table</button>
+              </div>
+            </div>
+            <input class="sql-bar" id="sql-bar" value="SELECT * FROM goose_db_version" aria-label="SQL query" />
+            <div class="table-grid" id="table-grid"></div>
+          </div>
+          <div id="db-stats" hidden class="empty-state"><h3>Stats</h3><p>Connections, cache hit ratio, and table sizes appear after the next scrape.</p></div>
+          <div id="db-config" hidden class="empty-state"><h3>Config</h3><p>shared_buffers 256MB · max_connections 100 · timezone UTC</p></div>
+        </section>
+
+        <section class="resource-pane" id="pane-backups" role="tabpanel" hidden data-pane="backups">
+          <div class="hint-banner">
+            <p>Backups and point-in-time recovery (PITR) are only available for customers on the Pro plan.</p>
+            <button class="ghost-link" type="button" id="backup-info">More information</button>
+          </div>
+          <div class="empty-state">
+            <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 8v4l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <h3>No Backups</h3>
+            <p>This service's volume does not have any backups.</p>
+          </div>
+        </section>
+
+        <section class="resource-pane" id="pane-variables" role="tabpanel" hidden data-pane="variables">
+          <div class="toolbar-row">
+            <div class="search-field">
+              <strong id="var-count">12 Service Variables</strong>
+              <label class="sr-only" for="var-search">Search variables</label>
+              <input id="var-search" type="search" placeholder="Search variables" />
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;position:relative" data-od-id="shared-var-wrap">
+              <button class="ghost-link" type="button" id="shared-var" aria-haspopup="dialog" aria-expanded="false" aria-controls="shared-var-picker">Shared Variable</button>
+              <button class="ghost-link" type="button" id="raw-editor" aria-haspopup="dialog" aria-expanded="false" aria-controls="raw-editor-panel">Raw Editor</button>
+              <button class="outline-button accent" type="button" id="new-var">+ New Variable</button>
+              <div class="raw-editor-panel" id="raw-editor-panel" hidden role="dialog" aria-labelledby="raw-editor-title" data-od-id="raw-editor-panel">
+                <style>
+                  #raw-editor-panel {
+                    position: absolute;
+                    top: calc(100% + 8px);
+                    right: 0;
+                    z-index: 12;
+                    width: min(520px, calc(100vw - 80px));
+                    padding: 14px;
+                    border: 1px solid var(--border);
+                    border-radius: var(--radius);
+                    background: var(--bg);
+                    box-shadow: var(--shadow);
+                  }
+                  #raw-editor-panel[hidden] { display: none !important; }
+                  #raw-editor-panel .raw-editor-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                    margin-bottom: 10px;
+                  }
+                  #raw-editor-panel .raw-editor-head h3 {
+                    margin: 0;
+                    font-size: 15px;
+                    letter-spacing: -.02em;
+                  }
+                  #raw-editor-panel .raw-editor-head p {
+                    margin: 2px 0 0;
+                    color: var(--muted);
+                    font-size: 12px;
+                  }
+                  #raw-editor-panel textarea {
+                    width: 100%;
+                    min-height: 240px;
+                    margin: 0 0 10px;
+                    padding: 10px;
+                    border: 1px solid var(--border);
+                    border-radius: var(--radius);
+                    background: var(--surface);
+                    color: var(--fg);
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                    font-size: 12px;
+                    line-height: 1.6;
+                    resize: vertical;
+                  }
+                  #raw-editor-panel .raw-editor-actions {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 8px;
+                  }
+                </style>
+                <div class="raw-editor-head">
+                  <div>
+                    <h3 id="raw-editor-title">Raw variable editor</h3>
+                    <p>One KEY=value pair per line. Empty keys are ignored.</p>
+                  </div>
+                  <button class="close-button" type="button" id="close-raw-editor" aria-label="Close raw editor">×</button>
+                </div>
+                <label class="sr-only" for="raw-editor-text">Service variables as KEY=value lines</label>
+                <textarea id="raw-editor-text" spellcheck="false"></textarea>
+                <div class="raw-editor-actions">
+                  <button class="ghost-link" type="button" id="cancel-raw-editor">Cancel</button>
+                  <button class="outline-button accent" type="button" id="save-raw-editor">Save</button>
+                </div>
+              </div>
+              <div class="shared-var-picker" id="shared-var-picker" hidden role="dialog" aria-labelledby="shared-var-title" data-od-id="shared-var-picker">
+                <style>
+                  #shared-var-picker {
+                    position: absolute;
+                    top: calc(100% + 8px);
+                    right: 0;
+                    z-index: 12;
+                    width: min(420px, calc(100vw - 80px));
+                    padding: 14px;
+                    border: 1px solid var(--border);
+                    border-radius: var(--radius);
+                    background: var(--bg);
+                    box-shadow: var(--shadow);
+                  }
+                  #shared-var-picker[hidden] { display: none !important; }
+                  #shared-var-picker .shared-var-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                    margin-bottom: 10px;
+                  }
+                  #shared-var-picker .shared-var-head h3 {
+                    margin: 0;
+                    font-size: 15px;
+                    letter-spacing: -.02em;
+                  }
+                  #shared-var-picker .shared-var-head p {
+                    margin: 2px 0 0;
+                    color: var(--muted);
+                    font-size: 12px;
+                  }
+                  #shared-var-picker input[type="search"] {
+                    width: 100%;
+                    min-height: 36px;
+                    margin-bottom: 10px;
+                    padding: 0 10px;
+                    border: 1px solid var(--border);
+                    border-radius: var(--radius);
+                    background: var(--surface);
+                    color: var(--fg);
+                  }
+                  #shared-var-picker .shared-var-list {
+                    max-height: 280px;
+                    overflow: auto;
+                    margin: 0;
+                    padding: 0;
+                    list-style: none;
+                    display: grid;
+                    gap: 6px;
+                  }
+                  #shared-var-picker .shared-var-item {
+                    width: 100%;
+                    display: grid;
+                    grid-template-columns: 1fr auto;
+                    gap: 8px;
+                    align-items: center;
+                    min-height: 44px;
+                    padding: 8px 10px;
+                    border: 1px solid var(--border);
+                    border-radius: var(--radius);
+                    background: var(--surface);
+                    text-align: left;
+                    cursor: pointer;
+                  }
+                  #shared-var-picker .shared-var-item:hover,
+                  #shared-var-picker .shared-var-item:focus-visible {
+                    border-color: var(--accent);
+                    background: var(--accent-soft);
+                  }
+                  #shared-var-picker .shared-var-item code {
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                    font-size: 12px;
+                  }
+                  #shared-var-picker .shared-var-item small { color: var(--muted); }
+                  #shared-var-picker .shared-var-empty { color: var(--muted); padding: 12px 4px; }
+                </style>
+                <div class="shared-var-head">
+                  <div>
+                    <h3 id="shared-var-title">Add shared variable</h3>
+                    <p>Reference a value from another service in this workspace.</p>
+                  </div>
+                  <button class="close-button" type="button" id="close-shared-var" aria-label="Close shared variable picker">×</button>
+                </div>
+                <label class="sr-only" for="shared-var-search">Search shared variables</label>
+                <input id="shared-var-search" type="search" placeholder="Search services or keys…" />
+                <ul class="shared-var-list" id="shared-var-list"></ul>
+              </div>
+            </div>
+          </div>
+          <div class="hint-banner" id="var-hint">
+            <p>Trying to connect this database to a service? Add a Variable Reference</p>
+            <button class="close-button" type="button" id="dismiss-var-hint" aria-label="Dismiss hint">×</button>
+          </div>
+          <ul class="var-list" id="var-list"></ul>
+        </section>
+
+        <section class="resource-pane" id="pane-metrics" role="tabpanel" hidden data-pane="metrics">
+          <style>
+            #pane-metrics #metrics-range-from {
+              display: block;
+              width: 100%;
+              min-height: 36px;
+              margin-top: 6px;
+              padding: 0 12px;
+              border: 1px solid var(--border);
+              border-radius: 8px;
+              background: var(--surface);
+              color: var(--fg);
+              font-variant-numeric: tabular-nums;
+              letter-spacing: 0.01em;
+            }
+            #pane-metrics #metrics-range-from:hover {
+              border-color: color-mix(in oklch, var(--accent) 32%, var(--border));
+            }
+            #pane-metrics #metrics-range-from:focus {
+              outline: none;
+              border-color: var(--accent);
+              background: var(--bg);
+              box-shadow: 0 0 0 3px var(--accent-soft);
+            }
+            #pane-metrics .range-popover > label:nth-of-type(2) {
+              display: block;
+              margin-top: 10px;
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 600;
+              letter-spacing: 0.04em;
+              text-transform: uppercase;
+            }
+            #pane-metrics #metrics-range-until {
+              display: block;
+              width: 100%;
+              min-height: 36px;
+              margin-top: 6px;
+              padding: 0 12px;
+              border: 1px solid var(--border);
+              border-radius: 8px;
+              background: var(--surface);
+              color: var(--fg);
+              font-variant-numeric: tabular-nums;
+              letter-spacing: 0.01em;
+            }
+            #pane-metrics #metrics-range-until:hover {
+              border-color: color-mix(in oklch, var(--accent) 32%, var(--border));
+            }
+            #pane-metrics #metrics-range-until:focus {
+              outline: none;
+              border-color: var(--accent);
+              background: var(--bg);
+              box-shadow: 0 0 0 3px var(--accent-soft);
+            }
+            #pane-metrics #metric-card-volume .metric-legend {
+              color: var(--muted);
+              font-size: 12px;
+            }
+            #pane-metrics .metric-card:nth-of-type(1) {
+              position: relative;
+            }
+            #pane-metrics #cpu-chart-tip {
+              position: absolute;
+              z-index: 3;
+              min-width: 148px;
+              padding: 8px 10px;
+              border: 1px solid var(--border);
+              border-radius: 8px;
+              background: var(--bg);
+              color: var(--fg);
+              box-shadow: var(--shadow-soft);
+              font-size: 12px;
+              line-height: 1.45;
+              pointer-events: none;
+              opacity: 0;
+              transform: translate(-8px, -108%);
+            }
+            #pane-metrics #cpu-chart-tip.is-on {
+              opacity: 1;
+            }
+            #pane-metrics #cpu-chart-tip strong {
+              display: block;
+              font-variant-numeric: tabular-nums;
+              font-weight: 700;
+            }
+            #pane-metrics #cpu-chart-tip span {
+              color: var(--muted);
+            }
+            #pane-metrics .metric-card:nth-of-type(2) {
+              position: relative;
+            }
+            #pane-metrics #mem-chart-tip {
+              position: absolute;
+              z-index: 3;
+              min-width: 148px;
+              padding: 8px 10px;
+              border: 1px solid var(--border);
+              border-radius: 8px;
+              background: var(--bg);
+              color: var(--fg);
+              box-shadow: var(--shadow-soft);
+              font-size: 12px;
+              line-height: 1.45;
+              pointer-events: none;
+              opacity: 0;
+              transform: translate(-8px, -108%);
+            }
+            #pane-metrics #mem-chart-tip.is-on {
+              opacity: 1;
+            }
+            #pane-metrics #mem-chart-tip strong {
+              display: block;
+              font-variant-numeric: tabular-nums;
+              font-weight: 700;
+            }
+            #pane-metrics #mem-chart-tip span {
+              color: var(--muted);
+            }
+          </style>
+          <div class="metric-toolbar">
+            <div class="segmented" role="group" aria-label="Chart layout">
+              <button type="button" aria-pressed="false" data-layout="list" aria-label="List layout">☰</button>
+              <button type="button" aria-pressed="true" data-layout="grid" aria-label="Grid layout">⊞</button>
+            </div>
+            <div class="range-wrap">
+              <button class="outline-button" type="button" id="range-button" aria-expanded="false">Last day</button>
+              <div class="range-popover" id="range-popover" hidden>
+                <strong>Quick range</strong>
+                <div class="range-grid" id="range-grid">
+                  <button type="button" data-range="5 min">5 min</button>
+                  <button type="button" data-range="15 min">15 min</button>
+                  <button type="button" data-range="30 min">30 min</button>
+                  <button type="button" data-range="1 hour">1 hour</button>
+                  <button type="button" data-range="3 hour">3 hour</button>
+                  <button type="button" data-range="6 hour">6 hour</button>
+                  <button type="button" data-range="1 day" aria-pressed="true">1 day</button>
+                  <button type="button" data-range="7 day">7 day</button>
+                  <button type="button" data-range="30 day">30 day</button>
+                </div>
+                <label>From<input id="metrics-range-from" value="1d ago" spellcheck="false" autocomplete="off" /></label>
+                <label>Until<input id="metrics-range-until" value="now" spellcheck="false" autocomplete="off" /></label>
+              </div>
+            </div>
+            <button class="outline-button accent" type="button" id="live-metrics" aria-pressed="true" aria-label="Live metrics"><span class="live-dot"></span></button>
+          </div>
+          <div class="metrics-grid" id="metrics-grid">
+            <article class="metric-card">
+              <span class="metric-legend">● Sum ○ Replicas</span>
+              <h3>CPU</h3>
+              <svg viewBox="0 0 360 180" width="100%" height="220" aria-label="CPU usage, last day" id="cpu-usage-svg"
+                onmousemove="(function(ev){var svg=ev.currentTarget,tip=document.getElementById('cpu-chart-tip'),hair=svg.querySelector('#cpu-hover-x'),dot=svg.querySelector('#cpu-hover-dot');if(!tip||!hair||!dot||!svg.createSVGPoint||!svg.getScreenCTM())return;var pt=svg.createSVGPoint();pt.x=ev.clientX;pt.y=ev.clientY;var p=pt.matrixTransform(svg.getScreenCTM().inverse());var x=Math.max(40,Math.min(350,p.x)),y=160;if(x<=200)y=160;else if(x<=202)y=160-(x-200);else y=158;var v=((160-y)/175);var ago=1-((x-40)/310);var d=new Date(Date.now()-ago*86400000);var hh=String(d.getHours()).padStart(2,'0'),mm=String(d.getMinutes()).padStart(2,'0');hair.setAttribute('x1',x);hair.setAttribute('x2',x);hair.setAttribute('visibility','visible');dot.setAttribute('cx',x);dot.setAttribute('cy',y);dot.setAttribute('visibility','visible');tip.innerHTML='<strong>'+v.toFixed(3)+' vCPU</strong><span>'+hh+':'+mm+' · Sum</span>';tip.classList.add('is-on');var box=svg.getBoundingClientRect(),card=svg.closest('.metric-card').getBoundingClientRect();tip.style.left=(box.left-card.left+(x/360)*box.width)+'px';tip.style.top=(box.top-card.top+(y/180)*box.height)+'px';})(event)"
+                onmouseleave="(function(ev){var svg=ev.currentTarget,tip=document.getElementById('cpu-chart-tip'),hair=svg.querySelector('#cpu-hover-x'),dot=svg.querySelector('#cpu-hover-dot');if(hair)hair.setAttribute('visibility','hidden');if(dot)dot.setAttribute('visibility','hidden');if(tip)tip.classList.remove('is-on');})(event)">
+                <g stroke="var(--border)" stroke-width="1">
+                  <line x1="40" y1="20" x2="350" y2="20" /><line x1="40" y1="55" x2="350" y2="55" /><line x1="40" y1="90" x2="350" y2="90" /><line x1="40" y1="125" x2="350" y2="125" /><line x1="40" y1="160" x2="350" y2="160" />
+                </g>
+                <text fill="var(--muted)" font-size="11" x="0" y="24">0.8 vCPU</text>
+                <text fill="var(--muted)" font-size="11" x="0" y="164">0.0 vCPU</text>
+                <polyline fill="none" stroke="var(--accent)" stroke-width="2" points="40,160 200,160 202,158 350,158" />
+                <line x1="200" y1="20" x2="200" y2="160" stroke="var(--muted)" stroke-dasharray="3 4" />
+                <g pointer-events="none">
+                  <line id="cpu-hover-x" x1="200" y1="20" x2="200" y2="160" stroke="var(--fg)" stroke-width="1" visibility="hidden" />
+                  <circle id="cpu-hover-dot" cx="200" cy="160" r="4" fill="var(--bg)" stroke="var(--accent)" stroke-width="2" visibility="hidden" />
+                </g>
+                <rect x="40" y="16" width="310" height="148" fill="transparent" />
+              </svg>
+              <div id="cpu-chart-tip" role="tooltip"></div>
+            </article>
+            <article class="metric-card">
+              <span class="metric-legend">● Sum ○ Replicas</span>
+              <h3>Memory</h3>
+              <svg viewBox="0 0 360 180" width="100%" height="220" aria-label="Memory usage, last day" id="mem-usage-svg"
+                onmousemove="(function(ev){var svg=ev.currentTarget,tip=document.getElementById('mem-chart-tip'),hair=svg.querySelector('#mem-hover-x'),dot=svg.querySelector('#mem-hover-dot');if(!tip||!hair||!dot||!svg.createSVGPoint||!svg.getScreenCTM())return;var pt=svg.createSVGPoint();pt.x=ev.clientX;pt.y=ev.clientY;var p=pt.matrixTransform(svg.getScreenCTM().inverse());var x=Math.max(40,Math.min(350,p.x));var pts=[[40,160],[198,160],[205,128],[220,138],[350,136]],y=160,i;for(i=0;i<pts.length-1;i++){if(x<=pts[i+1][0]||i===pts.length-2){var a=pts[i],b=pts[i+1],t=(x-a[0])/Math.max(1e-6,b[0]-a[0]);y=a[1]+t*(b[1]-a[1]);break;}}var mb=((160-y)/140)*400;var ago=1-((x-40)/310);var d=new Date(Date.now()-ago*86400000);var hh=String(d.getHours()).padStart(2,'0'),mm=String(d.getMinutes()).padStart(2,'0');var val=mb<0.05?'0 B':mb.toFixed(1)+' MB';hair.setAttribute('x1',x);hair.setAttribute('x2',x);hair.setAttribute('visibility','visible');dot.setAttribute('cx',x);dot.setAttribute('cy',y);dot.setAttribute('visibility','visible');tip.innerHTML='<strong>'+val+'</strong><span>'+hh+':'+mm+' · Sum</span>';tip.classList.add('is-on');var box=svg.getBoundingClientRect(),card=svg.closest('.metric-card').getBoundingClientRect();tip.style.left=(box.left-card.left+(x/360)*box.width)+'px';tip.style.top=(box.top-card.top+(y/180)*box.height)+'px';})(event)"
+                onmouseleave="(function(ev){var svg=ev.currentTarget,tip=document.getElementById('mem-chart-tip'),hair=svg.querySelector('#mem-hover-x'),dot=svg.querySelector('#mem-hover-dot');if(hair)hair.setAttribute('visibility','hidden');if(dot)dot.setAttribute('visibility','hidden');if(tip)tip.classList.remove('is-on');})(event)">
+                <g stroke="var(--border)" stroke-width="1">
+                  <line x1="40" y1="20" x2="350" y2="20" /><line x1="40" y1="55" x2="350" y2="55" /><line x1="40" y1="90" x2="350" y2="90" /><line x1="40" y1="125" x2="350" y2="125" /><line x1="40" y1="160" x2="350" y2="160" />
+                </g>
+                <text fill="var(--muted)" font-size="11" x="0" y="24">400 MB</text>
+                <text fill="var(--muted)" font-size="11" x="0" y="164">0 B</text>
+                <polyline fill="none" stroke="#7c3aed" stroke-width="2" points="40,160 198,160 205,128 220,138 350,136" />
+                <line x1="200" y1="20" x2="200" y2="160" stroke="var(--muted)" stroke-dasharray="3 4" />
+                <g pointer-events="none">
+                  <line id="mem-hover-x" x1="200" y1="20" x2="200" y2="160" stroke="var(--fg)" stroke-width="1" visibility="hidden" />
+                  <circle id="mem-hover-dot" cx="200" cy="160" r="4" fill="var(--bg)" stroke="#7c3aed" stroke-width="2" visibility="hidden" />
+                </g>
+                <rect x="40" y="16" width="310" height="148" fill="transparent" />
+              </svg>
+              <div id="mem-chart-tip" role="tooltip"></div>
+            </article>
+            <article class="metric-card" id="metric-card-volume" data-od-id="metric-card-volume">
+              <span class="metric-legend">● Used ○ Capacity</span>
+              <h3>Volume</h3>
+              <svg viewBox="0 0 360 180" width="100%" height="220" aria-label="Volume usage, last day">
+                <g stroke="var(--border)" stroke-width="1">
+                  <line x1="40" y1="20" x2="350" y2="20" /><line x1="40" y1="55" x2="350" y2="55" /><line x1="40" y1="90" x2="350" y2="90" /><line x1="40" y1="125" x2="350" y2="125" /><line x1="40" y1="160" x2="350" y2="160" />
+                </g>
+                <text fill="var(--muted)" font-size="11" x="0" y="24">50 GB</text>
+                <text fill="var(--muted)" font-size="11" x="0" y="164">0 B</text>
+                <path fill="color-mix(in oklch, var(--fg) 14%, transparent)" d="M40,118 L80,116 L120,112 L160,110 L200,108 L240,106 L280,104 L320,102 L350,100 L350,160 L40,160 Z" />
+                <polyline fill="none" stroke="var(--fg)" stroke-width="2" points="40,118 80,116 120,112 160,110 200,108 240,106 280,104 320,102 350,100" />
+                <line x1="200" y1="20" x2="200" y2="160" stroke="var(--muted)" stroke-dasharray="3 4" />
+              </svg>
+            </article>
+          </div>
+        </section>
+
+        <section class="resource-pane" id="pane-console" role="tabpanel" hidden data-pane="console">
+          <div class="console-pane">
+            <div class="console-meta">
+              <span id="console-id">34ce40ec</span>
+              <span><button class="ghost-link" type="button" id="copy-ssh">Copy SSH command</button> · <span class="connected">Connected</span></span>
+            </div>
+            <div class="console-log" id="console-log"></div>
+            <form class="console-form" id="console-form">
+              <label class="sr-only" for="console-input">Command</label>
+              <input id="console-input" autocomplete="off" spellcheck="false" placeholder="ls" />
+              <button class="solid-button" type="submit">Run</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="resource-pane" id="pane-settings" role="tabpanel" hidden data-pane="settings">
+          <style>
+            #pane-settings .settings-dl { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; margin: 0; }
+            #pane-settings .settings-dl dt { color: var(--muted); font-size: 13px; }
+            #pane-settings .settings-dl dd { margin: 0; font-family: SFMono-Regular, Consolas, Liberation Mono, Menlo, Courier, monospace; font-size: 13px; word-break: break-all; }
+            #pane-settings .setting-section { margin-bottom: 28px; }
+            #pane-settings .setting-section h3 { margin: 0 0 8px; font-size: 16px; }
+            #pane-settings .setting-lead { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+            #pane-settings .setting-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+            #pane-settings .setting-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--border); }
+            #pane-settings .setting-row:first-of-type { border-top: 0; padding-top: 0; }
+            #pane-settings .setting-row p { margin: 0; }
+            #pane-settings .setting-row small { display: block; margin-top: 4px; color: var(--muted); }
+            #pane-settings .flag-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+            #pane-settings .flag-list label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+            #pane-settings .flag-list input { margin-top: 3px; accent-color: var(--accent); }
+          </style>
+          <div class="search-field" style="margin-bottom:20px">
+            <label class="sr-only" for="settings-filter">Filter settings</label>
+            <input id="settings-filter" type="search" placeholder="Filter Settings..." />
+          </div>
+          <div class="settings-layout">
+            <div>
+              <article class="setting-section" id="source" data-setting="source" data-od-id="settings-source">
+                <h3>Source</h3>
+                <p class="setting-lead">Image this service deploys from. Auto-updates apply the latest matching tag on the next deploy.</p>
+                <div class="setting-block">
+                  <div class="source-row">
+                    <p><strong id="settings-image">ghcr.io/knotree-templates/postgres-ssl:18</strong><br><small>Last pulled 2026-09-12 09:14 · digest sha256:9c2e4f18…a71b</small></p>
+                    <button class="outline-button" type="button" id="disconnect-source">Disconnect</button>
+                  </div>
+                  <div class="setting-row">
+                    <p><strong>Registry</strong><small>GitHub Container Registry · public template</small></p>
+                    <button class="outline-button" type="button" data-settings-toast="Image details copied">Copy digest</button>
+                  </div>
+                  <div class="setting-row">
+                    <p><strong>Auto updates</strong><small>Watch tag <code>:18</code> and queue a deploy when a new digest lands.</small></p>
+                    <label><input type="checkbox" id="settings-auto-update" checked /> Enabled</label>
+                  </div>
+                </div>
+              </article>
+              <article class="setting-section" id="networking" data-setting="networking" data-od-id="settings-networking">
+                <h3>Networking</h3>
+                <p class="setting-lead">Private DNS is always on. Public access adds a host and port and writes <code>DATABASE_PUBLIC_URL</code>.</p>
+                <div class="setting-block">
+                  <dl class="settings-dl">
+                    <dt>Private DNS</dt>
+                    <dd>postgres.internal</dd>
+                    <dt>Private TCP</dt>
+                    <dd>postgres.internal:5432</dd>
+                    <dt>Public host</dt>
+                    <dd>postgres-production.up.knotree.app</dd>
+                    <dt>Public port</dt>
+                    <dd>15432 → 5432</dd>
+                    <dt>DATABASE_PUBLIC_URL</dt>
+                    <dd>postgresql://postgres:***@postgres-production.up.knotree.app:15432/railway</dd>
+                  </dl>
+                  <p class="warn-note">Anyone with the public string can connect. Use a strong password and require SSL.</p>
+                  <div class="setting-actions">
+                    <button class="outline-button" type="button" data-settings-toast="Public hostname copied">Copy public host</button>
+                    <button class="outline-button" type="button" data-settings-toast="Public networking disabled">Disable public access</button>
+                  </div>
+                </div>
+              </article>
+              <article class="setting-section" id="info" data-setting="info service identity" data-od-id="settings-info">
+                <h3>Service</h3>
+                <p class="setting-lead">Identity used by the canvas node, volume, and variable prefix.</p>
+                <div class="setting-block">
+                  <dl class="settings-dl">
+                    <dt>Name</dt>
+                    <dd id="settings-service-name">Postgres</dd>
+                    <dt>Type</dt>
+                    <dd id="settings-service-type">Database</dd>
+                    <dt>Service ID</dt>
+                    <dd>srv_8f2c1a90e4b3</dd>
+                    <dt>Created</dt>
+                    <dd>2026-04-18 11:02 UTC</dd>
+                    <dt>Volume</dt>
+                    <dd id="settings-volume">postgres-volume · /var/lib/postgresql/data</dd>
+                    <dt>Environment</dt>
+                    <dd>production</dd>
+                  </dl>
+                </div>
+              </article>
+              <article class="setting-section" id="scale" data-setting="scale" data-od-id="settings-scale">
+                <h3>Scale</h3>
+                <p class="setting-lead">Single replica. Memory-backed services should raise RAM before adding replicas.</p>
+                <div class="setting-block">
+                  <dl class="settings-dl">
+                    <dt>Replicas</dt>
+                    <dd>1</dd>
+                    <dt>CPU</dt>
+                    <dd>1 vCPU shared</dd>
+                    <dt>Memory</dt>
+                    <dd>1 GB</dd>
+                    <dt>Region</dt>
+                    <dd>us-west2</dd>
+                    <dt>Idle</dt>
+                    <dd>Never sleep (database)</dd>
+                  </dl>
+                  <div class="setting-actions">
+                    <button class="outline-button" type="button" data-settings-toast="Scale editor opened">Edit plan</button>
+                  </div>
+                </div>
+              </article>
+              <article class="setting-section" id="deploy" data-setting="deploy" data-od-id="settings-deploy">
+                <h3>Deploy</h3>
+                <p class="setting-lead">How this replica starts, restarts, and reports ready.</p>
+                <div class="setting-block">
+                  <dl class="settings-dl">
+                    <dt>Restart policy</dt>
+                    <dd>on-failure · max 10</dd>
+                    <dt>Start command</dt>
+                    <dd>docker-entrypoint.sh postgres</dd>
+                    <dt>Healthcheck</dt>
+                    <dd>pg_isready -U postgres · 10s interval</dd>
+                    <dt>Config as code</dt>
+                    <dd>railway.toml · [postgres]</dd>
+                    <dt>Last deploy</dt>
+                    <dd>2026-09-12 09:14 · SUCCESS</dd>
+                  </dl>
+                  <div class="setting-actions">
+                    <button class="outline-button" type="button" data-settings-toast="Redeploy queued">Redeploy</button>
+                    <button class="outline-button" type="button" data-settings-toast="Restart sent">Restart</button>
+                  </div>
+                </div>
+              </article>
+              <article class="setting-section" id="feature-flags" data-setting="feature-flags" data-od-id="settings-flags">
+                <h3>Feature-flags</h3>
+                <p class="setting-lead">Optional runtime switches. None change the image until the next deploy.</p>
+                <div class="setting-block">
+                  <ul class="flag-list">
+                    <li><label><input type="checkbox" checked /> <span><strong>SSL required</strong><small>Reject non-TLS clients on the public port.</small></span></label></li>
+                    <li><label><input type="checkbox" /> <span><strong>Query logging</strong><small>Log statements slower than 1s to workspace logs.</small></span></label></li>
+                    <li><label><input type="checkbox" /> <span><strong>Maintenance window</strong><small>Allow platform upgrades 02:00–04:00 UTC.</small></span></label></li>
+                  </ul>
+                </div>
+              </article>
+              <article class="setting-section" id="danger" data-setting="danger" data-od-id="settings-danger">
+                <h3>Danger</h3>
+                <p class="setting-lead">These actions are irreversible in this environment. Volume data is not recovered.</p>
+                <div class="setting-actions">
+                  <button class="outline-button" type="button" data-settings-toast="Service removed from canvas">Remove from canvas</button>
+                  <button class="outline-button" type="button" id="delete-service" style="color:var(--danger);border-color:color-mix(in oklch, var(--danger) 40%, var(--border))">Delete service</button>
+                </div>
+              </article>
+            </div>
+            <nav class="settings-nav" aria-label="Settings sections">
+              <a href="#source">Source</a>
+              <a href="#networking">Networking</a>
+              <a href="#info">Service</a>
+              <a href="#scale">Scale</a>
+              <a href="#deploy">Deploy</a>
+              <a href="#feature-flags">Feature-flags</a>
+              <a href="#danger">Danger</a>
+            </nav>
+          </div>
+          <script>
+            (function bindSettingsPane() {
+              const pane = document.getElementById('pane-settings');
+              if (!pane || pane.dataset.bound === 'true') return;
+              pane.dataset.bound = 'true';
+              pane.addEventListener('click', event => {
+                const button = event.target.closest('[data-settings-toast]');
+                if (!button || !pane.contains(button)) return;
+                const toast = document.getElementById('toast');
+                if (!toast) return;
+                toast.textContent = button.getAttribute('data-settings-toast');
+                toast.hidden = false;
+                window.setTimeout(() => { toast.hidden = true; }, 2600);
+              });
+              pane.querySelectorAll('.settings-nav a').forEach(link => {
+                link.addEventListener('click', event => {
+                  event.preventDefault();
+                  const id = link.getAttribute('href').slice(1);
+                  const target = document.getElementById(id);
+                  if (!target) return;
+                  const scroller = pane;
+                  scroller.scrollTop = Math.max(0, target.offsetTop - pane.offsetTop);
+                });
+              });
+            })();
+          </script>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="context-menu" id="workspace-menu" hidden data-od-id="workspace-menu">
+    <button type="button" data-workspace="hopeful-intuition">hopeful-intuition</button>
+    <button type="button" data-workspace="studio-sandbox">studio-sandbox</button>
+  </div>
+  <div class="context-menu environment" id="environment-menu" hidden data-od-id="environment-menu">
+    <button type="button" data-environment="production">production</button>
+    <button type="button" data-environment="staging">staging</button>
+  </div>
+  <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      const themeKey = 'product-topology-dashboard-theme';
+      const themeToggle = document.getElementById('theme-toggle');
+      function applyTheme(theme) {
+        const next = theme === 'dark' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem(themeKey, next);
+        if (themeToggle) {
+          themeToggle.setAttribute('aria-pressed', String(next === 'dark'));
+          themeToggle.setAttribute('aria-label', next === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+        }
+      }
+      applyTheme(localStorage.getItem(themeKey) || 'light');
+      themeToggle.addEventListener('click', event => {
+        event.stopPropagation();
+        applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+      });
+
+      const shell = document.getElementById('topology-shell');
+      const world = document.getElementById('canvas-world');
+      const connectorLayer = document.querySelector('.connector-layer');
+      const readout = document.getElementById('zoom-readout');
+      const overlay = document.getElementById('resource-overlay');
+      const toast = document.getElementById('toast');
+      const stateKey = 'product-topology-dashboard-state';
+      const saved = JSON.parse(localStorage.getItem(stateKey) || '{}');
+      let zoom = Number(saved.zoom) || 1;
+      let selectedNode = saved.selectedNode || null;
+      let toastTimer;
+      let lastFocus = null;
+
+      const tables = ['assets','attempt_answers','attempts','class_assignments','class_members','classes','exams','goose_db_version','question_options','questions','sessions','users'];
+      const variableValues = {
+        DATABASE_URL: 'postgresql://postgres:***@postgres:5432/railway',
+        PGDATA: '/var/lib/postgresql/data',
+        PGDATABASE: 'railway',
+        PGHOST: 'postgres.railway.internal',
+        PGPASSWORD: '********',
+        PGPORT: '5432',
+        PGUSER: 'postgres',
+        POSTGRES_DB: 'railway',
+        POSTGRES_PASSWORD: '********',
+        POSTGRES_USER: 'postgres',
+        RAILWAY_ENVIRONMENT: 'production',
+        RAILWAY_SERVICE_NAME: 'Postgres'
+      };
+      const variables = Object.keys(variableValues);
+
+      const nodeData = {
+        postgres: { title: 'Postgres', type: 'Database', volume: 'postgres-volume', connector: 'app-postgres', image: 'ghcr.io/knotree-templates/postgres-ssl:18', prompt: 'root@23b82f499cb5:/#' },
+        redis: { title: 'Redis', type: 'Cache', volume: 'redis-volume', connector: 'app-redis', image: 'redis:7-alpine', prompt: 'redis@cache:/#' },
+        app: { title: 'knotree-study', type: 'App service', volume: 'knotree-study-volume', connector: null, image: 'ghcr.io/knotree/study:latest', prompt: 'app@knotree:/#' }
+      };
+
+      function persist() {
+        localStorage.setItem(stateKey, JSON.stringify({ zoom, selectedNode }));
+      }
+
+      function setZoom(nextZoom, message) {
+        zoom = Math.min(1.25, Math.max(.8, Number(nextZoom.toFixed(2))));
+        world.style.transform = `scale(${zoom})`;
+        connectorLayer.style.transform = `scale(${zoom})`;
+        readout.textContent = `${Math.round(zoom * 100)}%`;
+        persist();
+        if (message) showToast(message);
+      }
+
+      function showToast(message) {
+        window.clearTimeout(toastTimer);
+        toast.textContent = message;
+        toast.hidden = false;
+        toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2600);
+      }
+
+      function closeMenus() {
+        document.querySelectorAll('.context-menu').forEach(menu => { menu.hidden = true; });
+        document.querySelectorAll('.context-trigger').forEach(trigger => { trigger.setAttribute('aria-expanded', 'false'); });
+      }
+
+      function renderTables(filter = '') {
+        const grid = document.getElementById('table-grid');
+        const query = filter.toLowerCase();
+        grid.innerHTML = tables.filter(name => name.includes(query)).map(name => `
+          <button class="table-card${name === 'goose_db_version' ? ' is-selected' : ''}" type="button" data-table="${name}">
+            <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4 10h16M10 5v14" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span>${name}</span>
+          </button>`).join('') || '<p>No tables match that search.</p>';
+        grid.querySelectorAll('.table-card').forEach(card => {
+          card.addEventListener('click', () => {
+            grid.querySelectorAll('.table-card').forEach(item => item.classList.remove('is-selected'));
+            card.classList.add('is-selected');
+            document.getElementById('sql-bar').value = `SELECT * FROM ${card.dataset.table}`;
+            showToast(`Opened ${card.dataset.table}`);
+          });
+        });
+      }
+
+      function renderVariables(filter = '') {
+        const list = document.getElementById('var-list');
+        const query = filter.toLowerCase();
+        const rows = variables.filter(name => name.toLowerCase().includes(query));
+        document.getElementById('var-count').textContent = `${rows.length} Service Variables`;
+        list.innerHTML = rows.map(name => `
+          <li class="var-row">
+            <code>{ } ${name}</code>
+            <span class="muted">${variableValues[name] && !/PASSWORD|SECRET|URL/.test(name) ? variableValues[name] : '********'}</span>
+            <button class="icon-button" type="button" data-copy="${name}" aria-label="Copy ${name}">⋮</button>
+          </li>`).join('') || '<li>No variables match that search.</li>';
+        list.querySelectorAll('[data-copy]').forEach(button => {
+          button.addEventListener('click', () => showToast(`${button.dataset.copy} copied`));
+        });
+      }
+
+      function setTab(tab) {
+        document.querySelectorAll('.resource-tab').forEach(button => {
+          const selected = button.dataset.tab === tab;
+          button.setAttribute('aria-selected', String(selected));
+        });
+        document.querySelectorAll('.resource-pane').forEach(pane => {
+          pane.hidden = pane.dataset.pane !== tab;
+        });
+      }
+
+      function selectNode(nodeId) {
+        const data = nodeData[nodeId];
+        if (!data) return;
+        selectedNode = nodeId;
+        lastFocus = document.activeElement;
+        document.querySelectorAll('.node-card').forEach(card => card.classList.toggle('is-selected', card.dataset.node === nodeId));
+        document.querySelectorAll('.connector').forEach(connector => connector.classList.toggle('is-highlighted', connector.dataset.connector === data.connector));
+        shell.classList.add('has-selection');
+        document.getElementById('resource-title').textContent = data.title;
+        const logo = document.querySelector(`[data-node="${nodeId}"] .node-logo`);
+        document.getElementById('resource-logo').src = logo ? logo.getAttribute('src') : '';
+        document.getElementById('deploy-image').textContent = data.image;
+        document.getElementById('settings-image').textContent = data.image;
+        document.getElementById('console-log').textContent = `${data.prompt} `;
+        overlay.hidden = false;
+        document.getElementById('close-resource').focus();
+        persist();
+      }
+
+      function clearSelection() {
+        selectedNode = null;
+        shell.classList.remove('has-selection');
+        document.querySelectorAll('.node-card').forEach(card => card.classList.remove('is-selected'));
+        document.querySelectorAll('.connector').forEach(connector => connector.classList.remove('is-highlighted'));
+        overlay.hidden = true;
+        if (lastFocus) lastFocus.focus();
+        persist();
+      }
+
+      document.querySelectorAll('.node-card').forEach(card => {
+        card.addEventListener('click', () => selectNode(card.dataset.node));
+        card.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(card.dataset.node); }
+        });
+      });
+      document.getElementById('close-resource').addEventListener('click', clearSelection);
+      overlay.addEventListener('click', event => { if (event.target === overlay) clearSelection(); });
+      document.querySelectorAll('.resource-tab').forEach(button => button.addEventListener('click', () => setTab(button.dataset.tab)));
+      document.getElementById('table-search').addEventListener('input', event => renderTables(event.target.value));
+      document.getElementById('refresh-tables').addEventListener('click', () => { renderTables(document.getElementById('table-search').value); showToast('Tables refreshed'); });
+      document.getElementById('new-table').addEventListener('click', () => showToast('New table draft opened'));
+      document.getElementById('connect-db').addEventListener('click', () => showToast('Connection string copied'));
+      document.querySelectorAll('.sub-tab').forEach(button => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('.sub-tab').forEach(item => item.setAttribute('aria-selected', String(item === button)));
+          document.getElementById('db-data').hidden = button.dataset.dbview !== 'data';
+          document.getElementById('db-stats').hidden = button.dataset.dbview !== 'stats';
+          document.getElementById('db-config').hidden = button.dataset.dbview !== 'config';
+        });
+      });
+      document.getElementById('var-search').addEventListener('input', event => renderVariables(event.target.value));
+      document.getElementById('new-var').addEventListener('click', () => {
+        if (!variables.includes('NEW_VARIABLE')) {
+          variables.unshift('NEW_VARIABLE');
+          variableValues.NEW_VARIABLE = '';
+        }
+        renderVariables(document.getElementById('var-search').value);
+        showToast('Variable added');
+      });
+      document.getElementById('dismiss-var-hint').addEventListener('click', () => { document.getElementById('var-hint').hidden = true; });
+      const sharedCatalog = [
+        { service: 'Redis', key: 'REDIS_URL', hint: 'redis://default:***@redis:6379' },
+        { service: 'Redis', key: 'REDISHOST', hint: 'redis.internal' },
+        { service: 'Redis', key: 'REDISPORT', hint: '6379' },
+        { service: 'knotree-study', key: 'APP_URL', hint: 'https://study.knotree.internal' },
+        { service: 'knotree-study', key: 'JWT_SECRET', hint: '********' },
+        { service: 'Postgres', key: 'DATABASE_URL', hint: 'postgresql://postgres:***@postgres:5432/railway' },
+        { service: 'Postgres', key: 'POSTGRES_USER', hint: 'postgres' }
+      ];
+      const sharedPicker = document.getElementById('shared-var-picker');
+      const sharedSearch = document.getElementById('shared-var-search');
+      const sharedList = document.getElementById('shared-var-list');
+      const sharedButton = document.getElementById('shared-var');
+
+      function setSharedPickerOpen(open) {
+        sharedPicker.hidden = !open;
+        sharedButton.setAttribute('aria-expanded', String(open));
+        if (open) {
+          if (typeof setRawEditorOpen === 'function') setRawEditorOpen(false);
+          renderSharedCatalog(sharedSearch.value);
+          sharedSearch.focus();
+        }
+      }
+
+      function renderSharedCatalog(filter = '') {
+        const query = filter.toLowerCase();
+        const rows = sharedCatalog.filter(item => `${item.service} ${item.key}`.toLowerCase().includes(query));
+        sharedList.innerHTML = rows.length
+          ? rows.map(item => `
+              <li>
+                <button class="shared-var-item" type="button" data-shared-key="${item.key}" data-shared-service="${item.service}">
+                  <span><code>\${{${item.service}.${item.key}}}</code><br><small>${item.service}</small></span>
+                  <small>${item.hint}</small>
+                </button>
+              </li>`).join('')
+          : '<li class="shared-var-empty">No shared variables match that search.</li>';
+        sharedList.querySelectorAll('[data-shared-key]').forEach(button => {
+          button.addEventListener('click', () => {
+            const name = `${button.dataset.sharedService.replace(/\s+/g, '_').toUpperCase()}_${button.dataset.sharedKey}`;
+            if (!variables.includes(name)) {
+              variables.unshift(name);
+              variableValues[name] = `\${{${button.dataset.sharedService}.${button.dataset.sharedKey}}}`;
+            }
+            renderVariables(document.getElementById('var-search').value);
+            setSharedPickerOpen(false);
+            showToast(`Added ${name} as a shared reference`);
+          });
+        });
+      }
+
+      sharedButton.addEventListener('click', event => {
+        event.stopPropagation();
+        setSharedPickerOpen(sharedPicker.hidden);
+      });
+      document.getElementById('close-shared-var').addEventListener('click', () => setSharedPickerOpen(false));
+      sharedSearch.addEventListener('input', event => renderSharedCatalog(event.target.value));
+      renderSharedCatalog();
+      const rawPanel = document.getElementById('raw-editor-panel');
+      const rawButton = document.getElementById('raw-editor');
+      const rawText = document.getElementById('raw-editor-text');
+
+      function serializeVariables() {
+        return variables.map(name => `${name}=${variableValues[name] ?? ''}`).join('\n');
+      }
+
+      function applyRawEditor(text) {
+        const nextKeys = [];
+        const nextValues = {};
+        text.split('\n').forEach(line => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return;
+          const eq = trimmed.indexOf('=');
+          if (eq <= 0) return;
+          const key = trimmed.slice(0, eq).trim();
+          const value = trimmed.slice(eq + 1);
+          if (!key || nextValues.hasOwnProperty(key)) return;
+          nextKeys.push(key);
+          nextValues[key] = value;
+        });
+        variables.splice(0, variables.length, ...nextKeys);
+        Object.keys(variableValues).forEach(key => { delete variableValues[key]; });
+        nextKeys.forEach(key => { variableValues[key] = nextValues[key]; });
+        renderVariables(document.getElementById('var-search').value);
+      }
+
+      function setRawEditorOpen(open) {
+        rawPanel.hidden = !open;
+        rawButton.setAttribute('aria-expanded', String(open));
+        if (open) {
+          setSharedPickerOpen(false);
+          rawText.value = serializeVariables();
+          rawText.focus();
+        }
+      }
+
+      rawButton.addEventListener('click', event => {
+        event.stopPropagation();
+        setRawEditorOpen(rawPanel.hidden);
+      });
+      document.getElementById('close-raw-editor').addEventListener('click', () => setRawEditorOpen(false));
+      document.getElementById('cancel-raw-editor').addEventListener('click', () => setRawEditorOpen(false));
+      document.getElementById('save-raw-editor').addEventListener('click', () => {
+        applyRawEditor(rawText.value);
+        setRawEditorOpen(false);
+        showToast('Service variables updated');
+      });
+      document.getElementById('backup-info').addEventListener('click', () => showToast('Pro plan details opened'));
+      document.getElementById('migration-ok').addEventListener('click', () => showToast('Migration confirmed'));
+      document.getElementById('migration-wrong').addEventListener('click', () => showToast('Support request started'));
+      const logEntries = [
+        { t: '2026-09-12 09:14:02.118', level: 'info', service: 'postgres', msg: 'database system is ready to accept connections' },
+        { t: '2026-09-12 09:14:02.401', level: 'info', service: 'postgres', msg: 'listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"' },
+        { t: '2026-09-12 09:14:08.220', level: 'info', service: 'postgres', msg: 'checkpoint complete: wrote 18 buffers (0.1%); 0 WAL file(s) added' },
+        { t: '2026-09-12 09:15:11.044', level: 'warn', service: 'postgres', msg: 'duration: 1284.102 ms  statement: SELECT * FROM attempts WHERE exam_id = 482' },
+        { t: '2026-09-12 09:16:03.771', level: 'info', service: 'redis', msg: 'Ready to accept connections tcp' },
+        { t: '2026-09-12 09:16:04.012', level: 'info', service: 'redis', msg: 'DB loaded from disk: 0.018 seconds' },
+        { t: '2026-09-12 09:17:22.550', level: 'warn', service: 'redis', msg: 'slowlog: SET session:34ce40ec took 12ms' },
+        { t: '2026-09-12 09:18:01.003', level: 'info', service: 'app', msg: 'knotree-study listening on :8080' },
+        { t: '2026-09-12 09:18:09.441', level: 'info', service: 'app', msg: 'GET /health 200 3ms' },
+        { t: '2026-09-12 09:18:41.882', level: 'info', service: 'app', msg: 'GET /api/exams 200 41ms' },
+        { t: '2026-09-12 09:19:12.190', level: 'error', service: 'app', msg: 'POST /api/attempts 500 88ms — relation "attempt_answers" lock timeout' },
+        { t: '2026-09-12 09:19:12.201', level: 'error', service: 'postgres', msg: 'ERROR:  canceling statement due to lock timeout' }
+      ];
+
+      const topologyPage = document.querySelector('[data-od-id="topology-page"]');
+      const logsPage = document.getElementById('logs-page');
+      const logsStream = document.getElementById('logs-stream');
+      const logsResource = document.getElementById('logs-resource');
+      const logsSearch = document.getElementById('logs-search');
+
+      function renderLogs() {
+        const resource = logsResource.value;
+        const query = logsSearch.value.trim().toLowerCase();
+        const rows = logEntries.filter(entry => {
+          if (resource !== 'all' && entry.service !== resource) return false;
+          if (!query) return true;
+          return `${entry.t} ${entry.level} ${entry.service} ${entry.msg}`.toLowerCase().includes(query);
+        });
+        logsStream.innerHTML = rows.length
+          ? rows.map(entry => `<div class="log-line"><span class="log-time">${entry.t}</span><span class="log-level ${entry.level}">${entry.level.toUpperCase()}</span><span class="log-service">${entry.service}</span><span class="log-msg">${entry.msg}</span></div>`).join('')
+          : '<p class="logs-empty">No log lines match this filter.</p>';
+      }
+
+      function showWorkspacePage(name, resourceFilter) {
+        const next = name === 'logs' ? 'logs' : 'topology';
+        topologyPage.hidden = next !== 'topology';
+        logsPage.hidden = next !== 'logs';
+        if (next === 'topology') document.querySelector('[data-od-id="nav-topology"]').setAttribute('aria-current', 'page');
+        else document.querySelector('[data-od-id="nav-topology"]').removeAttribute('aria-current');
+        if (next === 'logs') document.querySelector('[data-od-id="nav-logs"]').setAttribute('aria-current', 'page');
+        else document.querySelector('[data-od-id="nav-logs"]').removeAttribute('aria-current');
+        if (next === 'logs') {
+          if (resourceFilter) logsResource.value = resourceFilter;
+          renderLogs();
+        }
+      }
+
+      logsResource.addEventListener('change', renderLogs);
+      logsSearch.addEventListener('input', renderLogs);
+      document.getElementById('logs-live').addEventListener('click', event => {
+        const pressed = event.currentTarget.getAttribute('aria-pressed') === 'true';
+        event.currentTarget.setAttribute('aria-pressed', String(!pressed));
+        showToast(pressed ? 'Live tail paused' : 'Live tail resumed');
+      });
+      renderLogs();
+
+      document.getElementById('view-logs').addEventListener('click', () => {
+        const filter = selectedNode && nodeData[selectedNode] ? selectedNode : 'all';
+        overlay.hidden = true;
+        showWorkspacePage('logs', filter);
+        showToast(`Opened ${filter === 'all' ? 'workspace' : nodeData[filter].title} logs`);
+      });
+      document.querySelector('[data-od-id="nav-logs"]').addEventListener('click', event => {
+        event.stopImmediatePropagation();
+        overlay.hidden = true;
+        showWorkspacePage('logs', 'all');
+      });
+      document.querySelector('[data-od-id="nav-topology"]').addEventListener('click', () => {
+        showWorkspacePage('topology');
+      });
+      document.getElementById('toggle-skipped').addEventListener('click', event => {
+        const card = document.getElementById('skipped-history');
+        const hidden = card.hidden;
+        card.hidden = !hidden;
+        event.currentTarget.textContent = hidden ? 'Hide skipped' : 'Show skipped';
+      });
+      document.getElementById('range-button').addEventListener('click', event => {
+        const pop = document.getElementById('range-popover');
+        pop.hidden = !pop.hidden;
+        event.currentTarget.setAttribute('aria-expanded', String(!pop.hidden));
+      });
+      document.querySelectorAll('#range-grid button').forEach(button => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('#range-grid button').forEach(item => item.removeAttribute('aria-pressed'));
+          button.setAttribute('aria-pressed', 'true');
+          document.getElementById('range-button').textContent = button.dataset.range === '1 day' ? 'Last day' : button.dataset.range;
+          document.getElementById('range-popover').hidden = true;
+          showToast(`Range set to ${button.dataset.range}`);
+        });
+      });
+      document.querySelectorAll('[data-layout]').forEach(button => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('[data-layout]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+          document.getElementById('metrics-grid').style.gridTemplateColumns = button.dataset.layout === 'list' ? '1fr' : '1fr 1fr';
+        });
+      });
+      document.getElementById('copy-ssh').addEventListener('click', () => showToast('SSH command copied'));
+      document.getElementById('console-form').addEventListener('submit', event => {
+        event.preventDefault();
+        const input = document.getElementById('console-input');
+        const log = document.getElementById('console-log');
+        const command = input.value.trim() || 'ls';
+        const data = nodeData[selectedNode] || nodeData.postgres;
+        log.textContent += `\n${data.prompt} ${command}\n${command === 'ls' ? 'bin  etc  var  postgres' : 'ok'}\n${data.prompt} `;
+        input.value = '';
+        log.scrollTop = log.scrollHeight;
+      });
+      document.getElementById('settings-filter').addEventListener('input', event => {
+        const query = event.target.value.toLowerCase();
+        document.querySelectorAll('.setting-section').forEach(section => {
+          section.hidden = query !== '' && !section.dataset.setting.includes(query) && !section.textContent.toLowerCase().includes(query);
+        });
+      });
+      document.getElementById('disconnect-source').addEventListener('click', () => showToast('Source disconnected'));
+      document.getElementById('delete-service').addEventListener('click', () => showToast('Deletion requires confirmation'));
+      renderTables();
+      renderVariables();
+      document.getElementById('zoom-in').addEventListener('click', () => setZoom(zoom + .1, 'Zoomed in'));
+      document.getElementById('zoom-out').addEventListener('click', () => setZoom(zoom - .1, 'Zoomed out'));
+      document.getElementById('fit-view').addEventListener('click', () => setZoom(1, 'View fitted'));
+      document.getElementById('undo-view').addEventListener('click', () => showToast('No earlier view change'));
+      document.getElementById('redo-view').addEventListener('click', () => showToast('No later view change'));
+      document.getElementById('layers-button').addEventListener('click', event => {
+        const button = event.currentTarget;
+        const pressed = button.getAttribute('aria-pressed') === 'true';
+        button.setAttribute('aria-pressed', String(!pressed));
+        showToast(pressed ? 'Layer guidance hidden' : 'Layer guidance visible');
+      });
+
+      const addButton = document.getElementById('add-button');
+      const addMenu = document.getElementById('add-menu');
+      addButton.addEventListener('click', event => {
+        event.stopPropagation();
+        const isOpen = addButton.getAttribute('aria-expanded') === 'true';
+        addButton.setAttribute('aria-expanded', String(!isOpen));
+        addMenu.hidden = isOpen;
+      });
+      document.querySelectorAll('[data-add]').forEach(option => {
+        option.addEventListener('click', () => {
+          const label = option.textContent.trim();
+          addMenu.hidden = true;
+          addButton.setAttribute('aria-expanded', 'false');
+          showToast(`${label} is ready to configure`);
+        });
+      });
+
+      function wireContextMenu(triggerId, menuId, labelId, attribute) {
+        const trigger = document.getElementById(triggerId);
+        const menu = document.getElementById(menuId);
+        trigger.addEventListener('click', event => {
+          event.stopPropagation();
+          const isOpen = trigger.getAttribute('aria-expanded') === 'true';
+          closeMenus();
+          trigger.setAttribute('aria-expanded', String(!isOpen));
+          menu.hidden = isOpen;
+        });
+        menu.querySelectorAll(`[data-${attribute}]`).forEach(option => {
+          option.addEventListener('click', () => {
+            document.getElementById(labelId).textContent = option.dataset[attribute];
+            closeMenus();
+            showToast(`${option.dataset[attribute]} selected`);
+          });
+        });
+      }
+      wireContextMenu('workspace-trigger', 'workspace-menu', 'workspace-label', 'workspace');
+      wireContextMenu('environment-trigger', 'environment-menu', 'environment-label', 'environment');
+      document.querySelectorAll('.icon-button, .agent-button, .account-button, .brand-button, .rail-button').forEach(button => {
+        button.addEventListener('click', () => {
+          if (button.id === 'add-button' || button.id === 'theme-toggle') return;
+          if (button.dataset.odId === 'nav-topology' || button.dataset.odId === 'nav-logs') return;
+          if (button.dataset.odId && button.dataset.odId.startsWith('nav-')) showToast(`${button.getAttribute('aria-label')} is available in this workspace`);
+          else if (button.dataset.odId !== 'brand-home') showToast(button.getAttribute('aria-label') || 'Action selected');
+        });
+      });
+      document.addEventListener('click', event => {
+        if (!event.target.closest('.add-wrap')) { addMenu.hidden = true; addButton.setAttribute('aria-expanded', 'false'); }
+        if (!event.target.closest('.workspace-switcher')) closeMenus();
+      });
+      document.addEventListener('click', event => {
+        if (!event.target.closest('[data-od-id="shared-var-wrap"]')) {
+          if (sharedPicker && !sharedPicker.hidden) setSharedPickerOpen(false);
+          if (rawPanel && !rawPanel.hidden) setRawEditorOpen(false);
+        }
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          if (rawPanel && !rawPanel.hidden) { setRawEditorOpen(false); return; }
+          if (sharedPicker && !sharedPicker.hidden) { setSharedPickerOpen(false); return; }
+          if (!overlay.hidden) { clearSelection(); return; }
+          closeMenus();
+          addMenu.hidden = true;
+          addButton.setAttribute('aria-expanded', 'false');
+          document.getElementById('range-popover').hidden = true;
+        }
+      });
+
+      setZoom(zoom);
+      if (selectedNode && nodeData[selectedNode]) selectNode(selectedNode);
+    })();
+  </script>
+</body>
+</html>
