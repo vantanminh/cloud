@@ -12,6 +12,7 @@ export PATH="/usr/local/bin:/usr/bin:$PATH"
 cd "$ROOT"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n "$NS" delete limitrange --all --ignore-not-found
 
 if kubectl -n knotree-system get secret ghcr-cred >/dev/null 2>&1; then
   kubectl get secret ghcr-cred -n knotree-system -o json \

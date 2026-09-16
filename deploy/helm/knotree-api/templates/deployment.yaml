@@ -37,6 +37,13 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: {{ include "knotree-api.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
           command:
             - /usr/local/bin/knotree-api
             - migrate
