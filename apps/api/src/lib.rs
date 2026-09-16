@@ -19,6 +19,9 @@ pub mod security;
 pub mod state;
 pub mod workspaces;
 
+#[cfg(test)]
+pub mod test_support;
+
 use axum::{
     Json, Router,
     extract::State,

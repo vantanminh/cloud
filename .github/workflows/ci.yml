@@ -22,10 +22,27 @@ env:
 jobs:
   test-api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: knotree
+          POSTGRES_PASSWORD: knotree
+          POSTGRES_DB: knotree
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knotree -d knotree"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: API tests
+        env:
+          DATABASE_URL: postgres://knotree:knotree@localhost:5432/knotree
+          CI: true
         run: cargo test --manifest-path apps/api/Cargo.toml --locked
 
   test-web:

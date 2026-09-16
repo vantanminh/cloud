@@ -102,8 +102,9 @@ export function RedisCreateDialog({
           <div className="project-dialog-note">
             <DatabaseIcon aria-hidden="true" />
             <span>
-              Redis is capped at 1 vCPU, 1 GiB RAM, and 10 GiB storage and is
-              reachable as hostname redis.
+              Redis is capped at 1 vCPU, 1 GiB RAM, and 10 GiB storage. Docker
+              projects reach it as hostname redis; Kubernetes uses the
+              per-project Service DNS returned after create.
             </span>
           </div>
 

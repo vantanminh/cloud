@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "knotree-api.labels" . | nindent 4 }}
 data:
+  # Bootstrap only. Tenant *.knotree.org routes and per-app rate limits are
+  # restored from Postgres by the API (POST /config) on startup, become-ready,
+  # public-access changes, and a short retry loop so Recreate cannot drop them.
   kong.yml: |
     _format_version: "3.0"
     _transform: true

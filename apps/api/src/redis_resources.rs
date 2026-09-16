@@ -28,6 +28,7 @@ const PROVISIONING_ERROR_MESSAGE: &str =
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct RedisResourceRow {
     id: Uuid,
+    project_id: Uuid,
     name: String,
     host: String,
     port: i32,
@@ -40,7 +41,7 @@ struct RedisResourceRow {
     public_port: Option<i32>,
 }
 
-const RESOURCE_COLUMNS: &str = "id, name, host, port, password_ciphertext, status, error_message, cluster_provider, cluster_name, public_host, public_port";
+const RESOURCE_COLUMNS: &str = "id, project_id, name, host, port, password_ciphertext, status, error_message, cluster_provider, cluster_name, public_host, public_port";
 
 pub async fn list(
     State(state): State<AppState>,
@@ -242,9 +243,16 @@ fn resource_response(
     config: &Config,
 ) -> Result<RedisResourceResponse, AppError> {
     let port_value = resource.public_port.unwrap_or(resource.port);
-    let host = cluster::connection_host(
+    let network_alias = advertised_redis_network_alias(
+        &resource.cluster_provider,
+        resource.cluster_name.as_deref(),
+        resource.project_id,
+    );
+    let host = advertised_redis_host(
         &resource.cluster_provider,
         resource.public_host.as_deref().unwrap_or(&resource.host),
+        &network_alias,
+        &config.database_cluster_namespace,
     );
     let port = u16::try_from(port_value).map_err(|_| AppError::internal("invalid redis port"))?;
     let connection_string = if resource.status == STATUS_READY {
@@ -267,11 +275,43 @@ fn resource_response(
         cluster_provider: resource.cluster_provider.clone(),
         cluster_name: resource.cluster_name.clone(),
         error_message: resource.error_message.clone(),
-        network_alias: cluster::PROJECT_NETWORK_REDIS_ALIAS.to_owned(),
+        network_alias,
         cpu_limit: TENANT_RESOURCE_CAPS.cpu.to_owned(),
         memory_limit: TENANT_RESOURCE_CAPS.memory_kubernetes.to_owned(),
         storage_limit: TENANT_RESOURCE_CAPS.storage_kubernetes.to_owned(),
     })
+}
+
+pub fn advertised_redis_network_alias(
+    provider: &str,
+    cluster_name: Option<&str>,
+    project_id: Uuid,
+) -> String {
+    if provider == PROVIDER_KUBERNETES {
+        cluster_name
+            .filter(|name| !name.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| crate::cluster_kubernetes::redis_resource_name(project_id))
+    } else {
+        cluster::PROJECT_NETWORK_REDIS_ALIAS.to_owned()
+    }
+}
+
+fn advertised_redis_host(
+    provider: &str,
+    stored_host: &str,
+    network_alias: &str,
+    namespace: &str,
+) -> String {
+    if provider == PROVIDER_KUBERNETES {
+        if stored_host.contains(".svc.cluster.local") {
+            stored_host.to_owned()
+        } else {
+            format!("{network_alias}.{namespace}.svc.cluster.local")
+        }
+    } else {
+        cluster::connection_host(provider, stored_host)
+    }
 }
 
 fn generate_password() -> String {
@@ -306,6 +346,30 @@ mod tests {
         assert!(redis_joined_private_network(PROVIDER_KUBERNETES, None));
         assert_eq!(cluster::PROJECT_NETWORK_REDIS_ALIAS, "redis");
         assert_eq!(TENANT_RESOURCE_CAPS.memory_kubernetes, "1Gi");
+        let project_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let k8s_alias = advertised_redis_network_alias(
+            PROVIDER_KUBERNETES,
+            Some("knotree-redis-11111111222233334444555555555555"),
+            project_id,
+        );
+        assert_eq!(
+            k8s_alias,
+            "knotree-redis-11111111222233334444555555555555"
+        );
+        assert_ne!(k8s_alias, cluster::PROJECT_NETWORK_REDIS_ALIAS);
+        assert_eq!(
+            advertised_redis_network_alias(PROVIDER_DOCKER, None, project_id),
+            "redis"
+        );
+        assert_eq!(
+            advertised_redis_host(
+                PROVIDER_KUBERNETES,
+                "knotree-redis-11111111222233334444555555555555.knotree-cloud.svc.cluster.local",
+                &k8s_alias,
+                "knotree-cloud",
+            ),
+            "knotree-redis-11111111222233334444555555555555.knotree-cloud.svc.cluster.local"
+        );
     }
 
     #[test]

@@ -337,6 +337,16 @@ pub async fn logs(
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
         projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    runtime_logs(&state, project_id, app_service_id)
+        .await
+        .map(Json)
+}
+
+pub(crate) async fn runtime_logs(
+    state: &AppState,
+    project_id: Uuid,
+    app_service_id: Uuid,
+) -> Result<AppServiceLogsResponse, AppError> {
     let target = sqlx::query_as::<_, AppServiceLogsTarget>(
         "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
     )
@@ -349,27 +359,14 @@ pub async fn logs(
         message: "The app service could not be found.",
     })?;
 
-    let Some(container_name) = target.container_name.clone() else {
-        return Ok(Json(AppServiceLogsResponse {
-            app_service_id,
-            container_name: None,
-            status: target.status,
-            running: false,
-            lines: Vec::new(),
-            message: Some("The app service container has not been deployed yet.".to_owned()),
-        }));
-    };
-
-    if target.status != STATUS_READY {
-        return Ok(Json(AppServiceLogsResponse {
-            app_service_id,
-            container_name: Some(container_name),
-            status: target.status,
-            running: false,
-            lines: Vec::new(),
-            message: Some("Runtime logs are available after the app service is ready.".to_owned()),
-        }));
+    if let Some(response) = logs_unavailable_response(app_service_id, &target) {
+        return Ok(response);
     }
+
+    let container_name = target
+        .container_name
+        .clone()
+        .expect("ready services have a container name");
 
     if state.config.uses_kubernetes_workloads() {
         let lines = cluster_kubernetes::pod_logs(
@@ -390,19 +387,19 @@ pub async fn logs(
                 message: "The app service logs are temporarily unavailable.",
             }
         })?;
-        return Ok(Json(AppServiceLogsResponse {
+        return Ok(AppServiceLogsResponse {
             app_service_id,
             container_name: Some(container_name),
             status: target.status,
             running: true,
             lines,
             message: None,
-        }));
+        });
     }
 
-    let running = docker_container_running(&state, &container_name).await?;
+    let running = docker_container_running(state, &container_name).await?;
     let output = docker_raw(
-        &state,
+        state,
         [
             "logs".to_owned(),
             "--timestamps".to_owned(),
@@ -438,14 +435,41 @@ pub async fn logs(
         });
     }
 
-    Ok(Json(AppServiceLogsResponse {
+    Ok(AppServiceLogsResponse {
         app_service_id,
         container_name: Some(container_name),
         status: target.status,
         running,
         lines: docker_log_lines(&output),
         message: None,
-    }))
+    })
+}
+
+fn logs_unavailable_response(
+    app_service_id: Uuid,
+    target: &AppServiceLogsTarget,
+) -> Option<AppServiceLogsResponse> {
+    let Some(container_name) = target.container_name.clone() else {
+        return Some(AppServiceLogsResponse {
+            app_service_id,
+            container_name: None,
+            status: target.status.clone(),
+            running: false,
+            lines: Vec::new(),
+            message: Some("The app service container has not been deployed yet.".to_owned()),
+        });
+    };
+    if target.status != STATUS_READY {
+        return Some(AppServiceLogsResponse {
+            app_service_id,
+            container_name: Some(container_name),
+            status: target.status.clone(),
+            running: false,
+            lines: Vec::new(),
+            message: Some("Runtime logs are available after the app service is ready.".to_owned()),
+        });
+    }
+    None
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1037,8 +1061,28 @@ pub async fn update_public_access(
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
+    update_public_access_for_user(
+        &state,
+        user.id,
+        &workspace_slug,
+        &project_slug,
+        app_service_id,
+        input,
+    )
+    .await
+    .map(Json)
+}
+
+pub async fn update_public_access_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+    app_service_id: Uuid,
+    input: UpdateAppServicePublicAccessRequest,
+) -> Result<AppServiceResponse, AppError> {
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
     let rate_limit_rpm = match input.rate_limit_rpm {
         Some(value) => validate_rate_limit_rpm(value).map_err(|_| AppError::BadRequest {
             code: "INVALID_RATE_LIMIT",
@@ -1089,13 +1133,11 @@ pub async fn update_public_access(
     .fetch_one(&state.db)
     .await?;
 
-    if let Err(error) = sync_kong_routes(&state).await {
-        tracing::warn!(error = %error, "could not refresh Kong public app routes");
-    }
+    refresh_kong_public_routes(state).await;
 
     let database =
-        database_resource_by_id(&state, project_id, service.database_resource_id).await?;
-    Ok(Json(app_service_response(
+        database_resource_by_id(state, project_id, service.database_resource_id).await?;
+    app_service_response(
         &service,
         &state.config.app_service_public_host,
         state.config.bind_addr.port(),
@@ -1103,10 +1145,30 @@ pub async fn update_public_access(
         &state.config.app_service_public_scheme,
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
-    )?))
+    )
 }
 
-async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
+const KONG_ROUTE_SYNC_INTERVAL_SECONDS: u64 = 15;
+
+pub fn spawn_kong_route_syncer(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(KONG_ROUTE_SYNC_INTERVAL_SECONDS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            refresh_kong_public_routes(&state).await;
+        }
+    })
+}
+
+async fn refresh_kong_public_routes(state: &AppState) {
+    if let Err(error) = sync_kong_routes(state).await {
+        tracing::warn!(error = %error, "could not refresh Kong public app routes");
+    }
+}
+
+pub(crate) async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
     let Some(admin_url) = state.config.kong_admin_url.as_deref() else {
         return Ok(());
     };
@@ -1117,13 +1179,21 @@ async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
     )
     .fetch_all(&state.db)
     .await?;
+    let routes = kong_routes_from_rows(&rows, state.config.app_service_public_domain.as_deref());
+    let config = kong::declarative_config(&routes)?;
+    kong::apply_declarative_config(admin_url, &config).await
+}
+
+fn kong_routes_from_rows(
+    rows: &[KongSyncRow],
+    public_domain: Option<&str>,
+) -> Vec<kong::KongAppRoute> {
     let mut routes = Vec::new();
     for row in rows {
-        let hostname = public_hostname(
-            true,
-            row.public_subdomain.as_deref(),
-            state.config.app_service_public_domain.as_deref(),
-        );
+        if !row.public_access_enabled || row.status != STATUS_READY {
+            continue;
+        }
+        let hostname = public_hostname(true, row.public_subdomain.as_deref(), public_domain);
         let upstream = match (row.host.as_deref(), row.port) {
             (Some(host), Some(port)) => format!("http://{host}:{port}"),
             _ => continue,
@@ -1137,8 +1207,7 @@ async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
             routes.push(route);
         }
     }
-    let config = kong::declarative_config(&routes)?;
-    kong::apply_declarative_config(admin_url, &config).await
+    routes
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1266,8 +1335,20 @@ pub async fn create(
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
+    let response =
+        create_for_user(&state, user.id, &workspace_slug, &project_slug, input).await?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+pub async fn create_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+    input: CreateAppServiceRequest,
+) -> Result<AppServiceResponse, AppError> {
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
 
     if !state.config.app_service_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {
@@ -1282,7 +1363,7 @@ pub async fn create(
     let app_port = validate_app_port(input.app_port)?;
     let auto_deploy_enabled =
         image_source == IMAGE_SOURCE_GITHUB && input.auto_deploy.unwrap_or(true);
-    let github_connection_user_id = (image_source == IMAGE_SOURCE_GITHUB).then_some(user.id);
+    let github_connection_user_id = (image_source == IMAGE_SOURCE_GITHUB).then_some(user_id);
     let service = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -1325,7 +1406,7 @@ pub async fn create(
     };
 
     let github_credentials = if image_source == IMAGE_SOURCE_GITHUB {
-        match github::docker_credentials(&state, user.id).await? {
+        match github::docker_credentials(state, user_id).await? {
             Some(credentials) => Some(credentials),
             None => {
                 sqlx::query(
@@ -1385,7 +1466,7 @@ pub async fn create(
         .await;
     });
 
-    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+    Ok(response)
 }
 
 pub async fn update(
@@ -1541,6 +1622,7 @@ pub async fn update(
     .bind(service.id)
     .fetch_one(&state.db)
     .await?;
+    refresh_kong_public_routes(&state).await;
     Ok(Json(app_service_response(
         &service,
         &state.config.app_service_public_host,
@@ -1716,6 +1798,7 @@ pub async fn update_database_connection(
     .bind(service.id)
     .fetch_one(&state.db)
     .await?;
+    refresh_kong_public_routes(&state).await;
     Ok(Json(app_service_response(
         &service,
         &state.config.app_service_public_host,
@@ -2034,6 +2117,7 @@ async fn run_app_service_deployment(
             )
             .await?;
         logger.finish(STATUS_READY, "Complete", None).await?;
+        refresh_kong_public_routes(&state).await;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -3385,37 +3469,7 @@ pub async fn mcp_service_logs(
     .fetch_one(&state.db)
     .await?;
     crate::mcp::authorize_account(user_id, owner)?;
-    let headers = HeaderMap::new();
-    // Reuse the HTTP handler path through a targeted query so MCP reads the
-    // same log source as the dashboard.
-    let _ = headers;
-    logs_for_project(state, project_id, app_service_id).await
-}
-
-async fn logs_for_project(
-    state: &AppState,
-    project_id: Uuid,
-    app_service_id: Uuid,
-) -> Result<AppServiceLogsResponse, AppError> {
-    let target = sqlx::query_as::<_, AppServiceLogsTarget>(
-        "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
-    )
-    .bind(app_service_id)
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound {
-        code: "APP_SERVICE_NOT_FOUND",
-        message: "The app service could not be found.",
-    })?;
-    Ok(AppServiceLogsResponse {
-        app_service_id,
-        container_name: target.container_name,
-        status: target.status,
-        running: false,
-        lines: Vec::new(),
-        message: Some("Use the dashboard runtime log viewer for live container output.".to_owned()),
-    })
+    runtime_logs(state, project_id, app_service_id).await
 }
 
 pub async fn mcp_list_resources(
@@ -3467,36 +3521,64 @@ pub async fn mcp_deploy(
     .fetch_one(&state.db)
     .await?;
     crate::mcp::authorize_account(user_id, owner)?;
-    let image = validate_image(arguments.get("image").and_then(|value| value.as_str()).unwrap_or(""))?;
-    let image_source = validate_image_source(
-        arguments
-            .get("imageSource")
-            .and_then(|value| value.as_str())
-            .unwrap_or("public"),
-        &image,
-    )?;
-    let name = validate_service_name(
-        arguments
+    let input = CreateAppServiceRequest {
+        name: arguments
             .get("name")
             .and_then(|value| value.as_str())
-            .unwrap_or("App service"),
-    )?;
-    let app_port = validate_app_port(
-        arguments
+            .map(ToOwned::to_owned),
+        image: arguments
+            .get("image")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned(),
+        image_source: arguments
+            .get("imageSource")
+            .and_then(|value| value.as_str())
+            .unwrap_or("public")
+            .to_owned(),
+        app_port: arguments
             .get("appPort")
             .and_then(serde_json::Value::as_u64)
             .map(|value| value as u32),
-    )?;
-    Ok(serde_json::json!({
-        "accepted": true,
-        "action": "deploy_app_service",
-        "projectId": project_id,
-        "name": name,
-        "image": image,
-        "imageSource": image_source,
-        "appPort": app_port,
-        "publicAccessEnabled": false,
-    }))
+        auto_deploy: arguments.get("autoDeploy").and_then(serde_json::Value::as_bool),
+    };
+    let service = create_for_user(state, user_id, workspace_slug, project_slug, input).await?;
+    serde_json::to_value(service).map_err(AppError::internal)
+}
+
+pub async fn mcp_setup_public_access(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+    app_service_id: Uuid,
+    enabled: bool,
+    rate_limit_rpm: Option<u32>,
+) -> Result<serde_json::Value, AppError> {
+    let project_id =
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+    let owner = sqlx::query_scalar::<_, Uuid>(
+        "SELECT m.user_id FROM workspace_memberships m
+         JOIN projects p ON p.workspace_id = m.workspace_id
+         WHERE p.id = $1 AND m.role = 'owner'",
+    )
+    .bind(project_id)
+    .fetch_one(&state.db)
+    .await?;
+    crate::mcp::authorize_account(user_id, owner)?;
+    let service = update_public_access_for_user(
+        state,
+        user_id,
+        workspace_slug,
+        project_slug,
+        app_service_id,
+        UpdateAppServicePublicAccessRequest {
+            enabled,
+            rate_limit_rpm,
+        },
+    )
+    .await?;
+    serde_json::to_value(service).map_err(AppError::internal)
 }
 
 #[cfg(test)]
@@ -3777,5 +3859,160 @@ mod tests {
         assert_eq!(response.current_step, "Pull image");
         assert_eq!(response.logs.len(), 3);
         assert_eq!(response.logs[1], "Pulling image nginx:alpine.");
+    }
+
+    #[test]
+    fn mcp_and_dashboard_share_the_runtime_log_path() {
+        let source = include_str!("app_services.rs");
+        assert!(!source.contains("Use the dashboard runtime log viewer"));
+        assert!(source.contains("create_for_user"));
+        assert!(source.contains("cluster_kubernetes::pod_logs"));
+        let undeployed = logs_unavailable_response(
+            Uuid::nil(),
+            &AppServiceLogsTarget {
+                container_name: None,
+                status: STATUS_PROVISIONING.to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(undeployed.lines.is_empty());
+        assert!(
+            undeployed
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("has not been deployed yet")
+        );
+        assert!(
+            logs_unavailable_response(
+                Uuid::nil(),
+                &AppServiceLogsTarget {
+                    container_name: Some("knotree-app-ready".to_owned()),
+                    status: STATUS_READY.to_owned(),
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn kong_routes_restore_ready_public_services_only() {
+        let ready_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let pending_id = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let routes = kong_routes_from_rows(
+            &[
+                KongSyncRow {
+                    id: ready_id,
+                    public_subdomain: Some("app-readyhost1234".to_owned()),
+                    public_access_enabled: true,
+                    rate_limit_rpm: 90,
+                    host: Some("knotree-app-ready".to_owned()),
+                    port: Some(8080),
+                    container_name: Some("knotree-app-ready".to_owned()),
+                    status: STATUS_READY.to_owned(),
+                },
+                KongSyncRow {
+                    id: pending_id,
+                    public_subdomain: Some("app-pendinghost12".to_owned()),
+                    public_access_enabled: true,
+                    rate_limit_rpm: 30,
+                    host: Some("knotree-app-pending".to_owned()),
+                    port: Some(8080),
+                    container_name: Some("knotree-app-pending".to_owned()),
+                    status: STATUS_PROVISIONING.to_owned(),
+                },
+            ],
+            Some("knotree.org"),
+        );
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].service_id, ready_id);
+        assert_eq!(routes[0].public_host, "app-readyhost1234.knotree.org");
+        assert_eq!(routes[0].upstream_url, "http://knotree-app-ready:8080");
+        assert_eq!(routes[0].rate_limit_rpm, 90);
+        let main = include_str!("main.rs");
+        assert!(main.contains("spawn_kong_route_syncer"));
+    }
+
+    #[tokio::test]
+    async fn mcp_deploy_logs_and_setup_mutate_the_project() {
+        let Some(state) = crate::test_support::test_app_state().await else {
+            return;
+        };
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let deployed = mcp_deploy(
+            &state,
+            seed.user_id,
+            &seed.workspace_slug,
+            &seed.project_slug,
+            serde_json::json!({
+                "name": "Docs site",
+                "image": "nginx:alpine",
+                "imageSource": "public",
+                "appPort": 80
+            }),
+        )
+        .await
+        .expect("mcp deploy should insert an app service");
+        let service_id = Uuid::parse_str(deployed["id"].as_str().expect("service id")).unwrap();
+        assert_eq!(deployed["name"], "Docs site");
+        assert_eq!(deployed["image"], "nginx:alpine");
+        let stored_name = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM project_app_services WHERE id = $1 AND project_id = $2",
+        )
+        .bind(service_id)
+        .bind(seed.project_id)
+        .fetch_one(&state.db)
+        .await
+        .expect("deployed row");
+        assert_eq!(stored_name, "Docs site");
+
+        let logs = mcp_service_logs(
+            &state,
+            seed.user_id,
+            &seed.workspace_slug,
+            &seed.project_slug,
+            service_id,
+        )
+        .await
+        .expect("mcp logs");
+        assert!(logs.lines.is_empty());
+        assert!(
+            logs.message
+                .as_deref()
+                .unwrap()
+                .contains("has not been deployed yet")
+        );
+
+        let setup = mcp_setup_public_access(
+            &state,
+            seed.user_id,
+            &seed.workspace_slug,
+            &seed.project_slug,
+            service_id,
+            true,
+            Some(120),
+        )
+        .await
+        .expect("mcp setup should persist public access");
+        assert_eq!(setup["publicAccessEnabled"], true);
+        assert_eq!(setup["rateLimitRpm"], 120);
+        let domain = setup["publicDomain"].as_str().expect("assigned domain");
+        assert!(domain.ends_with(".knotree.org"));
+        let enabled = sqlx::query_scalar::<_, bool>(
+            "SELECT public_access_enabled FROM project_app_services WHERE id = $1",
+        )
+        .bind(service_id)
+        .fetch_one(&state.db)
+        .await
+        .expect("public access flag");
+        assert!(enabled);
+        let subdomain = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT public_subdomain FROM project_app_services WHERE id = $1",
+        )
+        .bind(service_id)
+        .fetch_one(&state.db)
+        .await
+        .expect("assigned subdomain");
+        assert!(subdomain.is_some());
     }
 }

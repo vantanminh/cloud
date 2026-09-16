@@ -5,7 +5,8 @@ use std::{
 
 use axum::{
     Json,
-    extract::State,
+    body::to_bytes,
+    extract::{Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
 };
@@ -19,7 +20,6 @@ use uuid::Uuid;
 use crate::{
     app_services, auth,
     error::AppError,
-    public_access::{PublicAccessState, enable_public_access, public_hostname},
     security,
     state::AppState,
 };
@@ -386,12 +386,13 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "workspaceSlug": { "type": "string" },
+                    "projectSlug": { "type": "string" },
+                    "appServiceId": { "type": "string" },
                     "enabled": { "type": "boolean" },
-                    "currentSubdomain": { "type": "string" },
-                    "rootDomain": { "type": "string" },
                     "rateLimitRpm": { "type": "integer" }
                 },
-                "required": ["enabled"]
+                "required": ["workspaceSlug", "projectSlug", "appServiceId", "enabled"]
             }
         }
     ])
@@ -417,30 +418,6 @@ pub fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
         result: Some(json!({ "tools": tool_definitions() })),
         error: None,
     }
-}
-
-pub fn setup_public_access_action(
-    enabled: bool,
-    current_subdomain: Option<String>,
-    root_domain: Option<&str>,
-) -> Value {
-    if !enabled {
-        return json!({
-            "enabled": false,
-            "publicDomain": serde_json::Value::Null,
-            "subdomain": current_subdomain,
-        });
-    }
-    let update = enable_public_access(PublicAccessState {
-        enabled: false,
-        subdomain: current_subdomain,
-    });
-    json!({
-        "enabled": true,
-        "publicDomain": public_hostname(true, update.subdomain.as_deref(), root_domain),
-        "subdomain": update.subdomain,
-        "assignedNewSubdomain": update.assigned_new_subdomain,
-    })
 }
 
 pub async fn well_known_authorization_server(
@@ -607,10 +584,13 @@ pub async fn authorize_submit(
     Ok(Redirect::temporary(location.as_str()).into_response())
 }
 
+const MAX_TOKEN_BODY_BYTES: usize = 32 * 1024;
+
 pub async fn token(
     State(state): State<AppState>,
-    Json(input): Json<TokenRequest>,
+    request: Request,
 ) -> Result<Json<TokenResponse>, AppError> {
+    let input = parse_token_request(request).await?;
     match input.grant_type.as_str() {
         "authorization_code" => issue_from_code(&state, input).await,
         "refresh_token" => refresh_access_token(&state, input).await,
@@ -618,6 +598,44 @@ pub async fn token(
             code: "MCP_GRANT_UNSUPPORTED",
             message: "Use authorization_code or refresh_token.",
         }),
+    }
+}
+
+pub async fn parse_token_request(request: Request) -> Result<TokenRequest, AppError> {
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_owned();
+    let bytes = to_bytes(request.into_body(), MAX_TOKEN_BODY_BYTES)
+        .await
+        .map_err(|_| AppError::BadRequest {
+            code: "MCP_TOKEN_BODY_INVALID",
+            message: "The token request body is invalid.",
+        })?;
+    parse_token_request_bytes(&content_type, &bytes)
+}
+
+pub fn parse_token_request_bytes(
+    content_type: &str,
+    body: &[u8],
+) -> Result<TokenRequest, AppError> {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim();
+    if media_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
+        serde_urlencoded::from_bytes(body).map_err(|_| AppError::BadRequest {
+            code: "MCP_TOKEN_BODY_INVALID",
+            message: "The token request body is invalid.",
+        })
+    } else {
+        serde_json::from_slice(body).map_err(|_| AppError::BadRequest {
+            code: "MCP_TOKEN_BODY_INVALID",
+            message: "The token request body is invalid.",
+        })
     }
 }
 
@@ -826,20 +844,35 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
                 .unwrap_or_default();
             json!({ "path": path, "content": read_doc(Path::new(&state.config.docs_dir), path)? })
         }
-        "setup_public_access" => setup_public_access_action(
+        "setup_public_access" => app_services::mcp_setup_public_access(
+            state,
+            user_id,
+            arguments
+                .get("workspaceSlug")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            arguments
+                .get("projectSlug")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            arguments
+                .get("appServiceId")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .ok_or(AppError::BadRequest {
+                    code: "MCP_SERVICE_ID_INVALID",
+                    message: "A valid appServiceId is required.",
+                })?,
             arguments
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
             arguments
-                .get("currentSubdomain")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            arguments
-                .get("rootDomain")
-                .and_then(Value::as_str)
-                .or(state.config.app_service_public_domain.as_deref()),
-        ),
+                .get("rateLimitRpm")
+                .and_then(Value::as_u64)
+                .map(|value| value as u32),
+        )
+        .await?,
         "account_logs" => json!({ "deployments": app_services::account_deployment_logs(state, user_id).await? }),
         "service_logs" => {
             let logs = app_services::mcp_service_logs(
@@ -1021,7 +1054,6 @@ struct AccessRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration as StdDuration;
 
     #[test]
     fn issues_access_and_refresh_tokens() {
@@ -1047,13 +1079,165 @@ mod tests {
     }
 
     #[test]
-    fn refresh_yields_a_new_access_token() {
-        let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-        let original = issue_token_pair(now, 60, 3600);
-        let refreshed = issue_token_pair(now + Duration::seconds(5), 60, 3600);
-        assert_ne!(original.access_token, refreshed.access_token);
-        assert_ne!(original.refresh_token, refreshed.refresh_token);
-        assert!(refreshed.access_expires_at > original.access_expires_at - Duration::seconds(1));
+    fn token_endpoint_accepts_form_urlencoded_and_json() {
+        let form = parse_token_request_bytes(
+            "application/x-www-form-urlencoded; charset=UTF-8",
+            b"grant_type=refresh_token&refresh_token=rt-1&client_id=mcp_1",
+        )
+        .unwrap();
+        assert_eq!(form.grant_type, "refresh_token");
+        assert_eq!(form.refresh_token.as_deref(), Some("rt-1"));
+        assert_eq!(form.client_id.as_deref(), Some("mcp_1"));
+
+        let json = parse_token_request_bytes(
+            "application/json",
+            br#"{"grant_type":"authorization_code","code":"c","redirect_uri":"http://localhost/cb","client_id":"mcp_1","code_verifier":"v"}"#,
+        )
+        .unwrap();
+        assert_eq!(json.grant_type, "authorization_code");
+        assert_eq!(json.code.as_deref(), Some("c"));
+        assert_eq!(json.code_verifier.as_deref(), Some("v"));
+    }
+
+    #[tokio::test]
+    async fn refresh_yields_a_new_access_token() {
+        let Some(state) = crate::test_support::test_app_state().await else {
+            return;
+        };
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let Json(original) = super::persist_token_pair(&state, seed.user_id, "mcp_refresh_client")
+            .await
+            .unwrap();
+        let Json(refreshed) = super::refresh_access_token(
+            &state,
+            TokenRequest {
+                grant_type: "refresh_token".to_owned(),
+                code: None,
+                redirect_uri: None,
+                client_id: Some("mcp_refresh_client".to_owned()),
+                client_secret: None,
+                code_verifier: None,
+                refresh_token: Some(original.refresh_token.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(refreshed.access_token, original.access_token);
+        assert_ne!(refreshed.refresh_token, original.refresh_token);
+
+        let form = format!(
+            "grant_type=refresh_token&refresh_token={}",
+            refreshed.refresh_token
+        );
+        let request = axum::http::Request::builder()
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(form))
+            .unwrap();
+        let Json(from_form) = token(axum::extract::State(state.clone()), request)
+            .await
+            .unwrap();
+        assert_ne!(from_form.access_token, refreshed.access_token);
+
+        let reused = super::refresh_access_token(
+            &state,
+            TokenRequest {
+                grant_type: "refresh_token".to_owned(),
+                code: None,
+                redirect_uri: None,
+                client_id: None,
+                client_secret: None,
+                code_verifier: None,
+                refresh_token: Some(original.refresh_token),
+            },
+        )
+        .await;
+        assert!(reused.is_err());
+    }
+
+    #[tokio::test]
+    async fn tools_call_real_docs_deploy_logs_and_public_setup() {
+        let Some(state) = crate::test_support::test_app_state().await else {
+            return;
+        };
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let context = |name: &str, arguments: Value| {
+            json!({
+                "name": name,
+                "arguments": arguments,
+            })
+        };
+
+        let docs = call_tool(
+            &state,
+            seed.user_id,
+            context("docs_search", json!({ "query": "PostgreSQL" })),
+        )
+        .await
+        .expect("docs tool");
+        assert!(!docs["structuredContent"]["hits"]
+            .as_array()
+            .expect("doc hits")
+            .is_empty());
+
+        let deployed = call_tool(
+            &state,
+            seed.user_id,
+            context(
+                "deploy_app_service",
+                json!({
+                    "workspaceSlug": &seed.workspace_slug,
+                    "projectSlug": &seed.project_slug,
+                    "name": "MCP site",
+                    "image": "nginx:alpine",
+                    "imageSource": "public",
+                    "appPort": 80,
+                }),
+            ),
+        )
+        .await
+        .expect("deploy tool");
+        let service_id = deployed["structuredContent"]["id"]
+            .as_str()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .expect("deployed service id");
+
+        let logs = call_tool(
+            &state,
+            seed.user_id,
+            context(
+                "service_logs",
+                json!({
+                    "workspaceSlug": &seed.workspace_slug,
+                    "projectSlug": &seed.project_slug,
+                    "appServiceId": service_id,
+                }),
+            ),
+        )
+        .await
+        .expect("service logs tool");
+        assert_eq!(logs["structuredContent"]["appServiceId"], service_id.to_string());
+
+        let setup = call_tool(
+            &state,
+            seed.user_id,
+            context(
+                "setup_public_access",
+                json!({
+                    "workspaceSlug": &seed.workspace_slug,
+                    "projectSlug": &seed.project_slug,
+                    "appServiceId": service_id,
+                    "enabled": true,
+                    "rateLimitRpm": 90,
+                }),
+            ),
+        )
+        .await
+        .expect("public access tool");
+        assert_eq!(setup["structuredContent"]["publicAccessEnabled"], true);
+        assert_eq!(setup["structuredContent"]["rateLimitRpm"], 90);
+        assert!(setup["structuredContent"]["publicDomain"]
+            .as_str()
+            .is_some_and(|domain| domain.ends_with(".knotree.org")));
     }
 
     #[test]
@@ -1072,17 +1256,6 @@ mod tests {
         let content = read_doc(&root, &hits[0].path).unwrap();
         assert!(content.to_ascii_lowercase().contains("postgres") || content.contains("#"));
         assert!(read_doc(&root, "../Cargo.toml").is_err());
-    }
-
-    #[test]
-    fn setup_public_access_tool_assigns_a_hostname() {
-        let result = setup_public_access_action(true, None, Some("knotree.org"));
-        assert_eq!(result["enabled"], true);
-        let domain = result["publicDomain"].as_str().unwrap();
-        assert!(domain.ends_with(".knotree.org"));
-        let disabled = setup_public_access_action(false, Some("app-keep".to_owned()), Some("knotree.org"));
-        assert_eq!(disabled["enabled"], false);
-        assert!(disabled["publicDomain"].is_null());
     }
 
     #[test]
@@ -1153,6 +1326,5 @@ mod tests {
             now,
             true
         ));
-        let _ = StdDuration::from_secs(1);
     }
 }

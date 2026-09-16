@@ -247,6 +247,24 @@ pub fn redis_resource_name(project_id: uuid::Uuid) -> String {
     format!("knotree-redis-{}", project_id.simple())
 }
 
+pub fn redis_service_dns(project_id: uuid::Uuid, namespace: &str) -> String {
+    format!("{}.{}.svc.cluster.local", redis_resource_name(project_id), namespace)
+}
+
+pub fn redis_service_manifest(project_id: uuid::Uuid, namespace: &str, labels: &Value) -> Value {
+    let name = redis_resource_name(project_id);
+    json!({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": { "name": name, "namespace": namespace, "labels": labels },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": labels,
+            "ports": [{ "name": "redis", "port": 6379, "targetPort": 6379, "protocol": "TCP" }],
+        },
+    })
+}
+
 pub fn app_deployment_manifest(
     spec: &AppWorkloadSpec,
     namespace: &str,
@@ -476,16 +494,7 @@ pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<Prov
         &namespace,
         GroupVersionKind::gvk("", "v1", "Service"),
         &name,
-        json!({
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": { "name": name, "namespace": namespace, "labels": labels },
-            "spec": {
-                "type": "ClusterIP",
-                "selector": labels,
-                "ports": [{ "name": "redis", "port": 6379, "targetPort": 6379, "protocol": "TCP" }],
-            },
-        }),
+        redis_service_manifest(spec.project_id, &namespace, &labels),
     )
     .await?;
     apply_resource(
@@ -520,7 +529,7 @@ pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<Prov
         name: name.clone(),
         namespace: Some(namespace.clone()),
         volume: Some(format!("data-{name}-0")),
-        internal_host: format!("{name}.{namespace}.svc.cluster.local"),
+        internal_host: redis_service_dns(spec.project_id, &namespace),
         internal_port: 6379,
         public_host: None,
         public_port: None,
@@ -760,5 +769,27 @@ mod tests {
             "10Gi"
         );
         assert_eq!(crate::limits::TENANT_RESOURCE_CAPS.cpu, "1");
+        let redis_name = redis_resource_name(project_id);
+        assert_eq!(
+            redis_name,
+            format!("knotree-redis-{}", project_id.simple())
+        );
+        assert_ne!(redis_name, crate::cluster::PROJECT_NETWORK_REDIS_ALIAS);
+        assert_eq!(
+            redis_service_dns(project_id, "knotree-cloud"),
+            format!("{redis_name}.knotree-cloud.svc.cluster.local")
+        );
+        assert_eq!(redis["metadata"]["name"], redis_name);
+        assert_eq!(redis["spec"]["serviceName"], redis_name);
+        let service = redis_service_manifest(
+            project_id,
+            "knotree-cloud",
+            &serde_json::json!({ "app.knotree.com/component": "redis" }),
+        );
+        assert_eq!(service["metadata"]["name"], redis_name);
+        assert_ne!(
+            service["metadata"]["name"],
+            crate::cluster::PROJECT_NETWORK_REDIS_ALIAS
+        );
     }
 }

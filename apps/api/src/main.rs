@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     let metrics_sampler = database::spawn_metrics_sampler(state.clone());
     let storage_guard = database::spawn_storage_guard(state.clone());
     let auto_deployer = app_services::spawn_auto_deployer(state.clone());
+    let kong_syncer = app_services::spawn_kong_route_syncer(state.clone());
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!(%bind_addr, "knotree api listening");
 
@@ -41,6 +42,7 @@ async fn main() -> Result<()> {
     metrics_sampler.abort();
     storage_guard.abort();
     auto_deployer.abort();
+    kong_syncer.abort();
     Ok(())
 }
 
