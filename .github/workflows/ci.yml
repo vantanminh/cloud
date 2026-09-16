@@ -10,6 +10,10 @@ permissions:
   packages: write
   actions: read
 
+concurrency:
+  group: knotree-cloud-ci
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   API_IMAGE: ghcr.io/${{ github.repository }}/api

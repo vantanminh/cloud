@@ -20,6 +20,8 @@ metadata:
     app.kubernetes.io/component: apps-kong
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "knotree-api.name" . }}-apps-kong
