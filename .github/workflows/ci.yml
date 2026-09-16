@@ -16,27 +16,30 @@ env:
   WEB_IMAGE: ghcr.io/${{ github.repository }}/web
 
 jobs:
-  test:
+  test-api:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: API tests
+        run: cargo test --manifest-path apps/api/Cargo.toml --locked
+
+  test-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 12
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - name: API tests
-        run: cargo test --manifest-path apps/api/Cargo.toml --locked
       - name: Web tests
         run: |
           pnpm install --frozen-lockfile
           pnpm test:web
 
   build:
-    needs: test
+    needs: [test-api, test-web]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
@@ -44,8 +47,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 12
       - uses: actions/setup-node@v4
         with:
           node-version: 22
