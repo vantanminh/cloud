@@ -13,8 +13,15 @@ cd "$ROOT"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NS" delete limitrange --all --ignore-not-found
+kubectl -n "$NS" delete pod --field-selector=status.phase=Pending --ignore-not-found || true
 
-if kubectl -n knotree-system get secret ghcr-cred >/dev/null 2>&1; then
+if [ -n "${GHCR_TOKEN:-}" ]; then
+  kubectl -n "$NS" create secret docker-registry ghcr-cred \
+    --docker-server=ghcr.io \
+    --docker-username="${GHCR_USERNAME:-vantanminh}" \
+    --docker-password="${GHCR_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+elif kubectl -n knotree-system get secret ghcr-cred >/dev/null 2>&1; then
   kubectl get secret ghcr-cred -n knotree-system -o json \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"ghcr-cred","namespace":"knotree-cloud"}; d.pop("resourceVersion",None); d.pop("uid",None); d.pop("creationTimestamp",None); print(json.dumps(d))' \
     | kubectl apply -f -
