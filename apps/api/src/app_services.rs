@@ -1084,7 +1084,7 @@ pub async fn update_public_access(
     ))
     .bind(update.enabled)
     .bind(update.subdomain.as_deref())
-    .bind(i32::from(input.rate_limit_rpm.unwrap_or(rate_limit_rpm.requests_per_minute)))
+    .bind(i32::try_from(input.rate_limit_rpm.unwrap_or(rate_limit_rpm.requests_per_minute)).unwrap_or(60))
     .bind(app_service_id)
     .fetch_one(&state.db)
     .await?;
@@ -1314,7 +1314,7 @@ pub async fn create(
         .bind(i32::from(app_port))
         .bind(Option::<String>::None)
         .bind(false)
-        .bind(i32::from(state.config.default_rate_limit_rpm))
+        .bind(i32::try_from(state.config.default_rate_limit_rpm).unwrap_or(60))
         .bind(STATUS_PROVISIONING)
         .bind(auto_deploy_enabled)
         .bind(github_connection_user_id)

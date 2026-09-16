@@ -903,7 +903,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
                 .get("projectSlug")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
-            arguments,
+            arguments.clone(),
         )
         .await?,
         _ => {

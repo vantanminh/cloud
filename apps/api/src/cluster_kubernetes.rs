@@ -14,7 +14,7 @@ use crate::{
         ProvisionedCluster,
     },
     config::Config,
-    limits::{self, kubernetes_resource_requirements, kubernetes_storage_request},
+    limits::{kubernetes_resource_requirements, kubernetes_storage_request},
 };
 
 const POSTGRES_PORT: u16 = 5432;
@@ -759,6 +759,6 @@ mod tests {
             redis["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
             "10Gi"
         );
-        let _ = limits::TENANT_RESOURCE_CAPS;
+        assert_eq!(crate::limits::TENANT_RESOURCE_CAPS.cpu, "1");
     }
 }

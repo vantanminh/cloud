@@ -7,10 +7,7 @@ use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
 
-use crate::{
-    config::Config,
-    limits::{self, TENANT_RESOURCE_CAPS, docker_resource_limit_args},
-};
+use crate::{config::Config, limits};
 
 pub use crate::limits::{
     RESOURCE_CPU_LIMIT, RESOURCE_MEMORY_LIMIT_DOCKER, RESOURCE_MEMORY_LIMIT_KUBERNETES,
@@ -306,12 +303,12 @@ async fn docker_app_storage_metrics(config: &Config, container_name: &str) -> Re
         }
     }
 
-    Ok((used_bytes, TENANT_RESOURCE_CAPS.storage_bytes))
+    Ok((used_bytes, limits::TENANT_RESOURCE_CAPS.storage_bytes))
 }
 
 pub async fn ensure_docker_runtime_limits(config: &Config, container_name: &str) -> Result<()> {
     let mut args = vec!["update".to_owned()];
-    args.extend(docker_runtime_limit_args());
+    args.extend(limits::docker_runtime_limit_args());
     args.push(container_name.to_owned());
     run_docker(config, args).await.map(|_| ())
 }
@@ -489,7 +486,7 @@ async fn provision_redis_docker(config: &Config, spec: &ClusterSpec) -> Result<P
             "--volume".to_owned(),
             format!("{volume_name}:/data"),
         ];
-        docker_args.extend(docker_resource_limit_args());
+        docker_args.extend(limits::docker_resource_limit_args());
         docker_args.push(config.redis_cluster_image.clone());
         docker_args.extend([
             "redis-server".to_owned(),
@@ -523,9 +520,9 @@ async fn provision_redis_docker(config: &Config, spec: &ClusterSpec) -> Result<P
         name: cluster_name,
         namespace: None,
         volume: Some(volume_name),
-        internal_host,
+        internal_host: internal_host.clone(),
         internal_port: port,
-        public_host: Some(internal_host.clone()),
+        public_host: Some(internal_host),
         public_port: Some(port),
         network_name: Some(network_name),
     })
@@ -596,7 +593,7 @@ async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<Provisi
             "--volume".to_owned(),
             format!("{volume_name}:/var/lib/postgresql/data"),
         ];
-        docker_args.extend(docker_resource_limit_args());
+        docker_args.extend(limits::docker_resource_limit_args());
         docker_args.push(config.database_cluster_image.clone());
         run_docker(config, docker_args).await?;
     } else {

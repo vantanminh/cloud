@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react"
 import {
@@ -506,13 +507,15 @@ function TopologyDashboard({
 
   function handleNodePointerDown(
     nodeId: TopologyNodeId,
-    event: React.PointerEvent<HTMLElement>
+    event: ReactPointerEvent<HTMLElement>
   ) {
-    event.currentTarget.setPointerCapture(event.pointerId)
+    if (typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
     dragRef.current = { id: nodeId, moved: false }
   }
 
-  function handleNodePointerMove(event: React.PointerEvent<HTMLElement>) {
+  function handleNodePointerMove(event: ReactPointerEvent<HTMLElement>) {
     const drag = dragRef.current
     if (!drag || event.buttons === 0) {
       return
