@@ -89,82 +89,34 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
-      - uses: azure/setup-kubectl@v4
-      - name: Configure cluster
+      - name: SSH deploy (pull CI images only)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
         run: |
-          mkdir -p "$HOME/.kube"
-          printf '%s' "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-          kubectl cluster-info
-      - name: Prepare namespace and pull secret
-        run: |
-          kubectl create namespace knotree-cloud --dry-run=client -o yaml | kubectl apply -f -
-          if kubectl -n knotree-system get secret ghcr-cred >/dev/null 2>&1; then
-            kubectl get secret ghcr-cred -n knotree-system -o json \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"ghcr-cred","namespace":"knotree-cloud"}; d.pop("resourceVersion",None); d.pop("uid",None); d.pop("creationTimestamp",None); print(json.dumps(d))' \
-              | kubectl apply -f -
-          fi
-          if kubectl -n knotree-system get secret knotree-landing-tls >/dev/null 2>&1; then
-            kubectl get secret knotree-landing-tls -n knotree-system -o json \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"knotree-landing-tls","namespace":"knotree-cloud"}; d.pop("resourceVersion",None); d.pop("uid",None); d.pop("creationTimestamp",None); print(json.dumps(d))' \
-              | kubectl apply -f -
-          fi
-          kubectl -n knotree-system delete ingress knotree-console knotree-console-api --ignore-not-found
-      - name: Ensure API secrets
-        run: |
-          if ! kubectl -n knotree-cloud get secret knotree-api-secrets >/dev/null 2>&1; then
-            PG_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-            ENC_KEY="$(python3 -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="))')"
-            DATABASE_URL="postgres://knotree:${PG_PASSWORD}@knotree-cloud-knotree-api-pg:5432/knotree_cloud"
-            kubectl -n knotree-cloud create secret generic knotree-api-secrets \
-              --from-literal=POSTGRES_PASSWORD="$PG_PASSWORD" \
-              --from-literal=DATABASE_URL="$DATABASE_URL" \
-              --from-literal=DATABASE_CREDENTIALS_ENCRYPTION_KEY="$ENC_KEY"
-          fi
-      - name: Helm upgrade (pull CI images only)
-        run: |
-          helm upgrade --install knotree-cloud deploy/helm/knotree-api \
-            --namespace knotree-cloud \
-            --set image.repository="${API_IMAGE}" \
-            --set image.tag="${{ github.sha }}" \
-            --set image.pullPolicy=Always \
-            --set web.image.repository="${WEB_IMAGE}" \
-            --set web.image.tag="${{ github.sha }}" \
-            --set web.image.pullPolicy=Always \
-            --set env.appServiceProvisioningEnabled=true \
-            --set env.databaseProvisioningEnabled=true \
-            --set env.databaseClusterProvider=kubernetes \
-            --set env.databaseClusterNamespace=knotree-cloud \
-            --wait \
-            --timeout 8m
-      - name: In-cluster probes
-        run: |
-          kubectl -n knotree-cloud rollout status deploy/knotree-cloud-knotree-api --timeout=240s
-          kubectl -n knotree-cloud rollout status deploy/knotree-cloud-knotree-api-web --timeout=180s
-          API_SVC="$(kubectl -n knotree-cloud get svc -l app.kubernetes.io/name=knotree-api -o jsonpath='{.items[0].metadata.name}')"
-          WEB_SVC="${API_SVC}-web"
-          kubectl -n knotree-cloud delete pod probe-healthz probe-web --ignore-not-found
-          kubectl -n knotree-cloud run probe-healthz --restart=Never --image=curlimages/curl:8.11.1 -- curl -fsS "http://${API_SVC}:8080/healthz"
-          kubectl -n knotree-cloud wait --for=jsonpath='{.status.phase}'=Succeeded pod/probe-healthz --timeout=60s
-          kubectl -n knotree-cloud logs probe-healthz | tee healthz.json
-          kubectl -n knotree-cloud run probe-web --restart=Never --image=curlimages/curl:8.11.1 -- curl -fsS "http://${WEB_SVC}:8080/"
-          kubectl -n knotree-cloud wait --for=jsonpath='{.status.phase}'=Succeeded pod/probe-web --timeout=60s
-          kubectl -n knotree-cloud logs probe-web | tee dashboard.html
-          echo "--- public ---"
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -H "$SSH_HOST" >> "$HOME/.ssh/known_hosts"
+          ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "${SSH_USER}@${SSH_HOST}" \
+            "export PATH=/usr/local/bin:/usr/bin:\$PATH
+             cd /home/code/cloud
+             git fetch origin
+             git checkout -f ${{ github.sha }}
+             chmod +x deploy/k3s-pull.sh
+             KNOTREE_PROBE_DIR=/tmp/knotree-probes \
+               ./deploy/k3s-pull.sh ${{ github.sha }} ${API_IMAGE} ${WEB_IMAGE}"
+          mkdir -p probes
+          scp -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes \
+            "${SSH_USER}@${SSH_HOST}:/tmp/knotree-probes/healthz.json" \
+            "${SSH_USER}@${SSH_HOST}:/tmp/knotree-probes/dashboard.html" \
+            probes/ || true
           curl -fsSI --max-time 20 https://cloud.knotree.com || true
           curl -fsS --max-time 20 https://cloud.knotree.com/healthz || true
-      - name: Capture status
-        if: always()
-        run: |
-          kubectl -n knotree-cloud get deploy,sts,svc,ingressroute,pods -o wide
-          kubectl -n knotree-cloud get deploy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.template.spec.containers[*].image}{"\n"}{end}'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: deploy-probes
-          path: |
-            healthz.json
-            dashboard.html
+          path: probes/
           if-no-files-found: ignore
