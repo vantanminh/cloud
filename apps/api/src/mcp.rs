@@ -107,8 +107,8 @@ pub fn issue_token_pair(
     access_ttl_seconds: i64,
     refresh_ttl_seconds: i64,
 ) -> IssuedTokenPair {
-    let access_ttl = Duration::seconds(access_ttl_seconds.max(60));
-    let refresh_ttl = Duration::seconds(refresh_ttl_seconds.max(access_ttl_seconds.max(60)));
+    let access_ttl = Duration::seconds(access_ttl_seconds.max(1));
+    let refresh_ttl = Duration::seconds(refresh_ttl_seconds.max(access_ttl_seconds.max(1)));
     let access_token = security::random_token();
     let refresh_token = security::random_token();
     IssuedTokenPair {
@@ -1132,6 +1132,13 @@ mod tests {
     fn expired_or_revoked_tokens_are_rejected() {
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         let pair = issue_token_pair(now, 30, 60);
+        assert!(!access_token_is_valid(
+            &pair.access_token_hash,
+            pair.access_expires_at,
+            &pair.access_token,
+            pair.access_expires_at,
+            false
+        ));
         assert!(!access_token_is_valid(
             &pair.access_token_hash,
             pair.access_expires_at,
