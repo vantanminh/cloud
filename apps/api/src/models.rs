@@ -134,6 +134,8 @@ pub struct AppServiceResponse {
     pub port: Option<u16>,
     pub service_url: Option<String>,
     pub public_domain: Option<String>,
+    pub public_access_enabled: bool,
+    pub rate_limit_rpm: u32,
     pub container_name: Option<String>,
     pub error_message: Option<String>,
     pub auto_deploy_enabled: bool,
@@ -160,6 +162,45 @@ pub struct CreateAppServiceRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAppServiceRequest {
     pub app_port: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAppServicePublicAccessRequest {
+    pub enabled: bool,
+    pub rate_limit_rpm: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisResourceResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub resource_type: String,
+    pub status: String,
+    pub host: String,
+    pub port: u16,
+    pub connection_string: Option<String>,
+    pub cluster_provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cluster_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub network_alias: String,
+    pub cpu_limit: String,
+    pub memory_limit: String,
+    pub storage_limit: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDeploymentLog {
+    pub app_service_id: Uuid,
+    pub project_id: Uuid,
+    pub status: String,
+    pub current_step: String,
+    pub logs: Vec<String>,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

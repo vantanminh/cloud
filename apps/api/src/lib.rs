@@ -6,9 +6,14 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod github;
+pub mod kong;
+pub mod limits;
+pub mod mcp;
 pub mod metrics;
 pub mod models;
 pub mod projects;
+pub mod public_access;
+pub mod redis_resources;
 pub mod resources;
 pub mod security;
 pub mod state;
@@ -42,6 +47,9 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/github/callback", get(github::callback))
         .route("/auth/github/status", get(github::status))
         .route("/auth/github/disconnect", post(github::disconnect))
+        .route("/oauth/register", post(mcp::register_client))
+        .route("/oauth/token", post(mcp::token))
+        .route("/mcp", post(mcp::mcp_endpoint))
         .route("/workspaces", post(workspaces::create))
         .route("/workspaces/{slug}", get(workspaces::get));
 
@@ -87,8 +95,16 @@ pub fn router(state: AppState) -> Router {
             patch(app_services::update_database_connection),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/public-access",
+            patch(app_services::update_public_access),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}",
             patch(app_services::update),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/redis",
+            get(redis_resources::list).post(redis_resources::create),
         )
         .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services",
@@ -122,6 +138,18 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(mcp::well_known_authorization_server),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(mcp::well_known_protected_resource),
+        )
+        .route("/oauth/authorize", get(mcp::authorize).post(mcp::authorize_submit))
+        .route("/oauth/register", post(mcp::register_client))
+        .route("/oauth/token", post(mcp::token))
+        .route("/mcp", post(mcp::mcp_endpoint))
         .nest("/api/v1", api)
         .fallback(app_services::public_domain_fallback)
         .layer(middleware::from_fn_with_state(

@@ -10,10 +10,11 @@ use tokio::time::sleep;
 
 use crate::{
     cluster::{
-        ClusterSpec, PROVIDER_KUBERNETES, ProvisionedCluster, RESOURCE_CPU_LIMIT,
-        RESOURCE_MEMORY_LIMIT_KUBERNETES,
+        ClusterSpec, PROJECT_NETWORK_APP_ALIAS, PROJECT_NETWORK_REDIS_ALIAS, PROVIDER_KUBERNETES,
+        ProvisionedCluster,
     },
     config::Config,
+    limits::{self, kubernetes_resource_requirements, kubernetes_storage_request},
 };
 
 const POSTGRES_PORT: u16 = 5432;
@@ -202,13 +203,7 @@ fn stateful_set_manifest(
                             "timeoutSeconds": 5,
                             "failureThreshold": 6,
                         },
-                        "resources": {
-                            "requests": { "cpu": "100m", "memory": "256Mi" },
-                            "limits": {
-                                "cpu": RESOURCE_CPU_LIMIT,
-                                "memory": RESOURCE_MEMORY_LIMIT_KUBERNETES,
-                            },
-                        },
+                        "resources": kubernetes_resource_requirements(),
                         "volumeMounts": [{
                             "name": "data",
                             "mountPath": "/var/lib/postgresql/data",
@@ -220,11 +215,371 @@ fn stateful_set_manifest(
                 "metadata": { "name": "data", "labels": labels },
                 "spec": {
                     "accessModes": ["ReadWriteOnce"],
-                    "resources": { "requests": { "storage": config.database_cluster_storage_size } },
+                    "resources": kubernetes_storage_request(),
                 },
             }],
         },
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct AppWorkloadSpec {
+    pub project_id: uuid::Uuid,
+    pub service_id: uuid::Uuid,
+    pub image: String,
+    pub app_port: u16,
+    pub env: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProvisionedApp {
+    pub name: String,
+    pub namespace: String,
+    pub host: String,
+    pub port: u16,
+}
+
+pub fn app_resource_name(service_id: uuid::Uuid) -> String {
+    format!("knotree-app-{}", service_id.simple())
+}
+
+pub fn redis_resource_name(project_id: uuid::Uuid) -> String {
+    format!("knotree-redis-{}", project_id.simple())
+}
+
+pub fn app_deployment_manifest(
+    spec: &AppWorkloadSpec,
+    namespace: &str,
+    image_pull_secret: Option<&str>,
+) -> Value {
+    let name = app_resource_name(spec.service_id);
+    let labels = json!({
+        "app.knotree.com/managed-by": "knotree-api",
+        "app.knotree.com/component": "app-service",
+        "app.knotree.com/project-id": spec.project_id.to_string(),
+        "app.knotree.com/app-service-id": spec.service_id.to_string(),
+        "app.knotree.com/network-alias": PROJECT_NETWORK_APP_ALIAS,
+    });
+    let env = spec
+        .env
+        .iter()
+        .map(|(key, value)| json!({ "name": key, "value": value }))
+        .collect::<Vec<_>>();
+    let mut pod_spec = json!({
+        "automountServiceAccountToken": false,
+        "securityContext": {
+            "runAsNonRoot": true,
+            "seccompProfile": { "type": "RuntimeDefault" },
+        },
+        "containers": [{
+            "name": "app",
+            "image": spec.image,
+            "imagePullPolicy": "IfNotPresent",
+            "ports": [{
+                "name": "http",
+                "containerPort": spec.app_port,
+                "protocol": "TCP",
+            }],
+            "env": env,
+            "resources": kubernetes_resource_requirements(),
+            "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": false,
+                "capabilities": { "drop": ["ALL"] },
+            },
+        }],
+    });
+    if let Some(secret) = image_pull_secret.filter(|value| !value.is_empty()) {
+        pod_spec["imagePullSecrets"] = json!([{ "name": secret }]);
+    }
+    json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": name, "namespace": namespace, "labels": labels },
+        "spec": {
+            "replicas": 1,
+            "selector": { "matchLabels": labels },
+            "template": {
+                "metadata": { "labels": labels },
+                "spec": pod_spec,
+            },
+        },
+    })
+}
+
+pub fn app_service_manifest(spec: &AppWorkloadSpec, namespace: &str) -> Value {
+    let name = app_resource_name(spec.service_id);
+    let labels = json!({
+        "app.knotree.com/managed-by": "knotree-api",
+        "app.knotree.com/component": "app-service",
+        "app.knotree.com/project-id": spec.project_id.to_string(),
+        "app.knotree.com/app-service-id": spec.service_id.to_string(),
+    });
+    json!({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": { "name": name, "namespace": namespace, "labels": labels },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": labels,
+            "ports": [{
+                "name": "http",
+                "port": spec.app_port,
+                "targetPort": spec.app_port,
+                "protocol": "TCP",
+            }],
+        },
+    })
+}
+
+pub fn redis_stateful_set_manifest(config: &Config, spec: &ClusterSpec, namespace: &str) -> Value {
+    let name = redis_resource_name(spec.project_id);
+    let labels = json!({
+        "app.knotree.com/managed-by": "knotree-api",
+        "app.knotree.com/component": "redis",
+        "app.knotree.com/project-id": spec.project_id.to_string(),
+        "app.knotree.com/network-alias": PROJECT_NETWORK_REDIS_ALIAS,
+    });
+    json!({
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": { "name": name, "namespace": namespace, "labels": labels },
+        "spec": {
+            "serviceName": name,
+            "replicas": 1,
+            "selector": { "matchLabels": labels },
+            "template": {
+                "metadata": { "labels": labels },
+                "spec": {
+                    "automountServiceAccountToken": false,
+                    "containers": [{
+                        "name": "redis",
+                        "image": config.redis_cluster_image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "args": [
+                            "redis-server",
+                            "--appendonly", "yes",
+                            "--requirepass", spec.password,
+                            "--maxmemory", "768mb",
+                            "--maxmemory-policy", "allkeys-lru",
+                        ],
+                        "ports": [{ "name": "redis", "containerPort": 6379, "protocol": "TCP" }],
+                        "resources": kubernetes_resource_requirements(),
+                        "volumeMounts": [{ "name": "data", "mountPath": "/data" }],
+                    }],
+                },
+            },
+            "volumeClaimTemplates": [{
+                "metadata": { "name": "data", "labels": labels },
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "resources": kubernetes_storage_request(),
+                },
+            }],
+        },
+    })
+}
+
+pub fn project_network_policy_manifest(project_id: uuid::Uuid, namespace: &str) -> Value {
+    let name = format!("knotree-net-{}", &project_id.simple().to_string()[..20]);
+    json!({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": { "name": name, "namespace": namespace },
+        "spec": {
+            "podSelector": {
+                "matchLabels": { "app.knotree.com/project-id": project_id.to_string() }
+            },
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [
+                        { "podSelector": { "matchLabels": { "app.knotree.com/project-id": project_id.to_string() } } },
+                        { "podSelector": { "matchLabels": { "app.kubernetes.io/component": "api" } } },
+                        { "podSelector": { "matchLabels": { "app.kubernetes.io/component": "apps-kong" } } },
+                    ]
+                }
+            ],
+        },
+    })
+}
+
+pub async fn provision_app(
+    config: &Config,
+    spec: &AppWorkloadSpec,
+) -> Result<ProvisionedApp> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let namespace = config.database_cluster_namespace.clone();
+    let name = app_resource_name(spec.service_id);
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("", "v1", "Service"),
+        &name,
+        app_service_manifest(spec, &namespace),
+    )
+    .await?;
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("apps", "v1", "Deployment"),
+        &name,
+        app_deployment_manifest(
+            spec,
+            &namespace,
+            config.app_service_image_pull_secret.as_deref(),
+        ),
+    )
+    .await?;
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("networking.k8s.io", "v1", "NetworkPolicy"),
+        &format!("knotree-net-{}", &spec.project_id.simple().to_string()[..20]),
+        project_network_policy_manifest(spec.project_id, &namespace),
+    )
+    .await?;
+    let deployments: Api<DynamicObject> = namespaced_api(
+        client,
+        &namespace,
+        GroupVersionKind::gvk("apps", "v1", "Deployment"),
+    );
+    wait_for_deployment(
+        &deployments,
+        &name,
+        config.database_cluster_startup_timeout_seconds,
+    )
+    .await?;
+    Ok(ProvisionedApp {
+        host: format!("{name}.{namespace}.svc.cluster.local"),
+        port: spec.app_port,
+        name,
+        namespace,
+    })
+}
+
+pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let namespace = config.database_cluster_namespace.clone();
+    let name = redis_resource_name(spec.project_id);
+    let labels = json!({
+        "app.knotree.com/managed-by": "knotree-api",
+        "app.knotree.com/component": "redis",
+        "app.knotree.com/project-id": spec.project_id.to_string(),
+    });
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("", "v1", "Service"),
+        &name,
+        json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": { "name": name, "namespace": namespace, "labels": labels },
+            "spec": {
+                "type": "ClusterIP",
+                "selector": labels,
+                "ports": [{ "name": "redis", "port": 6379, "targetPort": 6379, "protocol": "TCP" }],
+            },
+        }),
+    )
+    .await?;
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("apps", "v1", "StatefulSet"),
+        &name,
+        redis_stateful_set_manifest(config, spec, &namespace),
+    )
+    .await?;
+    apply_resource(
+        client.clone(),
+        &namespace,
+        GroupVersionKind::gvk("networking.k8s.io", "v1", "NetworkPolicy"),
+        &format!("knotree-net-{}", &spec.project_id.simple().to_string()[..20]),
+        project_network_policy_manifest(spec.project_id, &namespace),
+    )
+    .await?;
+    let stateful_sets: Api<DynamicObject> = namespaced_api(
+        client,
+        &namespace,
+        GroupVersionKind::gvk("apps", "v1", "StatefulSet"),
+    );
+    wait_for_stateful_set(
+        &stateful_sets,
+        &name,
+        config.database_cluster_startup_timeout_seconds,
+    )
+    .await?;
+    Ok(ProvisionedCluster {
+        provider: PROVIDER_KUBERNETES.to_owned(),
+        name: name.clone(),
+        namespace: Some(namespace.clone()),
+        volume: Some(format!("data-{name}-0")),
+        internal_host: format!("{name}.{namespace}.svc.cluster.local"),
+        internal_port: 6379,
+        public_host: None,
+        public_port: None,
+        network_name: None,
+    })
+}
+
+pub async fn pod_logs(namespace: &str, name: &str, tail_lines: i64) -> Result<Vec<String>> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, namespace);
+    let list = pods
+        .list(&kube::api::ListParams::default())
+        .await
+        .context("could not list Kubernetes pods")?;
+    let pod_name = list
+        .items
+        .into_iter()
+        .filter_map(|pod| pod.metadata.name)
+        .find(|pod_name| pod_name.starts_with(name))
+        .context("could not find a pod for the workload")?;
+    let params = kube::api::LogParams {
+        tail_lines: Some(tail_lines),
+        timestamps: true,
+        ..Default::default()
+    };
+    let logs = pods
+        .logs(&pod_name, &params)
+        .await
+        .context("could not read Kubernetes pod logs")?;
+    Ok(logs.lines().map(ToOwned::to_owned).collect())
+}
+
+async fn wait_for_deployment(
+    api: &Api<DynamicObject>,
+    name: &str,
+    timeout_seconds: u32,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(u64::from(timeout_seconds));
+    loop {
+        let deployment = api
+            .get(name)
+            .await
+            .with_context(|| format!("could not read Kubernetes Deployment {name}"))?;
+        let ready_replicas = deployment
+            .data
+            .get("status")
+            .and_then(|status| status.get("readyReplicas"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if ready_replicas >= 1 {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("Kubernetes App service Deployment did not become ready before the startup timeout");
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
 }
 
 fn namespaced_api(client: Client, namespace: &str, gvk: GroupVersionKind) -> Api<DynamicObject> {
@@ -327,41 +682,7 @@ mod tests {
 
     #[test]
     fn renders_one_stateful_set_and_one_volume_claim_per_project() {
-        let config = Config {
-            database_url: "postgres://postgres:postgres@localhost:5432/knotree_cloud".to_owned(),
-            bind_addr: "127.0.0.1:8080".parse().unwrap(),
-            app_env: "test".to_owned(),
-            allowed_origins: vec!["http://localhost:5173".to_owned()],
-            cookie_secure: false,
-            auth_require_email_verification: false,
-            session_ttl_days: 30,
-            database_max_connections: 10,
-            database_provisioning_enabled: true,
-            database_resource_host: "localhost".to_owned(),
-            database_resource_port: 5432,
-            database_resource_public_host: None,
-            database_resource_public_port: None,
-            database_cluster_provider: "kubernetes".to_owned(),
-            database_cluster_image: "postgres:16-alpine".to_owned(),
-            database_cluster_docker_binary: "docker".to_owned(),
-            database_cluster_bind_address: "127.0.0.1".parse().unwrap(),
-            database_cluster_namespace: "knotree-clusters".to_owned(),
-            database_cluster_service_type: "ClusterIP".to_owned(),
-            database_cluster_storage_size: "10Gi".to_owned(),
-            database_cluster_startup_timeout_seconds: 90,
-            database_query_timeout_ms: 10_000,
-            database_query_max_rows: 500,
-            app_service_provisioning_enabled: false,
-            app_service_public_host: "localhost".to_owned(),
-            app_service_public_domain: None,
-            app_service_public_scheme: "http".to_owned(),
-            app_service_bind_address: "127.0.0.1".parse().unwrap(),
-            github_client_id: None,
-            github_client_secret: None,
-            github_oauth_redirect_uri: "http://localhost:8080/api/v1/auth/github/callback"
-                .to_owned(),
-            database_credentials_encryption_key: [7; 32],
-        };
+        let config = Config::test_fixture();
         let spec = ClusterSpec {
             project_id: Uuid::nil(),
             database_name: "knotree_db_test".to_owned(),
@@ -399,5 +720,45 @@ mod tests {
             manifest["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
             "10Gi"
         );
+        assert_eq!(container["resources"]["limits"]["ephemeral-storage"], "10Gi");
+    }
+
+    #[test]
+    fn app_and_redis_manifests_use_the_same_hard_caps() {
+        let config = Config::test_fixture();
+        let project_id = Uuid::nil();
+        let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let app = app_deployment_manifest(
+            &AppWorkloadSpec {
+                project_id,
+                service_id,
+                image: "nginx:alpine".to_owned(),
+                app_port: 80,
+                env: vec![("DATABASE_URL".to_owned(), "postgres://postgres:5432/db".to_owned())],
+            },
+            "knotree-cloud",
+            None,
+        );
+        let redis = redis_stateful_set_manifest(
+            &config,
+            &ClusterSpec {
+                project_id,
+                database_name: "redis".to_owned(),
+                role_name: "default".to_owned(),
+                password: "secret".to_owned(),
+            },
+            "knotree-cloud",
+        );
+        for manifest in [&app, &redis] {
+            let container = &manifest["spec"]["template"]["spec"]["containers"][0];
+            assert_eq!(container["resources"]["limits"]["cpu"], "1");
+            assert_eq!(container["resources"]["limits"]["memory"], "1Gi");
+            assert_eq!(container["resources"]["limits"]["ephemeral-storage"], "10Gi");
+        }
+        assert_eq!(
+            redis["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
+            "10Gi"
+        );
+        let _ = limits::TENANT_RESOURCE_CAPS;
     }
 }

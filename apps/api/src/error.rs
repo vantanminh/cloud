@@ -33,6 +33,10 @@ pub enum AppError {
         code: &'static str,
         message: &'static str,
     },
+    TooManyRequests {
+        code: &'static str,
+        message: &'static str,
+    },
     Validation {
         fields: BTreeMap<String, String>,
     },
@@ -117,6 +121,14 @@ impl IntoResponse for AppError {
             ),
             Self::ServiceUnavailable { code, message } => (
                 StatusCode::SERVICE_UNAVAILABLE,
+                ErrorBody {
+                    code: code.to_owned(),
+                    message: message.to_owned(),
+                    fields: None,
+                },
+            ),
+            Self::TooManyRequests { code, message } => (
+                StatusCode::TOO_MANY_REQUESTS,
                 ErrorBody {
                     code: code.to_owned(),
                     message: message.to_owned(),

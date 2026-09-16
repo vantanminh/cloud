@@ -47,6 +47,14 @@ pub struct Config {
     pub github_client_secret: Option<String>,
     pub github_oauth_redirect_uri: String,
     pub database_credentials_encryption_key: [u8; 32],
+    pub kong_admin_url: Option<String>,
+    pub docs_dir: String,
+    pub mcp_public_base_url: String,
+    pub mcp_access_ttl_seconds: i64,
+    pub mcp_refresh_ttl_seconds: i64,
+    pub redis_cluster_image: String,
+    pub app_service_image_pull_secret: Option<String>,
+    pub default_rate_limit_rpm: u32,
 }
 
 impl Config {
@@ -175,6 +183,27 @@ impl Config {
                 }
             });
         validate_non_empty_token("GITHUB_OAUTH_REDIRECT_URI", &github_oauth_redirect_uri)?;
+        let kong_admin_url = optional_env("KONG_ADMIN_URL");
+        let docs_dir = env::var("KNOTREE_DOCS_DIR").unwrap_or_else(|_| {
+            if std::path::Path::new("/usr/share/knotree/docs").exists() {
+                "/usr/share/knotree/docs".to_owned()
+            } else {
+                "docs".to_owned()
+            }
+        });
+        let mcp_public_base_url = env::var("MCP_PUBLIC_BASE_URL").unwrap_or_else(|_| {
+            if app_env == "production" {
+                "https://cloud.knotree.com".to_owned()
+            } else {
+                "http://localhost:8080".to_owned()
+            }
+        });
+        validate_non_empty_token("MCP_PUBLIC_BASE_URL", &mcp_public_base_url)?;
+        let redis_cluster_image =
+            env::var("REDIS_CLUSTER_IMAGE").unwrap_or_else(|_| "redis:7-alpine".to_owned());
+        validate_non_empty_token("REDIS_CLUSTER_IMAGE", &redis_cluster_image)?;
+        let app_service_image_pull_secret = optional_env("APP_SERVICE_IMAGE_PULL_SECRET");
+        let default_rate_limit_rpm = env_u32("APP_SERVICE_DEFAULT_RATE_LIMIT_RPM", 60)?;
 
         Ok(Self {
             database_url,
@@ -213,6 +242,14 @@ impl Config {
             github_client_secret,
             github_oauth_redirect_uri,
             database_credentials_encryption_key: credentials_encryption_key(&app_env)?,
+            kong_admin_url,
+            docs_dir,
+            mcp_public_base_url,
+            mcp_access_ttl_seconds: env_i64("MCP_ACCESS_TTL_SECONDS", 3600)?,
+            mcp_refresh_ttl_seconds: env_i64("MCP_REFRESH_TTL_SECONDS", 2_592_000)?,
+            redis_cluster_image,
+            app_service_image_pull_secret,
+            default_rate_limit_rpm,
             app_env,
             allowed_origins,
         })
@@ -248,9 +285,15 @@ impl Config {
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))
             .allow_credentials(true)
-            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PATCH,
+                Method::OPTIONS,
+            ])
             .allow_headers([
                 header::ACCEPT,
+                header::AUTHORIZATION,
                 header::CONTENT_TYPE,
                 HeaderName::from_static("x-csrf-token"),
             ])
@@ -438,6 +481,61 @@ fn validate_kubernetes_name(key: &str, value: &str) -> Result<()> {
         bail!("{key} must be a lowercase Kubernetes name");
     }
     Ok(())
+}
+
+impl Config {
+    pub fn uses_kubernetes_workloads(&self) -> bool {
+        self.database_cluster_provider == "kubernetes"
+    }
+}
+
+#[cfg(test)]
+impl Config {
+    pub fn test_fixture() -> Self {
+        Self {
+            database_url: "postgres://postgres:postgres@localhost:5432/knotree_cloud".to_owned(),
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            app_env: "test".to_owned(),
+            allowed_origins: vec!["http://localhost:5173".to_owned()],
+            cookie_secure: false,
+            auth_require_email_verification: false,
+            session_ttl_days: 30,
+            database_max_connections: 10,
+            database_provisioning_enabled: true,
+            database_resource_host: "localhost".to_owned(),
+            database_resource_port: 5432,
+            database_resource_public_host: None,
+            database_resource_public_port: None,
+            database_cluster_provider: "kubernetes".to_owned(),
+            database_cluster_image: "postgres:16-alpine".to_owned(),
+            database_cluster_docker_binary: "docker".to_owned(),
+            database_cluster_bind_address: "127.0.0.1".parse().unwrap(),
+            database_cluster_namespace: "knotree-clusters".to_owned(),
+            database_cluster_service_type: "ClusterIP".to_owned(),
+            database_cluster_storage_size: "10Gi".to_owned(),
+            database_cluster_startup_timeout_seconds: 90,
+            database_query_timeout_ms: 10_000,
+            database_query_max_rows: 500,
+            app_service_provisioning_enabled: true,
+            app_service_public_host: "localhost".to_owned(),
+            app_service_public_domain: Some("knotree.org".to_owned()),
+            app_service_public_scheme: "https".to_owned(),
+            app_service_bind_address: "127.0.0.1".parse().unwrap(),
+            github_client_id: None,
+            github_client_secret: None,
+            github_oauth_redirect_uri: "http://localhost:8080/api/v1/auth/github/callback"
+                .to_owned(),
+            database_credentials_encryption_key: [7; 32],
+            kong_admin_url: None,
+            docs_dir: "docs".to_owned(),
+            mcp_public_base_url: "http://localhost:8080".to_owned(),
+            mcp_access_ttl_seconds: 3600,
+            mcp_refresh_ttl_seconds: 2_592_000,
+            redis_cluster_image: "redis:7-alpine".to_owned(),
+            app_service_image_pull_secret: None,
+            default_rate_limit_rpm: 60,
+        }
+    }
 }
 
 fn validate_storage_size(value: &str) -> Result<()> {

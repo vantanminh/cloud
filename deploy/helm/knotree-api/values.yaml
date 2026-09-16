@@ -1,11 +1,37 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/knotree/knotree-api
+  repository: ghcr.io/vantanminh/cloud/api
   pullPolicy: IfNotPresent
   tag: ""
 
-imagePullSecrets: []
+web:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/vantanminh/cloud/web
+    pullPolicy: IfNotPresent
+    tag: ""
+  service:
+    port: 8080
+  ingress:
+    host: cloud.knotree.com
+
+appsKong:
+  enabled: true
+  image: kong:3.9
+  proxyPort: 8000
+  adminPort: 8001
+
+controlPlaneDatabase:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 10Gi
+  user: knotree
+  database: knotree_cloud
+
+imagePullSecrets:
+  - name: ghcr-cred
 nameOverride: ""
 fullnameOverride: ""
 
@@ -39,15 +65,17 @@ service:
 
 ingress:
   enabled: true
-  host: cloudapi.knotree.com
+  host: cloud.knotree.com
+  apiHost: cloudapi.knotree.com
   entryPoints:
+    - web
     - websecure
   tls:
     enabled: true
     secretName: cloudapi-knotree-com-tls
 
 certManager:
-  enabled: true
+  enabled: false
   clusterIssuer: letsencrypt-prod
 
 secrets:
@@ -77,12 +105,19 @@ env:
   databaseClusterStartupTimeoutSeconds: "180"
   databaseQueryTimeoutMs: "10000"
   databaseQueryMaxRows: "500"
-  appServiceProvisioningEnabled: "false"
+  appServiceProvisioningEnabled: "true"
   appServicePublicHost: ""
   appServicePublicDomain: knotree.org
   appServicePublicScheme: https
   appServiceBindAddress: "127.0.0.1"
-  githubOAuthRedirectUri: https://cloudapi.knotree.com/api/v1/auth/github/callback
+  githubOAuthRedirectUri: https://cloud.knotree.com/api/v1/auth/github/callback
+  kongAdminUrl: ""
+  mcpPublicBaseUrl: https://cloud.knotree.com
+  mcpAccessTtlSeconds: "3600"
+  mcpRefreshTtlSeconds: "2592000"
+  redisClusterImage: redis:7-alpine
+  appServiceImagePullSecret: ghcr-cred
+  appServiceDefaultRateLimitRpm: "60"
   rustLog: info,knotree_api=debug
 
 resources:
@@ -98,5 +133,5 @@ tolerations: []
 affinity: {}
 
 migrations:
-  enabled: true
+  enabled: false
   backoffLimit: 4

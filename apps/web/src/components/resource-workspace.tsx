@@ -45,6 +45,7 @@ import {
   updateAppService,
   updateAppServiceAutoDeploy,
   updateAppServiceDatabase,
+  updateAppServicePublicAccess,
 } from "@/lib/resources"
 import type {
   DatabaseConfig,
@@ -57,6 +58,7 @@ import type {
   ResourceMetricPoint,
   ResourceMetrics,
   PostgresResource,
+  RedisResource,
 } from "@/lib/types"
 
 import "./resource-workspace.css"
@@ -68,7 +70,7 @@ type ResourceWorkspaceNode = {
   type: string
   volume: string
   status: string
-  resource?: PostgresResource | AppService
+  resource?: PostgresResource | AppService | RedisResource
 }
 
 type ResourceWorkspaceTab =
@@ -178,7 +180,8 @@ export function ResourceWorkspace({
   }
 
   const connectionString =
-    node.resource?.resourceType === "postgres"
+    node.resource?.resourceType === "postgres" ||
+    node.resource?.resourceType === "redis"
       ? (node.resource.connectionString ?? undefined)
       : undefined
 
@@ -2606,6 +2609,109 @@ function DatabaseAttachmentEditor({
   )
 }
 
+function PublicAccessEditor({
+  appService,
+  workspaceSlug,
+  projectSlug,
+  onToast,
+  onAppServiceUpdated,
+}: {
+  appService: AppService
+  workspaceSlug: string
+  projectSlug: string
+  onToast: (message: string) => void
+  onAppServiceUpdated?: (resource: AppService) => void
+}) {
+  const [enabled, setEnabled] = useState(Boolean(appService.publicAccessEnabled))
+  const [rateLimitRpm, setRateLimitRpm] = useState(
+    String(appService.rateLimitRpm ?? 60)
+  )
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSave() {
+    const parsed = Number.parseInt(rateLimitRpm, 10)
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 10_000) {
+      setError("Rate limit must be between 1 and 10000 requests per minute.")
+      return
+    }
+    setIsSaving(true)
+    setError(null)
+    try {
+      const resource = await updateAppServicePublicAccess(
+        workspaceSlug,
+        projectSlug,
+        appService.id,
+        { enabled, rateLimitRpm: parsed }
+      )
+      onAppServiceUpdated?.(resource)
+      onToast(
+        resource.publicAccessEnabled
+          ? `Public hostname ${resource.publicDomain ?? "assigned"}`
+          : "Public access disabled"
+      )
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Public access could not be updated."
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <article
+      id="public-access"
+      className="resource-workspace-setting-section"
+    >
+      <h3>Public access</h3>
+      <p>
+        A random *.knotree.org hostname is assigned only after public access is
+        enabled. Kong enforces the custom rate limit for that hostname.
+      </p>
+      <div className="resource-workspace-setting-block">
+        <label className="resource-workspace-attachment-field">
+          <span>Expose on *.knotree.org</span>
+          <input
+            type="checkbox"
+            aria-label="Enable public hostname"
+            checked={enabled}
+            disabled={isSaving}
+            onChange={(event) => setEnabled(event.target.checked)}
+          />
+        </label>
+        <label className="resource-workspace-attachment-field">
+          <span>Rate limit (req/min)</span>
+          <input
+            aria-label="App service rate limit"
+            type="number"
+            min={1}
+            max={10000}
+            value={rateLimitRpm}
+            disabled={isSaving}
+            onChange={(event) => setRateLimitRpm(event.target.value)}
+          />
+        </label>
+        <Button
+          type="button"
+          size="sm"
+          disabled={isSaving}
+          onClick={() => void handleSave()}
+        >
+          Save public access
+        </Button>
+      </div>
+      {error ? (
+        <p className="resource-workspace-app-port-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </article>
+  )
+}
+
 function SettingsPane({
   node,
   environment,
@@ -2679,11 +2785,25 @@ function SettingsPane({
           : appService
             ? [
                 ["Image", appService.image],
-                ["Public domain", appService.publicDomain ?? "Pending"],
-                ["Public URL", appService.serviceUrl ?? "Pending"],
+                [
+                  "Public access",
+                  appService.publicAccessEnabled ? "Enabled" : "Disabled",
+                ],
+                ["Public domain", appService.publicDomain ?? "Not assigned"],
+                ["Public URL", appService.serviceUrl ?? "Private"],
+                [
+                  "Rate limit",
+                  `${appService.rateLimitRpm ?? 60} req/min`,
+                ],
                 ["Container", appService.containerName ?? "Pending"],
               ]
-            : [["Access", "Project internal"]],
+            : node.resource?.resourceType === "redis"
+              ? [
+                  ["Host", node.resource.host],
+                  ["Port", String(node.resource.port)],
+                  ["Network alias", node.resource.networkAlias],
+                ]
+              : [["Access", "Project internal"]],
     },
     {
       id: "service",
@@ -2723,13 +2843,22 @@ function SettingsPane({
       <div className="resource-workspace-settings-layout">
         <div>
           {appService && (
-            <DatabaseAttachmentEditor
-              appService={appService}
-              workspaceSlug={workspaceSlug}
-              projectSlug={projectSlug}
-              onToast={onToast}
-              onAppServiceUpdated={onAppServiceUpdated}
-            />
+            <>
+              <PublicAccessEditor
+                appService={appService}
+                workspaceSlug={workspaceSlug}
+                projectSlug={projectSlug}
+                onToast={onToast}
+                onAppServiceUpdated={onAppServiceUpdated}
+              />
+              <DatabaseAttachmentEditor
+                appService={appService}
+                workspaceSlug={workspaceSlug}
+                projectSlug={projectSlug}
+                onToast={onToast}
+                onAppServiceUpdated={onAppServiceUpdated}
+              />
+            </>
           )}
           {visibleSections.length ? (
             visibleSections.map((section) => (

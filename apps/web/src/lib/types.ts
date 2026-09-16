@@ -76,6 +76,8 @@ export type AppService = {
   port: number | null
   serviceUrl: string | null
   publicDomain?: string | null
+  publicAccessEnabled?: boolean
+  rateLimitRpm?: number
   containerName: string | null
   errorMessage?: string
   autoDeployEnabled?: boolean
@@ -84,6 +86,25 @@ export type AppService = {
   autoDeployError?: string | null
   databaseConnection?: AppServiceDatabaseConnection
   deployment?: AppServiceDeployment
+}
+
+export type RedisResourceStatus = "provisioning" | "ready" | "error"
+
+export type RedisResource = {
+  id: string
+  name: string
+  resourceType: "redis"
+  status: RedisResourceStatus
+  host: string
+  port: number
+  connectionString: string | null
+  clusterProvider: "docker" | "kubernetes" | "legacy_shared"
+  clusterName?: string
+  errorMessage?: string
+  networkAlias: string
+  cpuLimit: string
+  memoryLimit: string
+  storageLimit: string
 }
 
 export type GithubConnectionStatus = {

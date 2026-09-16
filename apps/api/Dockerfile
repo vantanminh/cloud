@@ -4,6 +4,7 @@ WORKDIR /app
 COPY apps/api/Cargo.toml apps/api/Cargo.lock* ./
 COPY apps/api/src ./src
 COPY apps/api/migrations ./migrations
+COPY docs /app/docs
 RUN cargo build --release
 
 FROM debian:bookworm-slim
@@ -15,6 +16,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/knotree-api /usr/local/bin/knotree-api
+COPY docs /usr/share/knotree/docs
+
+ENV KNOTREE_DOCS_DIR=/usr/share/knotree/docs
 
 USER knotree
 

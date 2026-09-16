@@ -36,6 +36,7 @@ import { useAuth } from "@/auth/auth-context"
 import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
+import { RedisCreateDialog } from "@/components/redis-create-dialog"
 import { ResourceWorkspace } from "@/components/resource-workspace"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
@@ -45,7 +46,17 @@ import {
   appServiceDeploymentEventsUrl,
   listAppServices,
   listPostgresResources,
+  listRedisResources,
 } from "@/lib/resources"
+import {
+  defaultPostgresPosition,
+  defaultRedisPosition,
+  defaultServicePosition,
+  mergePositions,
+  moveNodePosition,
+  pointerDeltaPercent,
+  type NodePosition,
+} from "@/lib/topology-layout"
 import type {
   AppService,
   AppServiceDeployment,
@@ -53,6 +64,8 @@ import type {
   PostgresResource,
   PostgresResourceStatus,
   Project,
+  RedisResource,
+  RedisResourceStatus,
   Workspace,
 } from "@/lib/types"
 
@@ -71,13 +84,14 @@ type TopologyNode = {
   type: string
   volume: string
   status: string
-  resource?: PostgresResource | AppService
+  resource?: PostgresResource | AppService | RedisResource
   position: { left: number; top: number }
 }
 
 type PersistedDashboardState = {
   zoom?: number
   selectedNode?: string | null
+  positions?: Record<string, NodePosition>
 }
 
 export function ProjectHomePage() {
@@ -185,10 +199,12 @@ function TopologyDashboard({
   const { session, signOut } = useAuth()
   const [postgresResource, setPostgresResource] =
     useState<PostgresResource | null>(null)
+  const [redisResource, setRedisResource] = useState<RedisResource | null>(null)
   const [appServices, setAppServices] = useState<AppService[]>([])
   const [resourcesLoading, setResourcesLoading] = useState(true)
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
+  const [redisDialogOpen, setRedisDialogOpen] = useState(false)
   const [appServiceDialogOpen, setAppServiceDialogOpen] = useState(false)
   const [copiedConnectionString, setCopiedConnectionString] = useState(false)
   const [theme, setTheme] = useState<Theme>(() =>
@@ -198,7 +214,15 @@ function TopologyDashboard({
     readStoredTheme("project-topology-canvas-theme")
   )
   const [activeView, setActiveView] = useState<WorkspaceView>("topology")
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
+  const stateKey = `project-topology-dashboard-state:${project.id}`
+  const initialState = useMemo(() => readPersistedState(stateKey), [stateKey])
+  const [positions, setPositions] = useState<Record<string, NodePosition>>(
+    initialState.positions
+  )
   const nodes = useMemo<TopologyNode[]>(() => {
+    const defaults: Record<string, NodePosition> = {}
     const databaseNode: TopologyNode | null = postgresResource
       ? {
           id: "postgres",
@@ -208,31 +232,60 @@ function TopologyDashboard({
           volume: postgresResource.databaseName,
           status: resourceStatusLabel(postgresResource.status),
           resource: postgresResource,
-          position: { left: 50, top: 12 },
+          position: defaultPostgresPosition(),
         }
       : null
+    if (databaseNode) {
+      defaults.postgres = databaseNode.position
+    }
+    const redisNode: TopologyNode | null = redisResource
+      ? {
+          id: "redis",
+          title: redisResource.name,
+          subtitle: redisResource.networkAlias,
+          type: "Redis",
+          volume: redisResource.clusterName ?? `${redisResource.name}-volume`,
+          status: resourceStatusLabel(redisResource.status),
+          resource: redisResource,
+          position: defaultRedisPosition(Boolean(postgresResource)),
+        }
+      : null
+    if (redisNode) {
+      defaults.redis = redisNode.position
+    }
     const serviceNodes = appServices.map((service, index) => {
-      const column = index % 3
-      const row = Math.floor(index / 3)
+      const id = appServiceNodeId(service.id)
+      const position = defaultServicePosition(
+        index,
+        appServices.length,
+        Boolean(postgresResource || redisResource)
+      )
+      defaults[id] = position
       return {
-        id: appServiceNodeId(service.id),
+        id,
         title: appServices.length === 1 ? project.name : service.name,
         subtitle:
           appServices.length === 1
             ? `${service.name} · ${service.image}`
             : service.image,
-        type: "Docker app service",
+        type: "App service",
         volume: service.containerName ?? `${service.name}-volume`,
         status: resourceStatusLabel(service.status),
         resource: service,
-        position: {
-          left: appServices.length === 1 ? 50 : 20 + column * 30,
-          top: postgresResource ? 38 + row * 30 : 24 + row * 30,
-        },
+        position,
       }
     })
-    if (serviceNodes.length > 0) {
-      return databaseNode ? [databaseNode, ...serviceNodes] : serviceNodes
+    const merged = mergePositions(defaults, positions)
+    const placed = [
+      databaseNode,
+      redisNode,
+      ...serviceNodes,
+    ].filter((node): node is TopologyNode => Boolean(node))
+    if (placed.length > 0) {
+      return placed.map((node) => ({
+        ...node,
+        position: merged[node.id] ?? node.position,
+      }))
     }
     const emptyServiceNode: TopologyNode = {
       id: "project",
@@ -241,12 +294,17 @@ function TopologyDashboard({
       type: "App service",
       volume: `${project.slug}-volume`,
       status: "Needs setup",
-      position: postgresResource ? { left: 50, top: 42 } : { left: 50, top: 35 },
+      position: merged.project ?? { left: 50, top: 42 },
     }
-    return databaseNode ? [databaseNode, emptyServiceNode] : [emptyServiceNode]
-  }, [appServices, postgresResource, project.name, project.slug])
-  const stateKey = `project-topology-dashboard-state:${project.id}`
-  const initialState = useMemo(() => readPersistedState(stateKey), [stateKey])
+    return [emptyServiceNode]
+  }, [
+    appServices,
+    positions,
+    postgresResource,
+    project.name,
+    project.slug,
+    redisResource,
+  ])
   const [zoom, setZoom] = useState(initialState.zoom)
   const [selectedNode, setSelectedNode] = useState<TopologyNodeId | null>(
     initialState.selectedNode
@@ -267,13 +325,15 @@ function TopologyDashboard({
     let active = true
     void Promise.all([
       listPostgresResources(workspaceSlug, projectSlug),
+      listRedisResources(workspaceSlug, projectSlug),
       listAppServices(workspaceSlug, projectSlug),
     ])
-      .then(([postgresResources, appServices]) => {
+      .then(([postgresResources, redisResources, appServices]) => {
         if (!active) {
           return
         }
         setPostgresResource(postgresResources[0] ?? null)
+        setRedisResource(redisResources[0] ?? null)
         setAppServices(appServices)
         setResourcesLoading(false)
       })
@@ -337,9 +397,13 @@ function TopologyDashboard({
   useEffect(() => {
     window.localStorage.setItem(
       stateKey,
-      JSON.stringify({ zoom, selectedNode } satisfies PersistedDashboardState)
+      JSON.stringify({
+        zoom,
+        selectedNode,
+        positions,
+      } satisfies PersistedDashboardState)
     )
-  }, [selectedNode, stateKey, zoom])
+  }, [positions, selectedNode, stateKey, zoom])
 
   useEffect(() => {
     window.localStorage.setItem("project-topology-dashboard-theme", theme)
@@ -420,6 +484,72 @@ function TopologyDashboard({
     setPostgresDialogOpen(false)
     setSelectedNode("postgres")
     showToast("Postgres database is ready")
+  }
+
+  function handleRedisAdd() {
+    setAddMenuOpen(false)
+    if (redisResource?.status === "ready") {
+      setSelectedNode("redis")
+      showToast("Redis is already provisioned")
+      return
+    }
+    setRedisDialogOpen(true)
+  }
+
+  function handleRedisCreated(resource: RedisResource) {
+    setRedisResource(resource)
+    setResourceError(null)
+    setRedisDialogOpen(false)
+    setSelectedNode("redis")
+    showToast("Redis is ready")
+  }
+
+  function handleNodePointerDown(
+    nodeId: TopologyNodeId,
+    event: React.PointerEvent<HTMLElement>
+  ) {
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = { id: nodeId, moved: false }
+  }
+
+  function handleNodePointerMove(event: React.PointerEvent<HTMLElement>) {
+    const drag = dragRef.current
+    if (!drag || event.buttons === 0) {
+      return
+    }
+    const bounds = canvasRef.current?.getBoundingClientRect()
+    if (!bounds) {
+      return
+    }
+    const delta = pointerDeltaPercent(
+      event.movementX,
+      event.movementY,
+      bounds.width,
+      bounds.height
+    )
+    if (delta.left === 0 && delta.top === 0) {
+      return
+    }
+    drag.moved = true
+    setPositions((current) => {
+      const existing =
+        current[drag.id] ??
+        nodes.find((node) => node.id === drag.id)?.position ?? {
+          left: 50,
+          top: 40,
+        }
+      return {
+        ...current,
+        [drag.id]: moveNodePosition(existing, delta),
+      }
+    })
+  }
+
+  function handleNodePointerUp(nodeId: TopologyNodeId) {
+    if (!dragRef.current?.moved) {
+      selectNode(nodeId)
+    }
+    dragRef.current = null
   }
 
   function handleAppServiceAdd() {
@@ -792,11 +922,12 @@ function TopologyDashboard({
                     />
                     <ProjectAddOption
                       mark="R"
-                      label="Redis"
-                      onClick={() => {
-                        setAddMenuOpen(false)
-                        showToast("Redis provisioning is coming soon")
-                      }}
+                      label={
+                        redisResource?.status === "ready"
+                          ? "Redis (ready)"
+                          : "Redis"
+                      }
+                      onClick={handleRedisAdd}
                     />
                     <ProjectAddOption
                       mark="S"
@@ -905,6 +1036,7 @@ function TopologyDashboard({
               )}
 
               <div
+                ref={canvasRef}
                 className="project-canvas-world"
                 style={{ transform: `scale(${zoom})` }}
               >
@@ -925,7 +1057,11 @@ function TopologyDashboard({
                     role="button"
                     aria-pressed={selectedNode === node.id}
                     aria-label={`${node.title} resource, ${node.status.toLowerCase()}`}
-                    onClick={() => selectNode(node.id)}
+                    onPointerDown={(event) =>
+                      handleNodePointerDown(node.id, event)
+                    }
+                    onPointerMove={handleNodePointerMove}
+                    onPointerUp={() => handleNodePointerUp(node.id)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault()
@@ -1077,6 +1213,15 @@ function TopologyDashboard({
         open={postgresDialogOpen}
         onOpenChange={setPostgresDialogOpen}
         onCreated={handlePostgresCreated}
+      />
+
+      <RedisCreateDialog
+        key={redisDialogOpen ? "redis-dialog-open" : "redis-dialog-closed"}
+        workspaceSlug={workspaceSlug}
+        projectSlug={projectSlug}
+        open={redisDialogOpen}
+        onOpenChange={setRedisDialogOpen}
+        onCreated={handleRedisCreated}
       />
 
       <AppServiceCreateDialog
@@ -1313,6 +1458,9 @@ function NodeIcon({ nodeId }: { nodeId: TopologyNodeId }) {
   if (nodeId === "postgres") {
     return <DatabaseIcon aria-hidden="true" />
   }
+  if (nodeId === "redis") {
+    return <HardDriveIcon aria-hidden="true" />
+  }
   return <GitBranchIcon aria-hidden="true" />
 }
 
@@ -1333,7 +1481,7 @@ function connectorClassName(
 }
 
 function resourceStatusLabel(
-  status: PostgresResourceStatus | AppServiceStatus
+  status: PostgresResourceStatus | AppServiceStatus | RedisResourceStatus
 ) {
   if (status === "ready") {
     return "Online"
@@ -1348,6 +1496,7 @@ function readPersistedState(key: string): Required<PersistedDashboardState> {
   const fallback: Required<PersistedDashboardState> = {
     zoom: 1,
     selectedNode: null,
+    positions: {},
   }
   try {
     const saved = JSON.parse(
@@ -1363,6 +1512,10 @@ function readPersistedState(key: string): Required<PersistedDashboardState> {
     return {
       zoom: Math.min(1.25, Math.max(0.8, zoom)),
       selectedNode,
+      positions:
+        saved.positions && typeof saved.positions === "object"
+          ? saved.positions
+          : fallback.positions,
     }
   } catch {
     return fallback
@@ -1372,6 +1525,7 @@ function readPersistedState(key: string): Required<PersistedDashboardState> {
 function isTopologyNodeId(value: unknown): value is TopologyNodeId {
   return (
     value === "postgres" ||
+    value === "redis" ||
     value === "project" ||
     (typeof value === "string" && value.startsWith("app:") && value.length > 4)
   )

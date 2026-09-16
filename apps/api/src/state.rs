@@ -6,7 +6,7 @@ use std::{
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::{config::Config, limits::PerKeyMinuteLimiter};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AppServiceTrafficSnapshot {
@@ -25,6 +25,7 @@ pub struct AppState {
     pub github_registry_lock: Arc<tokio::sync::Mutex<()>>,
     pub public_app_service_traffic: Arc<Mutex<HashMap<Uuid, AppServiceTrafficSnapshot>>>,
     pub public_proxy_client: reqwest::Client,
+    pub public_rate_limiter: Arc<Mutex<PerKeyMinuteLimiter>>,
 }
 
 impl AppState {
@@ -36,6 +37,7 @@ impl AppState {
             github_registry_lock: Arc::new(tokio::sync::Mutex::new(())),
             public_app_service_traffic: Arc::new(Mutex::new(HashMap::new())),
             public_proxy_client: reqwest::Client::new(),
+            public_rate_limiter: Arc::new(Mutex::new(PerKeyMinuteLimiter::default())),
         }
     }
 

@@ -12,6 +12,7 @@ import type {
   AppServiceLogs,
   GithubConnectionStatus,
   PostgresResource,
+  RedisResource,
 } from "@/lib/types"
 
 export type CreatePostgresResourceInput = {
@@ -36,6 +37,15 @@ export type UpdateAppServiceAutoDeployInput = {
 
 export type UpdateAppServiceDatabaseInput = {
   databaseResourceId: string | null
+}
+
+export type CreateRedisResourceInput = {
+  name: string
+}
+
+export type UpdateAppServicePublicAccessInput = {
+  enabled: boolean
+  rateLimitRpm?: number
 }
 
 const inFlightDatabaseRequests = new Map<string, Promise<unknown>>()
@@ -130,6 +140,43 @@ export function createPostgresResource(
     {
       method: "POST",
       body: { resourceType: "postgres", name: input.name },
+    }
+  )
+}
+
+function redisPath(workspaceSlug: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/redis`
+}
+
+export function listRedisResources(
+  workspaceSlug: string,
+  projectSlug: string
+) {
+  return apiRequest<RedisResource[]>(redisPath(workspaceSlug, projectSlug))
+}
+
+export function createRedisResource(
+  workspaceSlug: string,
+  projectSlug: string,
+  input: CreateRedisResourceInput
+) {
+  return apiRequest<RedisResource>(redisPath(workspaceSlug, projectSlug), {
+    method: "POST",
+    body: { resourceType: "redis", name: input.name },
+  })
+}
+
+export function updateAppServicePublicAccess(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string,
+  input: UpdateAppServicePublicAccessInput
+) {
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/public-access`,
+    {
+      method: "PATCH",
+      body: input,
     }
   )
 }

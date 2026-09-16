@@ -9,12 +9,32 @@ spec:
   entryPoints:
     {{- toYaml .Values.ingress.entryPoints | nindent 4 }}
   routes:
-    - match: Host(`{{ .Values.ingress.host }}`)
+    - match: Host(`{{ .Values.ingress.host }}`) && (PathPrefix(`/api`) || PathPrefix(`/healthz`) || PathPrefix(`/readyz`) || PathPrefix(`/oauth`) || PathPrefix(`/mcp`) || PathPrefix(`/.well-known`))
       kind: Rule
       services:
         - name: {{ include "knotree-api.fullname" . }}
           port: {{ .Values.service.port }}
-{{ if .Values.env.appServicePublicDomain }}
+{{- if .Values.ingress.apiHost }}
+    - match: Host(`{{ .Values.ingress.apiHost }}`)
+      kind: Rule
+      services:
+        - name: {{ include "knotree-api.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}
+{{- if .Values.web.enabled }}
+    - match: Host(`{{ .Values.web.ingress.host }}`)
+      kind: Rule
+      services:
+        - name: {{ include "knotree-api.fullname" . }}-web
+          port: {{ .Values.web.service.port }}
+{{- end }}
+{{ if and .Values.env.appServicePublicDomain .Values.appsKong.enabled }}
+    - match: HostRegexp(`^.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
+      kind: Rule
+      services:
+        - name: {{ include "knotree-api.fullname" . }}-apps-kong
+          port: {{ .Values.appsKong.proxyPort }}
+{{ else if .Values.env.appServicePublicDomain }}
     - match: HostRegexp(`^.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
       kind: Rule
       services:

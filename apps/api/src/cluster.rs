@@ -7,51 +7,29 @@ use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    limits::{self, TENANT_RESOURCE_CAPS, docker_resource_limit_args},
+};
+
+pub use crate::limits::{
+    RESOURCE_CPU_LIMIT, RESOURCE_MEMORY_LIMIT_DOCKER, RESOURCE_MEMORY_LIMIT_KUBERNETES,
+    RESOURCE_MEMORY_SWAP_LIMIT_DOCKER, RESOURCE_STORAGE_LIMIT_MESSAGE, RESOURCE_VOLUME_LIMIT_BYTES,
+    RESOURCE_VOLUME_LIMIT_DOCKER, RESOURCE_VOLUME_LIMIT_KUBERNETES, docker_resource_limit_args,
+    docker_runtime_limit_args,
+};
 
 pub const PROVIDER_DOCKER: &str = "docker";
 pub const PROVIDER_KUBERNETES: &str = "kubernetes";
 pub const PROJECT_NETWORK_POSTGRES_ALIAS: &str = "postgres";
 pub const PROJECT_NETWORK_APP_ALIAS: &str = "app";
+pub const PROJECT_NETWORK_REDIS_ALIAS: &str = "redis";
 pub const POSTGRES_VOLUME_PATH: &str = "/var/lib/postgresql/data";
 pub const APP_SERVICE_VOLUME_PATH: &str = "/";
-
-// These limits are deliberately shared by every Docker resource. The
-// storage option caps the container writable layer; the storage watchdog
-// below also protects mounted project volumes, which Docker otherwise leaves
-// outside the container quota.
-pub const RESOURCE_CPU_LIMIT: &str = "1";
-pub const RESOURCE_MEMORY_LIMIT_DOCKER: &str = "1g";
-pub const RESOURCE_MEMORY_SWAP_LIMIT_DOCKER: &str = "1g";
-pub const RESOURCE_MEMORY_LIMIT_KUBERNETES: &str = "1Gi";
-pub const RESOURCE_VOLUME_LIMIT_DOCKER: &str = "10G";
-pub const RESOURCE_VOLUME_LIMIT_KUBERNETES: &str = "10Gi";
-pub const RESOURCE_VOLUME_LIMIT_BYTES: i64 = 10 * 1024 * 1024 * 1024;
-pub const RESOURCE_STORAGE_LIMIT_MESSAGE: &str =
-    "This resource reached its 10 GiB storage limit and was stopped.";
+pub const REDIS_VOLUME_PATH: &str = "/data";
 
 fn is_running_docker_state(state: &str) -> bool {
     state.trim().eq_ignore_ascii_case("running")
-}
-
-pub fn docker_runtime_limit_args() -> Vec<String> {
-    vec![
-        "--cpus".to_owned(),
-        RESOURCE_CPU_LIMIT.to_owned(),
-        "--memory".to_owned(),
-        RESOURCE_MEMORY_LIMIT_DOCKER.to_owned(),
-        "--memory-swap".to_owned(),
-        RESOURCE_MEMORY_SWAP_LIMIT_DOCKER.to_owned(),
-    ]
-}
-
-pub fn docker_resource_limit_args() -> Vec<String> {
-    let mut args = docker_runtime_limit_args();
-    args.extend([
-        "--storage-opt".to_owned(),
-        format!("size={RESOURCE_VOLUME_LIMIT_DOCKER}"),
-    ]);
-    args
 }
 
 pub fn project_network_name(project_id: Uuid) -> String {
@@ -328,7 +306,7 @@ async fn docker_app_storage_metrics(config: &Config, container_name: &str) -> Re
         }
     }
 
-    Ok((used_bytes, RESOURCE_VOLUME_LIMIT_BYTES))
+    Ok((used_bytes, TENANT_RESOURCE_CAPS.storage_bytes))
 }
 
 pub async fn ensure_docker_runtime_limits(config: &Config, container_name: &str) -> Result<()> {
@@ -467,6 +445,90 @@ pub async fn provision_with_provider(
         PROVIDER_KUBERNETES => super::cluster_kubernetes::provision(config, spec).await,
         provider => bail!("unsupported database cluster provider: {provider}"),
     }
+}
+
+pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
+    match config.database_cluster_provider.as_str() {
+        PROVIDER_DOCKER => provision_redis_docker(config, spec).await,
+        PROVIDER_KUBERNETES => super::cluster_kubernetes::provision_redis(config, spec).await,
+        provider => bail!("unsupported redis cluster provider: {provider}"),
+    }
+}
+
+async fn provision_redis_docker(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
+    let cluster_name = format!("knotree-redis-{}", spec.project_id.simple());
+    let volume_name = format!("knotree-redis-data-{}", spec.project_id.simple());
+    let network_name = ensure_project_network(config, spec.project_id).await?;
+    let internal_host = connection_host(PROVIDER_DOCKER, &config.database_resource_host);
+    ensure_docker_volume(config, &volume_name).await?;
+
+    let existing_state = docker_inspect(config, &cluster_name).await?;
+    if existing_state.is_none() {
+        let publish = format!("{}::6379", config.database_cluster_bind_address);
+        let mut docker_args = vec![
+            "run".to_owned(),
+            "--detach".to_owned(),
+            "--name".to_owned(),
+            cluster_name.clone(),
+            "--label".to_owned(),
+            "com.knotree.managed-by=knotree-api".to_owned(),
+            "--label".to_owned(),
+            format!("com.knotree.project-id={}", spec.project_id),
+            "--label".to_owned(),
+            "com.knotree.resource-type=redis".to_owned(),
+            "--restart".to_owned(),
+            "unless-stopped".to_owned(),
+            "--network".to_owned(),
+            network_name.clone(),
+            "--network-alias".to_owned(),
+            PROJECT_NETWORK_REDIS_ALIAS.to_owned(),
+            "--env".to_owned(),
+            format!("REDIS_PASSWORD={}", spec.password),
+            "--publish".to_owned(),
+            publish,
+            "--volume".to_owned(),
+            format!("{volume_name}:/data"),
+        ];
+        docker_args.extend(docker_resource_limit_args());
+        docker_args.push(config.redis_cluster_image.clone());
+        docker_args.extend([
+            "redis-server".to_owned(),
+            "--appendonly".to_owned(),
+            "yes".to_owned(),
+            "--requirepass".to_owned(),
+            spec.password.clone(),
+            "--maxmemory".to_owned(),
+            "768mb".to_owned(),
+            "--maxmemory-policy".to_owned(),
+            "allkeys-lru".to_owned(),
+        ]);
+        run_docker(config, docker_args).await?;
+    } else if existing_state.as_deref() != Some("running") {
+        run_docker(config, ["start".to_owned(), cluster_name.clone()]).await?;
+        ensure_docker_runtime_limits(config, &cluster_name).await?;
+    } else {
+        ensure_docker_runtime_limits(config, &cluster_name).await?;
+    }
+
+    ensure_docker_network_attachment(
+        config,
+        &network_name,
+        &cluster_name,
+        PROJECT_NETWORK_REDIS_ALIAS,
+    )
+    .await?;
+    let port = docker_published_port(config, &cluster_name, 6379).await?;
+    Ok(ProvisionedCluster {
+        provider: PROVIDER_DOCKER.to_owned(),
+        name: cluster_name,
+        namespace: None,
+        volume: Some(volume_name),
+        internal_host,
+        internal_port: port,
+        public_host: Some(internal_host.clone()),
+        public_port: Some(port),
+        network_name: Some(network_name),
+    })
 }
 
 async fn provision_docker(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
@@ -804,12 +866,20 @@ async fn docker_storage_limit_configured(config: &Config, container_name: &str) 
 }
 
 pub async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
+    docker_published_port(config, cluster_name, 5432).await
+}
+
+pub async fn docker_published_port(
+    config: &Config,
+    cluster_name: &str,
+    container_port: u16,
+) -> Result<u16> {
     let output = run_docker(
         config,
         [
             "port".to_owned(),
             cluster_name.to_owned(),
-            "5432/tcp".to_owned(),
+            format!("{container_port}/tcp"),
         ],
     )
     .await?;
@@ -817,7 +887,7 @@ pub async fn docker_port(config: &Config, cluster_name: &str) -> Result<u16> {
         .lines()
         .filter_map(|line| line.rsplit(':').next())
         .find_map(|value| value.trim().parse::<u16>().ok())
-        .ok_or_else(|| anyhow::anyhow!("Docker did not publish a PostgreSQL port"))
+        .ok_or_else(|| anyhow::anyhow!("Docker did not publish port {container_port}"))
 }
 
 async fn run_docker<I>(config: &Config, args: I) -> Result<String>
@@ -989,6 +1059,10 @@ mod tests {
                 "size=10G",
             ]
         );
-        assert_eq!(super::RESOURCE_VOLUME_LIMIT_BYTES, 10 * 1024 * 1024 * 1024);
+        assert_eq!(
+            super::RESOURCE_VOLUME_LIMIT_BYTES,
+            10 * 1024 * 1024 * 1024
+        );
+        assert_eq!(limits::TENANT_RESOURCE_CAPS.cpu, "1");
     }
 }

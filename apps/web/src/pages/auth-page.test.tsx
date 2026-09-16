@@ -122,6 +122,26 @@ describe("AuthPage", () => {
           }
           return Promise.resolve([])
         }
+        if (path === "/workspaces/acme-studio/projects/knotree-study/redis") {
+          if (options?.method === "POST") {
+            return Promise.resolve({
+              id: "redis-resource-id",
+              name: "Redis",
+              resourceType: "redis",
+              status: "ready",
+              host: "127.0.0.1",
+              port: 6379,
+              connectionString: "redis://:secret@127.0.0.1:6379",
+              clusterProvider: "docker",
+              clusterName: "knotree-redis-project",
+              networkAlias: "redis",
+              cpuLimit: "1",
+              memoryLimit: "1Gi",
+              storageLimit: "10Gi",
+            })
+          }
+          return Promise.resolve([])
+        }
         if (
           path ===
           "/workspaces/acme-studio/projects/knotree-study/app-services"
@@ -344,10 +364,19 @@ describe("AuthPage", () => {
     )
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("button", { name: "Redis" }))
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Redis provisioning is coming soon"
+    await user.click(screen.getByRole("button", { name: /^Redis$/ }))
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Create Redis",
+      })
     )
+    expect(mocks.apiRequest).toHaveBeenCalledWith(
+      "/workspaces/acme-studio/projects/knotree-study/redis",
+      expect.objectContaining({ method: "POST" })
+    )
+    expect(
+      await screen.findByRole("button", { name: /Redis resource, online/i })
+    ).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("button", { name: "App service" }))

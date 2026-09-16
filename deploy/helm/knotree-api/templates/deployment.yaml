@@ -18,14 +18,44 @@ spec:
       {{- end }}
       labels:
         {{- include "knotree-api.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: {{ include "knotree-api.serviceAccountName" . }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "knotree-api.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/knotree-api
+            - migrate
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseUrlKey }}
+            - name: DATABASE_CREDENTIALS_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.databaseCredentialsEncryptionKey }}
+                  optional: true
+            - name: APP_ENV
+              value: {{ .Values.env.appEnv | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.env.rustLog | quote }}
       containers:
         - name: api
           securityContext:
@@ -94,6 +124,22 @@ spec:
               value: {{ .Values.env.appServiceBindAddress | quote }}
             - name: GITHUB_OAUTH_REDIRECT_URI
               value: {{ .Values.env.githubOAuthRedirectUri | quote }}
+            - name: KONG_ADMIN_URL
+              value: {{ if .Values.env.kongAdminUrl }}{{ .Values.env.kongAdminUrl | quote }}{{ else }}{{ printf "http://%s-apps-kong:%d" (include "knotree-api.fullname" .) (int .Values.appsKong.adminPort) | quote }}{{ end }}
+            - name: MCP_PUBLIC_BASE_URL
+              value: {{ .Values.env.mcpPublicBaseUrl | quote }}
+            - name: MCP_ACCESS_TTL_SECONDS
+              value: {{ .Values.env.mcpAccessTtlSeconds | quote }}
+            - name: MCP_REFRESH_TTL_SECONDS
+              value: {{ .Values.env.mcpRefreshTtlSeconds | quote }}
+            - name: REDIS_CLUSTER_IMAGE
+              value: {{ .Values.env.redisClusterImage | quote }}
+            - name: APP_SERVICE_IMAGE_PULL_SECRET
+              value: {{ .Values.env.appServiceImagePullSecret | quote }}
+            - name: APP_SERVICE_DEFAULT_RATE_LIMIT_RPM
+              value: {{ .Values.env.appServiceDefaultRateLimitRpm | quote }}
+            - name: KNOTREE_DOCS_DIR
+              value: /usr/share/knotree/docs
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

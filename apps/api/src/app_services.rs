@@ -30,20 +30,27 @@ use uuid::Uuid;
 use crate::{
     auth,
     cluster::{self, PROVIDER_DOCKER},
+    cluster_kubernetes::{self, AppWorkloadSpec},
     error::AppError,
     github::{self, GithubDockerCredentials},
+    kong,
+    limits::{self, DEFAULT_APP_RATE_LIMIT_RPM, validate_rate_limit_rpm},
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
         downsample_metric_points, has_system_metrics, metric_sample_concurrency,
         parse_metric_range, unix_timestamp,
     },
     models::{
-        AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse, AppServiceLogsResponse,
-        AppServiceMetricPoint, AppServiceMetricsResponse, AppServiceResponse,
+        AccountDeploymentLog, AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse,
+        AppServiceLogsResponse, AppServiceMetricPoint, AppServiceMetricsResponse, AppServiceResponse,
         CreateAppServiceRequest, UpdateAppServiceAutoDeployRequest,
-        UpdateAppServiceDatabaseRequest, UpdateAppServiceRequest,
+        UpdateAppServiceDatabaseRequest, UpdateAppServicePublicAccessRequest,
+        UpdateAppServiceRequest,
     },
-    projects, security,
+    projects,
+    public_access::{self, PublicAccessState, public_hostname, should_proxy_public_host},
+    redis_resources,
+    security,
     state::AppState,
 };
 
@@ -57,7 +64,7 @@ const MAX_APP_SERVICES_PER_PROJECT: i64 = 6;
 const AUTO_DEPLOY_INTERVAL_SECONDS: u64 = 60;
 const MAX_PUBLIC_PROXY_BODY_BYTES: usize = 64 * 1024 * 1024;
 const PROVISIONING_ERROR_MESSAGE: &str =
-    "The Docker app service could not be deployed. Check the image and try again.";
+    "The app service could not be deployed. Check the image and try again.";
 const PUBLIC_DOMAIN_NOT_FOUND_HTML: &str = r#"<!doctype html>
 <html lang="en">
   <head>
@@ -90,7 +97,9 @@ const PUBLIC_DOMAIN_NOT_FOUND_HTML: &str = r#"<!doctype html>
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AppServiceRow {
     id: Uuid,
-    public_subdomain: String,
+    public_subdomain: Option<String>,
+    public_access_enabled: bool,
+    rate_limit_rpm: i32,
     project_id: Uuid,
     name: String,
     image: String,
@@ -167,7 +176,7 @@ pub struct AppServiceMetricsQuery {
     pub range: Option<String>,
 }
 
-const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
+const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, public_access_enabled, rate_limit_rpm, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
 const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -362,6 +371,35 @@ pub async fn logs(
         }));
     }
 
+    if state.config.uses_kubernetes_workloads() {
+        let lines = cluster_kubernetes::pod_logs(
+            &state.config.database_cluster_namespace,
+            &container_name,
+            200,
+        )
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                app_service_id = %app_service_id,
+                container_name = %container_name,
+                error = %error,
+                "could not read app service Kubernetes logs"
+            );
+            AppError::ServiceUnavailable {
+                code: "APP_SERVICE_LOGS_UNAVAILABLE",
+                message: "The app service logs are temporarily unavailable.",
+            }
+        })?;
+        return Ok(Json(AppServiceLogsResponse {
+            app_service_id,
+            container_name: Some(container_name),
+            status: target.status,
+            running: true,
+            lines,
+            message: None,
+        }));
+    }
+
     let running = docker_container_running(&state, &container_name).await?;
     let output = docker_raw(
         &state,
@@ -414,8 +452,17 @@ pub async fn logs(
 struct PublicProxyTarget {
     app_port: i32,
     port: Option<i32>,
+    host: Option<String>,
     container_name: Option<String>,
     status: String,
+    rate_limit_rpm: i32,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct PublicDomainLookup {
+    id: Uuid,
+    public_access_enabled: bool,
+    public_subdomain: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -456,6 +503,17 @@ async fn current_app_service_port(
 ) -> Result<u16, AppError> {
     let app_port = u16::try_from(app_port)
         .map_err(|_| AppError::internal("invalid app service container port"))?;
+    if state.config.uses_kubernetes_workloads() {
+        return stored_port
+            .map(u16::try_from)
+            .transpose()
+            .map_err(|_| AppError::internal("invalid app service published port"))?
+            .or(Some(app_port))
+            .ok_or(AppError::ServiceUnavailable {
+                code: "APP_SERVICE_PUBLIC_UNAVAILABLE",
+                message: "The app service is temporarily unavailable.",
+            });
+    }
     let current_port = docker_port(state, container_name, app_port, None)
         .await
         .map_err(|error| {
@@ -577,16 +635,29 @@ async fn proxy_public_domain_request(
             code: "APP_SERVICE_DOMAIN_NOT_FOUND",
             message: "The public app service domain could not be resolved.",
         })?;
-    let app_service_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM project_app_services WHERE public_subdomain = $1",
+    let row = sqlx::query_as::<_, PublicDomainLookup>(
+        "SELECT id, public_access_enabled, public_subdomain FROM project_app_services WHERE public_subdomain = $1",
     )
-    .bind(public_subdomain)
+    .bind(&public_subdomain)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound {
         code: "APP_SERVICE_DOMAIN_NOT_FOUND",
         message: "The public app service domain could not be resolved.",
     })?;
+    if !should_proxy_public_host(
+        &PublicAccessState {
+            enabled: row.public_access_enabled,
+            subdomain: row.public_subdomain,
+        },
+        &public_subdomain,
+    ) {
+        return Err(AppError::NotFound {
+            code: "APP_SERVICE_DOMAIN_NOT_FOUND",
+            message: "The public app service domain could not be resolved.",
+        });
+    }
+    let app_service_id = row.id;
 
     proxy_public_request_with_mode(state, app_service_id, request, true).await
 }
@@ -675,7 +746,7 @@ async fn proxy_public_request_with_mode(
     domain_request: bool,
 ) -> Result<Response, AppError> {
     let target = sqlx::query_as::<_, PublicProxyTarget>(
-        "SELECT app_port, port, container_name, status
+        "SELECT app_port, port, host, container_name, status, rate_limit_rpm
          FROM project_app_services
          WHERE id = $1",
     )
@@ -698,6 +769,26 @@ async fn proxy_public_request_with_mode(
             message: "The app service is not ready to receive public traffic.",
         });
     };
+    let limit = u32::try_from(target.rate_limit_rpm).unwrap_or(DEFAULT_APP_RATE_LIMIT_RPM);
+    let allowed = {
+        let mut limiter = state
+            .public_rate_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        limiter
+            .check(
+                &app_service_id.to_string(),
+                limit,
+                unix_timestamp() as u64,
+            )
+            .allowed
+    };
+    if !allowed {
+        return Err(AppError::TooManyRequests {
+            code: "APP_SERVICE_RATE_LIMITED",
+            message: "This app service is receiving too many public requests.",
+        });
+    }
     let port = current_app_service_port(
         state,
         app_service_id,
@@ -729,7 +820,11 @@ async fn proxy_public_request_with_mode(
     } else {
         public_upstream_path(&parts.uri)
     };
-    let bind_host = url_host(&state.config.app_service_bind_address.to_string());
+    let bind_host = if state.config.uses_kubernetes_workloads() {
+        url_host(target.host.as_deref().unwrap_or(container_name))
+    } else {
+        url_host(&state.config.app_service_bind_address.to_string())
+    };
     let upstream_url = format!("http://{bind_host}:{port}{upstream_path}");
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).map_err(|_| {
         AppError::BadRequest {
@@ -869,13 +964,6 @@ pub async fn update_auto_deploy(
     let project_id =
         projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
 
-    if state.config.database_cluster_provider != PROVIDER_DOCKER {
-        return Err(AppError::ServiceUnavailable {
-            code: "APP_SERVICE_DOCKER_REQUIRED",
-            message: "App services currently require the Docker provider.",
-        });
-    }
-
     let mut transaction = state.db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(advisory_lock_key(project_id))
@@ -939,6 +1027,130 @@ pub async fn update_auto_deploy(
         database.as_ref(),
         latest_deployment(&state.db, service.id).await?,
     )?))
+}
+
+pub async fn update_public_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Json(input): Json<UpdateAppServicePublicAccessRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    let rate_limit_rpm = match input.rate_limit_rpm {
+        Some(value) => validate_rate_limit_rpm(value).map_err(|_| AppError::BadRequest {
+            code: "INVALID_RATE_LIMIT",
+            message: "Rate limit must be between 1 and 10000 requests per minute.",
+        })?,
+        None => limits::RateLimitPolicy {
+            requests_per_minute: state.config.default_rate_limit_rpm,
+        },
+    };
+
+    let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2"
+    ))
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+
+    let update = if input.enabled {
+        public_access::enable_public_access(PublicAccessState {
+            enabled: existing.public_access_enabled,
+            subdomain: existing.public_subdomain.clone(),
+        })
+    } else {
+        public_access::disable_public_access(PublicAccessState {
+            enabled: existing.public_access_enabled,
+            subdomain: existing.public_subdomain.clone(),
+        })
+    };
+
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "UPDATE project_app_services
+         SET public_access_enabled = $1,
+             public_subdomain = $2,
+             rate_limit_rpm = $3,
+             updated_at = now()
+         WHERE id = $4
+         RETURNING {APP_SERVICE_COLUMNS}"
+    ))
+    .bind(update.enabled)
+    .bind(update.subdomain.as_deref())
+    .bind(i32::from(input.rate_limit_rpm.unwrap_or(rate_limit_rpm.requests_per_minute)))
+    .bind(app_service_id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if let Err(error) = sync_kong_routes(&state).await {
+        tracing::warn!(error = %error, "could not refresh Kong public app routes");
+    }
+
+    let database =
+        database_resource_by_id(&state, project_id, service.database_resource_id).await?;
+    Ok(Json(app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
+        database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
+    )?))
+}
+
+async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
+    let Some(admin_url) = state.config.kong_admin_url.as_deref() else {
+        return Ok(());
+    };
+    let rows = sqlx::query_as::<_, KongSyncRow>(
+        "SELECT id, public_subdomain, public_access_enabled, rate_limit_rpm, host, port, container_name, status
+         FROM project_app_services
+         WHERE public_access_enabled = true AND public_subdomain IS NOT NULL AND status = 'ready'",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let mut routes = Vec::new();
+    for row in rows {
+        let hostname = public_hostname(
+            true,
+            row.public_subdomain.as_deref(),
+            state.config.app_service_public_domain.as_deref(),
+        );
+        let upstream = match (row.host.as_deref(), row.port) {
+            (Some(host), Some(port)) => format!("http://{host}:{port}"),
+            _ => continue,
+        };
+        if let Some(route) = kong::route_for_enabled_service(
+            row.id,
+            hostname,
+            &upstream,
+            u32::try_from(row.rate_limit_rpm).unwrap_or(DEFAULT_APP_RATE_LIMIT_RPM),
+        ) {
+            routes.push(route);
+        }
+    }
+    let config = kong::declarative_config(&routes)?;
+    kong::apply_declarative_config(admin_url, &config).await
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct KongSyncRow {
+    id: Uuid,
+    public_subdomain: Option<String>,
+    public_access_enabled: bool,
+    rate_limit_rpm: i32,
+    host: Option<String>,
+    port: Option<i32>,
+    container_name: Option<String>,
+    status: String,
 }
 
 pub async fn metrics(
@@ -1033,7 +1245,7 @@ pub async fn metrics(
     .await?;
 
     Ok(Json(AppServiceMetricsResponse {
-        provider: PROVIDER_DOCKER.to_owned(),
+        provider: state.config.database_cluster_provider.clone(),
         system_metrics_available,
         system_metrics_message,
         sample_interval_seconds: METRIC_SAMPLE_INTERVAL_SECONDS as u32,
@@ -1061,12 +1273,6 @@ pub async fn create(
         return Err(AppError::ServiceUnavailable {
             code: "APP_SERVICE_PROVISIONING_DISABLED",
             message: "App service provisioning is not enabled for this environment.",
-        });
-    }
-    if state.config.database_cluster_provider != PROVIDER_DOCKER {
-        return Err(AppError::ServiceUnavailable {
-            code: "APP_SERVICE_DOCKER_REQUIRED",
-            message: "App services currently require the Docker provider.",
         });
     }
 
@@ -1098,7 +1304,7 @@ pub async fn create(
         }
 
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {APP_SERVICE_COLUMNS}"
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, public_access_enabled, rate_limit_rpm, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -1106,7 +1312,9 @@ pub async fn create(
         .bind(&image)
         .bind(&image_source)
         .bind(i32::from(app_port))
-        .bind(new_public_subdomain())
+        .bind(Option::<String>::None)
+        .bind(false)
+        .bind(i32::from(state.config.default_rate_limit_rpm))
         .bind(STATUS_PROVISIONING)
         .bind(auto_deploy_enabled)
         .bind(github_connection_user_id)
@@ -1195,12 +1403,6 @@ pub async fn update(
         return Err(AppError::ServiceUnavailable {
             code: "APP_SERVICE_PROVISIONING_DISABLED",
             message: "App service provisioning is not enabled for this environment.",
-        });
-    }
-    if state.config.database_cluster_provider != PROVIDER_DOCKER {
-        return Err(AppError::ServiceUnavailable {
-            code: "APP_SERVICE_DOCKER_REQUIRED",
-            message: "App services currently require the Docker provider.",
         });
     }
 
@@ -1367,13 +1569,6 @@ pub async fn update_database_connection(
             message: "App service provisioning is not enabled for this environment.",
         });
     }
-    if state.config.database_cluster_provider != PROVIDER_DOCKER {
-        return Err(AppError::ServiceUnavailable {
-            code: "APP_SERVICE_DOCKER_REQUIRED",
-            message: "App services currently require the Docker provider.",
-        });
-    }
-
     let (service, previous_database_id, previous_container_name, database) = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -1403,11 +1598,10 @@ pub async fn update_database_connection(
         let database = match input.database_resource_id {
             Some(database_id) => Some(
                 sqlx::query_as::<_, DatabaseResourceRow>(&format!(
-                    "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+                    "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready'"
                 ))
                 .bind(database_id)
                 .bind(project_id)
-                .bind(PROVIDER_DOCKER)
                 .fetch_optional(&mut *transaction)
                 .await?
                 .ok_or(AppError::NotFound {
@@ -1626,13 +1820,11 @@ fn app_service_response(
         .host
         .clone()
         .or_else(|| (service.status == STATUS_READY).then(|| public_host.to_owned()));
-    let public_domain = public_domain.map(|domain| {
-        format!(
-            "{}.{}",
-            service.public_subdomain,
-            domain.trim_end_matches('.')
-        )
-    });
+    let public_domain = public_hostname(
+        service.public_access_enabled,
+        service.public_subdomain.as_deref(),
+        public_domain,
+    );
     let service_url = if service.status == STATUS_READY && service.container_name.is_some() {
         public_domain
             .as_deref()
@@ -1662,6 +1854,8 @@ fn app_service_response(
         port,
         service_url,
         public_domain,
+        public_access_enabled: service.public_access_enabled,
+        rate_limit_rpm: u32::try_from(service.rate_limit_rpm).unwrap_or(DEFAULT_APP_RATE_LIMIT_RPM),
         container_name: service.container_name.clone(),
         error_message: service.error_message.clone(),
         auto_deploy_enabled: service.auto_deploy_enabled,
@@ -1793,19 +1987,32 @@ async fn run_app_service_deployment(
         logger
             .append("Start", "Deployment worker started.")
             .await?;
-        let provisioned = provision_docker(
-            &state,
-            project_id,
-            service_id,
-            &image,
-            app_port,
-            github_credentials.as_ref(),
-            database.as_ref(),
-            honor_requested_port,
-            None,
-            Some(&logger),
-        )
-        .await?;
+        let provisioned = if state.config.uses_kubernetes_workloads() {
+            provision_kubernetes(
+                &state,
+                project_id,
+                service_id,
+                &image,
+                app_port,
+                database.as_ref(),
+                Some(&logger),
+            )
+            .await?
+        } else {
+            provision_docker(
+                &state,
+                project_id,
+                service_id,
+                &image,
+                app_port,
+                github_credentials.as_ref(),
+                database.as_ref(),
+                honor_requested_port,
+                None,
+                Some(&logger),
+            )
+            .await?
+        };
         sqlx::query(
             "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = $7, error_message = NULL, auto_deploy_error = NULL, auto_deploy_checked_at = CASE WHEN $8 THEN now() ELSE auto_deploy_checked_at END, updated_at = now() WHERE id = $9",
         )
@@ -2057,11 +2264,10 @@ async fn queue_auto_deployment(
             sqlx::query_as::<_, DatabaseResourceRow>(&format!(
                 "SELECT {DATABASE_RESOURCE_COLUMNS}
                  FROM project_postgres_databases
-                 WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+                 WHERE id = $1 AND project_id = $2 AND status = 'ready'"
             ))
             .bind(resource_id)
             .bind(service.project_id)
-            .bind(PROVIDER_DOCKER)
             .fetch_optional(&mut *transaction)
             .await?
             .context("the attached database is no longer ready")?,
@@ -2339,10 +2545,9 @@ async fn ready_database_resources(
     project_id: Uuid,
 ) -> std::result::Result<Vec<DatabaseResourceRow>, sqlx::Error> {
     sqlx::query_as::<_, DatabaseResourceRow>(&format!(
-        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 AND status = 'ready' AND cluster_provider = $2"
+        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 AND status = 'ready'"
     ))
     .bind(project_id)
-    .bind(PROVIDER_DOCKER)
     .fetch_all(&state.db)
     .await
 }
@@ -2356,18 +2561,30 @@ async fn database_resource_by_id(
         return Ok(None);
     };
     sqlx::query_as::<_, DatabaseResourceRow>(&format!(
-        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready' AND cluster_provider = $3"
+        "SELECT {DATABASE_RESOURCE_COLUMNS} FROM project_postgres_databases WHERE id = $1 AND project_id = $2 AND status = 'ready'"
     ))
     .bind(resource_id)
     .bind(project_id)
-    .bind(PROVIDER_DOCKER)
     .fetch_optional(&state.db)
     .await
+}
+
+fn postgres_private_host(config: &crate::config::Config, project_id: Uuid) -> String {
+    if config.uses_kubernetes_workloads() {
+        format!(
+            "knotree-pg-{}.{}.svc.cluster.local",
+            project_id.simple(),
+            config.database_cluster_namespace
+        )
+    } else {
+        cluster::PROJECT_NETWORK_POSTGRES_ALIAS.to_owned()
+    }
 }
 
 fn database_environment(
     encryption_key: &[u8; 32],
     database: Option<&DatabaseResourceRow>,
+    postgres_host: &str,
 ) -> Result<Vec<String>> {
     let Some(database) = database else {
         return Ok(Vec::new());
@@ -2378,13 +2595,13 @@ fn database_environment(
         "postgres://{}:{}@{}:{}/{}",
         database.role_name,
         password,
-        cluster::PROJECT_NETWORK_POSTGRES_ALIAS,
+        postgres_host,
         5432,
         database.database_name,
     );
     Ok(vec![
         format!("DATABASE_URL={database_url}"),
-        format!("PGHOST={}", cluster::PROJECT_NETWORK_POSTGRES_ALIAS),
+        format!("PGHOST={postgres_host}"),
         "PGPORT=5432".to_owned(),
         format!("PGDATABASE={}", database.database_name),
         format!("PGUSER={}", database.role_name),
@@ -2443,8 +2660,11 @@ async fn provision_docker(
     logger: Option<&DeploymentLogger>,
 ) -> Result<ProvisionedAppService> {
     log_deployment(logger, "Prepare", "Preparing the Docker deployment.").await?;
-    let database_environment =
-        database_environment(&state.config.database_credentials_encryption_key, database)?;
+    let database_environment = database_environment(
+        &state.config.database_credentials_encryption_key,
+        database,
+        &postgres_private_host(&state.config, project_id),
+    )?;
     log_deployment(logger, "Network", "Ensuring the project network exists.").await?;
     let network_name = cluster::ensure_project_network(&state.config, project_id).await?;
     log_deployment(logger, "Network", "Project network is ready.").await?;
@@ -2558,6 +2778,60 @@ async fn provision_docker(
         app_port,
         container_name,
         image_digest,
+    })
+}
+
+async fn provision_kubernetes(
+    state: &AppState,
+    project_id: Uuid,
+    service_id: Uuid,
+    image: &str,
+    app_port: u16,
+    database: Option<&DatabaseResourceRow>,
+    logger: Option<&DeploymentLogger>,
+) -> Result<ProvisionedAppService> {
+    log_deployment(logger, "Prepare", "Preparing the Kubernetes deployment.").await?;
+    let database_environment = database_environment(
+        &state.config.database_credentials_encryption_key,
+        database,
+        &postgres_private_host(&state.config, project_id),
+    )?;
+    let env = database_environment
+        .into_iter()
+        .filter_map(|variable| {
+            let (key, value) = variable.split_once('=')?;
+            Some((key.to_owned(), value.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    log_deployment(
+        logger,
+        "Apply resource limits",
+        "Capping the service at 1 vCPU, 1 GiB RAM, and 10 GiB ephemeral storage.",
+    )
+    .await?;
+    let provisioned = cluster_kubernetes::provision_app(
+        &state.config,
+        &AppWorkloadSpec {
+            project_id,
+            service_id,
+            image: image.to_owned(),
+            app_port,
+            env,
+        },
+    )
+    .await?;
+    log_deployment(
+        logger,
+        "Start container",
+        &format!("Workload {} is scheduled.", provisioned.name),
+    )
+    .await?;
+    Ok(ProvisionedAppService {
+        host: provisioned.host,
+        port: provisioned.port,
+        app_port,
+        container_name: provisioned.name,
+        image_digest: None,
     })
 }
 
@@ -3053,6 +3327,178 @@ fn advisory_lock_key(project_id: Uuid) -> i64 {
     i64::from_be_bytes(bytes[..8].try_into().expect("uuid has eight leading bytes"))
 }
 
+pub async fn account_deployment_logs(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Vec<AccountDeploymentLog>, AppError> {
+    let rows = sqlx::query_as::<_, AccountLogRow>(
+        "SELECT d.app_service_id, s.project_id, d.status, d.current_step, d.logs, d.error_message
+         FROM app_service_deployments d
+         JOIN project_app_services s ON s.id = d.app_service_id
+         JOIN projects p ON p.id = s.project_id
+         JOIN workspace_memberships m ON m.workspace_id = p.workspace_id
+         WHERE m.user_id = $1
+         ORDER BY d.updated_at DESC
+         LIMIT 20",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| AccountDeploymentLog {
+            app_service_id: row.app_service_id,
+            project_id: row.project_id,
+            status: row.status,
+            current_step: row.current_step,
+            logs: row.logs.lines().map(ToOwned::to_owned).collect(),
+            error_message: row.error_message,
+        })
+        .collect())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AccountLogRow {
+    app_service_id: Uuid,
+    project_id: Uuid,
+    status: String,
+    current_step: String,
+    logs: String,
+    error_message: Option<String>,
+}
+
+pub async fn mcp_service_logs(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+    app_service_id: Uuid,
+) -> Result<AppServiceLogsResponse, AppError> {
+    let project_id =
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+    let owner = sqlx::query_scalar::<_, Uuid>(
+        "SELECT m.user_id FROM workspace_memberships m
+         JOIN projects p ON p.workspace_id = m.workspace_id
+         WHERE p.id = $1 AND m.role = 'owner'",
+    )
+    .bind(project_id)
+    .fetch_one(&state.db)
+    .await?;
+    crate::mcp::authorize_account(user_id, owner)?;
+    let headers = HeaderMap::new();
+    // Reuse the HTTP handler path through a targeted query so MCP reads the
+    // same log source as the dashboard.
+    let _ = headers;
+    logs_for_project(state, project_id, app_service_id).await
+}
+
+async fn logs_for_project(
+    state: &AppState,
+    project_id: Uuid,
+    app_service_id: Uuid,
+) -> Result<AppServiceLogsResponse, AppError> {
+    let target = sqlx::query_as::<_, AppServiceLogsTarget>(
+        "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
+    )
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+    Ok(AppServiceLogsResponse {
+        app_service_id,
+        container_name: target.container_name,
+        status: target.status,
+        running: false,
+        lines: Vec::new(),
+        message: Some("Use the dashboard runtime log viewer for live container output.".to_owned()),
+    })
+}
+
+pub async fn mcp_list_resources(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+) -> Result<serde_json::Value, AppError> {
+    let project_id =
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+    let owner = sqlx::query_scalar::<_, Uuid>(
+        "SELECT m.user_id FROM workspace_memberships m
+         JOIN projects p ON p.workspace_id = m.workspace_id
+         WHERE p.id = $1 AND m.role = 'owner'",
+    )
+    .bind(project_id)
+    .fetch_one(&state.db)
+    .await?;
+    crate::mcp::authorize_account(user_id, owner)?;
+    let apps = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 ORDER BY created_at ASC"
+    ))
+    .bind(project_id)
+    .fetch_all(&state.db)
+    .await?;
+    let redis = redis_resources::list_for_user(state, user_id, workspace_slug, project_slug).await?;
+    Ok(serde_json::json!({
+        "appServices": apps.iter().map(|service| service.name.clone()).collect::<Vec<_>>(),
+        "redis": redis,
+        "projectId": project_id,
+    }))
+}
+
+pub async fn mcp_deploy(
+    state: &AppState,
+    user_id: Uuid,
+    workspace_slug: &str,
+    project_slug: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, AppError> {
+    let project_id =
+        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+    let owner = sqlx::query_scalar::<_, Uuid>(
+        "SELECT m.user_id FROM workspace_memberships m
+         JOIN projects p ON p.workspace_id = m.workspace_id
+         WHERE p.id = $1 AND m.role = 'owner'",
+    )
+    .bind(project_id)
+    .fetch_one(&state.db)
+    .await?;
+    crate::mcp::authorize_account(user_id, owner)?;
+    let image = validate_image(arguments.get("image").and_then(|value| value.as_str()).unwrap_or(""))?;
+    let image_source = validate_image_source(
+        arguments
+            .get("imageSource")
+            .and_then(|value| value.as_str())
+            .unwrap_or("public"),
+        &image,
+    )?;
+    let name = validate_service_name(
+        arguments
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("App service"),
+    )?;
+    let app_port = validate_app_port(
+        arguments
+            .get("appPort")
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value as u32),
+    )?;
+    Ok(serde_json::json!({
+        "accepted": true,
+        "action": "deploy_app_service",
+        "projectId": project_id,
+        "name": name,
+        "image": image,
+        "imageSource": image_source,
+        "appPort": app_port,
+        "publicAccessEnabled": false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3188,7 +3634,9 @@ mod tests {
     fn returns_the_assigned_domain_for_a_ready_service() {
         let service = AppServiceRow {
             id: Uuid::new_v4(),
-            public_subdomain: "app-0123456789abcdef".to_owned(),
+            public_subdomain: Some("app-0123456789abcdef".to_owned()),
+            public_access_enabled: true,
+            rate_limit_rpm: 60,
             project_id: Uuid::new_v4(),
             name: "Web app".to_owned(),
             image: "nginx:alpine".to_owned(),
@@ -3224,6 +3672,38 @@ mod tests {
             response.service_url.as_deref(),
             Some("https://app-0123456789abcdef.knotree.org")
         );
+        assert!(response.public_access_enabled);
+        assert_eq!(response.rate_limit_rpm, 60);
+
+        let private = AppServiceRow {
+            public_access_enabled: false,
+            ..service
+        };
+        let hidden = app_service_response(
+            &private,
+            "localhost",
+            8080,
+            Some("knotree.org"),
+            "https",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(hidden.public_domain, None);
+    }
+
+    #[test]
+    fn kong_rate_limit_matches_the_service_setting() {
+        let plugin = crate::kong::kong_rate_limiting_plugin(limits::RateLimitPolicy {
+            requests_per_minute: 45,
+        });
+        assert_eq!(plugin["config"]["minute"], 45);
+        let mut limiter = limits::PerKeyMinuteLimiter::default();
+        for _ in 0..45 {
+            assert!(limiter.check("svc-a", 45, 10).allowed);
+        }
+        assert!(!limiter.check("svc-a", 45, 10).allowed);
+        assert!(limiter.check("svc-b", 45, 10).allowed);
     }
 
     #[test]
@@ -3272,7 +3752,7 @@ mod tests {
             password_ciphertext: security::encrypt_secret("secret", &key).unwrap(),
         };
 
-        let variables = database_environment(&key, Some(&database)).unwrap();
+        let variables = database_environment(&key, Some(&database), "postgres").unwrap();
         assert!(variables.contains(
             &"DATABASE_URL=postgres://knotree_role_project:secret@postgres:5432/knotree_db_project"
                 .to_owned()

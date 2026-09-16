@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   updateAppService: vi.fn(),
   updateAppServiceAutoDeploy: vi.fn(),
   updateAppServiceDatabase: vi.fn(),
+  updateAppServicePublicAccess: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -757,6 +758,83 @@ describe("ResourceWorkspace settings pane", () => {
     )
     expect(onToast).toHaveBeenCalledWith(
       "Postgres connection assigned. The service was redeployed."
+    )
+  })
+
+  it("wires public-domain enable and a custom rate limit", async () => {
+    const user = userEvent.setup()
+    mocks.updateAppServicePublicAccess.mockResolvedValue({
+      id: "app-resource-id",
+      name: "Web",
+      resourceType: "app",
+      status: "ready",
+      image: "nginx:alpine",
+      imageSource: "public",
+      appPort: 80,
+      host: "localhost",
+      port: 32768,
+      serviceUrl: "https://app-0123456789abcdef.knotree.org",
+      publicDomain: "app-0123456789abcdef.knotree.org",
+      publicAccessEnabled: true,
+      rateLimitRpm: 120,
+      containerName: "knotree-app-app-resource-id",
+    })
+    const onToast = vi.fn()
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "app",
+          title: "Web",
+          type: "App service",
+          volume: "web-volume",
+          status: "ACTIVE",
+          resource: {
+            id: "app-resource-id",
+            name: "Web",
+            resourceType: "app",
+            status: "ready",
+            image: "nginx:alpine",
+            imageSource: "public",
+            appPort: 80,
+            host: "localhost",
+            port: 32768,
+            serviceUrl: null,
+            publicDomain: null,
+            publicAccessEnabled: false,
+            rateLimitRpm: 60,
+            containerName: "knotree-app-app-resource-id",
+          },
+        }}
+        environment="production"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    await user.click(within(dialog).getByLabelText("Enable public hostname"))
+    const rateLimit = within(dialog).getByLabelText("App service rate limit")
+    await user.clear(rateLimit)
+    await user.type(rateLimit, "120")
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save public access" })
+    )
+    await waitFor(() => {
+      expect(mocks.updateAppServicePublicAccess).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "app-resource-id",
+        { enabled: true, rateLimitRpm: 120 }
+      )
+    })
+    expect(onToast).toHaveBeenCalledWith(
+      "Public hostname app-0123456789abcdef.knotree.org"
     )
   })
 })
