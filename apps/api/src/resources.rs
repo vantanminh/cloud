@@ -191,6 +191,9 @@ pub async fn create(
 /// Reconcile rows that were marked provisioning before an API process restart.
 /// The worker is idempotent and uses a PostgreSQL advisory lock so the request
 /// path, the reconciler, and duplicate browser clicks cannot provision twice.
+/// It uses a separate lock namespace from the request transaction lock, so a
+/// duplicate click can read the existing `provisioning` row immediately while
+/// the worker waits on Kubernetes.
 pub fn spawn_provisioning_reconciler(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(
@@ -252,7 +255,7 @@ async fn run_provisioning(state: AppState, resource_id: Uuid) {
         }
     };
 
-    let lock_key = advisory_lock_key(project_id);
+    let lock_key = provisioning_lock_key(project_id);
     let mut lock_connection = match state.db.acquire().await {
         Ok(connection) => connection,
         Err(error) => {
@@ -501,6 +504,10 @@ fn connection_string(
 fn advisory_lock_key(project_id: Uuid) -> i64 {
     let bytes = project_id.into_bytes();
     i64::from_be_bytes(bytes[..8].try_into().expect("uuid has eight leading bytes"))
+}
+
+fn provisioning_lock_key(project_id: Uuid) -> i64 {
+    advisory_lock_key(project_id) ^ i64::MIN
 }
 
 #[cfg(test)]
