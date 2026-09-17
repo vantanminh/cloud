@@ -47,6 +47,7 @@ fi
 
 helm upgrade --install "$RELEASE" "$ROOT/deploy/helm/knotree-api" \
   --namespace "$NS" \
+  --values "$ROOT/deploy/helm/knotree-api/values-edge.yaml" \
   --set image.repository="${API_IMAGE}" \
   --set image.tag="${SHA}" \
   --set image.pullPolicy=Always \
@@ -74,6 +75,16 @@ kubectl -n "$NS" logs probe-healthz | tee "$OUT/healthz.json"
 kubectl -n "$NS" run probe-web --restart=Never --image=curlimages/curl:8.11.1 -- curl -fsS "http://${WEB_SVC}:8080/"
 kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Succeeded pod/probe-web --timeout=60s
 kubectl -n "$NS" logs probe-web | tee "$OUT/dashboard.html"
+kubectl -n "$NS" delete pod probe-edge --ignore-not-found
+if kubectl -n nginx-edge get svc nginx-edge >/dev/null 2>&1; then
+  kubectl -n "$NS" run probe-edge --restart=Never --image=curlimages/curl:8.11.1 -- \
+    curl -fsS -H 'Host: cloud.knotree.com' \
+    "http://nginx-edge.nginx-edge.svc.cluster.local/"
+  kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Succeeded pod/probe-edge --timeout=60s
+  kubectl -n "$NS" logs probe-edge | tee "$OUT/edge-dashboard.html"
+else
+  echo "nginx-edge service not found; skipped edge dashboard probe" >&2
+fi
 kubectl -n "$NS" get deploy,sts,svc,ingressroute,pods -o wide
 kubectl -n "$NS" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.template.spec.containers[*].image}{"\n"}{end}'
 echo "deployed ${SHA}"

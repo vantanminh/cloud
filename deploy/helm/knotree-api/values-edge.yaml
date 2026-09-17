@@ -1,0 +1,8 @@
+# Production k3s uses nginx-edge to terminate TLS before forwarding requests
+# to Traefik over its internal HTTP entrypoint. Keep the cloud route on web so
+# the edge proxy can reach both the dashboard and API routers.
+ingress:
+  entryPoints:
+    - web
+  tls:
+    enabled: false
