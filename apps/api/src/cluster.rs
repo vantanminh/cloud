@@ -97,10 +97,9 @@ pub async fn collect_runtime_metrics(
             collect_docker_runtime_metrics(config, cluster_name, POSTGRES_VOLUME_PATH).await
         }
         PROVIDER_KUBERNETES => {
-            // Kubernetes metrics-server does not expose network or block I/O.
-            // Keep these fields explicitly unavailable until a cluster-level
-            // metrics adapter is configured instead of returning made-up data.
-            Ok(RuntimeMetrics::default())
+            let cluster_name = cluster_name.context("Kubernetes cluster name is missing")?;
+            super::cluster_kubernetes::collect_runtime_metrics(config, cluster_name, "postgres")
+                .await
         }
         provider => bail!("unsupported resource cluster provider: {provider}"),
     }
@@ -1072,10 +1071,7 @@ mod tests {
                 "size=10G",
             ]
         );
-        assert_eq!(
-            super::RESOURCE_VOLUME_LIMIT_BYTES,
-            10 * 1024 * 1024 * 1024
-        );
+        assert_eq!(super::RESOURCE_VOLUME_LIMIT_BYTES, 10 * 1024 * 1024 * 1024);
         assert_eq!(crate::limits::TENANT_RESOURCE_CAPS.cpu, "1");
     }
 }

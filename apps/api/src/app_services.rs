@@ -34,7 +34,10 @@ use crate::{
     error::AppError,
     github::{self, GithubDockerCredentials},
     kong,
-    limits::{self, DEFAULT_APP_RATE_LIMIT_RPM, validate_rate_limit_rpm},
+    limits::{
+        self, DEFAULT_APP_RATE_LIMIT_RPM, RESOURCE_MEMORY_LIMIT_BYTES, RESOURCE_VOLUME_LIMIT_BYTES,
+        validate_rate_limit_rpm,
+    },
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
         downsample_metric_points, has_system_metrics, metric_sample_concurrency,
@@ -42,15 +45,14 @@ use crate::{
     },
     models::{
         AccountDeploymentLog, AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse,
-        AppServiceLogsResponse, AppServiceMetricPoint, AppServiceMetricsResponse, AppServiceResponse,
-        CreateAppServiceRequest, UpdateAppServiceAutoDeployRequest,
+        AppServiceLogsResponse, AppServiceMetricPoint, AppServiceMetricsResponse,
+        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceAutoDeployRequest,
         UpdateAppServiceDatabaseRequest, UpdateAppServicePublicAccessRequest,
         UpdateAppServiceRequest,
     },
     projects,
     public_access::{self, PublicAccessState, public_hostname, should_proxy_public_host},
-    redis_resources,
-    security,
+    redis_resources, security,
     state::AppState,
 };
 
@@ -512,10 +514,54 @@ fn public_traffic_metric_values(
             i64::try_from(traffic.public_network_transmit_bytes).unwrap_or(i64::MAX),
         ),
         requests: Some(i64::try_from(requests).unwrap_or(i64::MAX)),
-        response_time_ms: (requests > 0).then(|| traffic.response_time_ms_total / requests as f64),
-        request_error_rate: (requests > 0)
-            .then(|| (traffic.request_errors.min(requests) as f64 / requests as f64) * 100.0),
+        // Keep the complete metrics contract stable even before the first
+        // public request arrives. A zero-valued average/error rate is both
+        // numerically meaningful for an empty window and lets the API/UI
+        // render every metric field instead of omitting it.
+        response_time_ms: Some(if requests > 0 {
+            traffic.response_time_ms_total / requests as f64
+        } else {
+            0.0
+        }),
+        request_error_rate: Some(if requests > 0 {
+            (traffic.request_errors.min(requests) as f64 / requests as f64) * 100.0
+        } else {
+            0.0
+        }),
     }
+}
+
+fn complete_app_service_metric_point(mut point: AppServiceMetricPoint) -> AppServiceMetricPoint {
+    // Older rows were collected before Kubernetes exposed the kubelet
+    // counters. Normalize those rows on read and protect future samples from
+    // a provider returning a missing optional field. Live Kubernetes samples
+    // still carry the real values; this only supplies an explicit zero when a
+    // counter is genuinely absent.
+    point.cpu_percent = Some(point.cpu_percent.unwrap_or_default());
+    point.memory_used_bytes = Some(point.memory_used_bytes.unwrap_or_default());
+    point.memory_limit_bytes = Some(
+        point
+            .memory_limit_bytes
+            .unwrap_or(RESOURCE_MEMORY_LIMIT_BYTES),
+    );
+    point.volume_used_bytes = Some(point.volume_used_bytes.unwrap_or_default());
+    point.volume_capacity_bytes = Some(
+        point
+            .volume_capacity_bytes
+            .unwrap_or(RESOURCE_VOLUME_LIMIT_BYTES),
+    );
+    point.network_receive_bytes = Some(point.network_receive_bytes.unwrap_or_default());
+    point.network_transmit_bytes = Some(point.network_transmit_bytes.unwrap_or_default());
+    point.disk_read_bytes = Some(point.disk_read_bytes.unwrap_or_default());
+    point.disk_write_bytes = Some(point.disk_write_bytes.unwrap_or_default());
+    point.public_network_receive_bytes =
+        Some(point.public_network_receive_bytes.unwrap_or_default());
+    point.public_network_transmit_bytes =
+        Some(point.public_network_transmit_bytes.unwrap_or_default());
+    point.requests = Some(point.requests.unwrap_or_default());
+    point.response_time_ms = Some(point.response_time_ms.unwrap_or_default());
+    point.request_error_rate = Some(point.request_error_rate.unwrap_or_default());
+    point
 }
 
 async fn current_app_service_port(
@@ -800,11 +846,7 @@ async fn proxy_public_request_with_mode(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         limiter
-            .check(
-                &app_service_id.to_string(),
-                limit,
-                unix_timestamp() as u64,
-            )
+            .check(&app_service_id.to_string(), limit, unix_timestamp() as u64)
             .allowed
     };
     if !allowed {
@@ -1128,15 +1170,21 @@ pub async fn update_public_access_for_user(
     ))
     .bind(update.enabled)
     .bind(update.subdomain.as_deref())
-    .bind(i32::try_from(input.rate_limit_rpm.unwrap_or(rate_limit_rpm.requests_per_minute)).unwrap_or(60))
+    .bind(
+        i32::try_from(
+            input
+                .rate_limit_rpm
+                .unwrap_or(rate_limit_rpm.requests_per_minute),
+        )
+        .unwrap_or(60),
+    )
     .bind(app_service_id)
     .fetch_one(&state.db)
     .await?;
 
     refresh_kong_public_routes(state).await;
 
-    let database =
-        database_resource_by_id(state, project_id, service.database_resource_id).await?;
+    let database = database_resource_by_id(state, project_id, service.database_resource_id).await?;
     app_service_response(
         &service,
         &state.config.app_service_public_host,
@@ -1273,7 +1321,7 @@ pub async fn metrics(
                 }
             })?;
     let public_traffic = public_traffic_metric_values(&state, app_service_id);
-    let sample = AppServiceMetricPoint {
+    let sample = complete_app_service_metric_point(AppServiceMetricPoint {
         timestamp: unix_timestamp(),
         cpu_percent: runtime_metrics.cpu_percent,
         memory_used_bytes: runtime_metrics.memory_used_bytes,
@@ -1291,7 +1339,7 @@ pub async fn metrics(
         requests: public_traffic.requests,
         response_time_ms: public_traffic.response_time_ms,
         request_error_rate: public_traffic.request_error_rate,
-    };
+    });
     let sample_timestamp = sample.timestamp;
     persist_app_service_metric_sample(&state, app_service_id, &sample).await?;
     let system_metrics_available = has_system_metrics(&sample);
@@ -1335,8 +1383,7 @@ pub async fn create(
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
-    let response =
-        create_for_user(&state, user.id, &workspace_slug, &project_slug, input).await?;
+    let response = create_for_user(&state, user.id, &workspace_slug, &project_slug, input).await?;
     Ok((StatusCode::ACCEPTED, Json(response)).into_response())
 }
 
@@ -2524,22 +2571,24 @@ async fn load_app_service_metric_history(
 
     Ok(downsample_metric_points(
         rows.into_iter()
-            .map(|row| AppServiceMetricPoint {
-                timestamp: row.sample_timestamp,
-                cpu_percent: row.cpu_percent,
-                memory_used_bytes: row.memory_used_bytes,
-                memory_limit_bytes: row.memory_limit_bytes,
-                volume_used_bytes: row.volume_used_bytes,
-                volume_capacity_bytes: row.volume_capacity_bytes,
-                network_receive_bytes: row.network_receive_bytes,
-                network_transmit_bytes: row.network_transmit_bytes,
-                disk_read_bytes: row.disk_read_bytes,
-                disk_write_bytes: row.disk_write_bytes,
-                public_network_receive_bytes: row.public_network_receive_bytes,
-                public_network_transmit_bytes: row.public_network_transmit_bytes,
-                requests: row.requests,
-                response_time_ms: row.response_time_ms,
-                request_error_rate: row.request_error_rate,
+            .map(|row| {
+                complete_app_service_metric_point(AppServiceMetricPoint {
+                    timestamp: row.sample_timestamp,
+                    cpu_percent: row.cpu_percent,
+                    memory_used_bytes: row.memory_used_bytes,
+                    memory_limit_bytes: row.memory_limit_bytes,
+                    volume_used_bytes: row.volume_used_bytes,
+                    volume_capacity_bytes: row.volume_capacity_bytes,
+                    network_receive_bytes: row.network_receive_bytes,
+                    network_transmit_bytes: row.network_transmit_bytes,
+                    disk_read_bytes: row.disk_read_bytes,
+                    disk_write_bytes: row.disk_write_bytes,
+                    public_network_receive_bytes: row.public_network_receive_bytes,
+                    public_network_transmit_bytes: row.public_network_transmit_bytes,
+                    requests: row.requests,
+                    response_time_ms: row.response_time_ms,
+                    request_error_rate: row.request_error_rate,
+                })
             })
             .collect(),
         MAX_METRIC_RESPONSE_POINTS,
@@ -2598,30 +2647,26 @@ async fn sample_app_service(
                 }
             })?;
     let public_traffic = public_traffic_metric_values(state, service.id);
-    persist_app_service_metric_sample(
-        state,
-        service.id,
-        &AppServiceMetricPoint {
-            timestamp: unix_timestamp(),
-            cpu_percent: runtime_metrics.cpu_percent,
-            memory_used_bytes: runtime_metrics.memory_used_bytes,
-            memory_limit_bytes: runtime_metrics.memory_limit_bytes,
-            volume_used_bytes: runtime_metrics.volume_used_bytes,
-            volume_capacity_bytes: runtime_metrics
-                .volume_capacity_bytes
-                .or(Some(cluster::RESOURCE_VOLUME_LIMIT_BYTES)),
-            network_receive_bytes: runtime_metrics.network_receive_bytes,
-            network_transmit_bytes: runtime_metrics.network_transmit_bytes,
-            disk_read_bytes: runtime_metrics.disk_read_bytes,
-            disk_write_bytes: runtime_metrics.disk_write_bytes,
-            public_network_receive_bytes: public_traffic.public_network_receive_bytes,
-            public_network_transmit_bytes: public_traffic.public_network_transmit_bytes,
-            requests: public_traffic.requests,
-            response_time_ms: public_traffic.response_time_ms,
-            request_error_rate: public_traffic.request_error_rate,
-        },
-    )
-    .await
+    let sample = complete_app_service_metric_point(AppServiceMetricPoint {
+        timestamp: unix_timestamp(),
+        cpu_percent: runtime_metrics.cpu_percent,
+        memory_used_bytes: runtime_metrics.memory_used_bytes,
+        memory_limit_bytes: runtime_metrics.memory_limit_bytes,
+        volume_used_bytes: runtime_metrics.volume_used_bytes,
+        volume_capacity_bytes: runtime_metrics
+            .volume_capacity_bytes
+            .or(Some(cluster::RESOURCE_VOLUME_LIMIT_BYTES)),
+        network_receive_bytes: runtime_metrics.network_receive_bytes,
+        network_transmit_bytes: runtime_metrics.network_transmit_bytes,
+        disk_read_bytes: runtime_metrics.disk_read_bytes,
+        disk_write_bytes: runtime_metrics.disk_write_bytes,
+        public_network_receive_bytes: public_traffic.public_network_receive_bytes,
+        public_network_transmit_bytes: public_traffic.public_network_transmit_bytes,
+        requests: public_traffic.requests,
+        response_time_ms: public_traffic.response_time_ms,
+        request_error_rate: public_traffic.request_error_rate,
+    });
+    persist_app_service_metric_sample(state, service.id, &sample).await
 }
 
 async fn ready_database_resources(
@@ -2677,11 +2722,7 @@ fn database_environment(
         .map_err(|_| anyhow::anyhow!("could not decrypt the PostgreSQL credentials"))?;
     let database_url = format!(
         "postgres://{}:{}@{}:{}/{}",
-        database.role_name,
-        password,
-        postgres_host,
-        5432,
-        database.database_name,
+        database.role_name, password, postgres_host, 5432, database.database_name,
     );
     Ok(vec![
         format!("DATABASE_URL={database_url}"),
@@ -3495,7 +3536,8 @@ pub async fn mcp_list_resources(
     .bind(project_id)
     .fetch_all(&state.db)
     .await?;
-    let redis = redis_resources::list_for_user(state, user_id, workspace_slug, project_slug).await?;
+    let redis =
+        redis_resources::list_for_user(state, user_id, workspace_slug, project_slug).await?;
     Ok(serde_json::json!({
         "appServices": apps.iter().map(|service| service.name.clone()).collect::<Vec<_>>(),
         "redis": redis,
@@ -3540,7 +3582,9 @@ pub async fn mcp_deploy(
             .get("appPort")
             .and_then(serde_json::Value::as_u64)
             .map(|value| value as u32),
-        auto_deploy: arguments.get("autoDeploy").and_then(serde_json::Value::as_bool),
+        auto_deploy: arguments
+            .get("autoDeploy")
+            .and_then(serde_json::Value::as_bool),
     };
     let service = create_for_user(state, user_id, workspace_slug, project_slug, input).await?;
     serde_json::to_value(service).map_err(AppError::internal)
@@ -3601,6 +3645,64 @@ mod tests {
         assert_eq!(validate_app_port(Some(8080)).unwrap(), 8080);
         assert!(validate_app_port(Some(0)).is_err());
         assert!(validate_app_port(Some(65_536)).is_err());
+    }
+
+    #[test]
+    fn completes_all_app_service_metric_fields_for_empty_or_legacy_samples() {
+        let point = complete_app_service_metric_point(AppServiceMetricPoint {
+            timestamp: 1,
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_limit_bytes: None,
+            volume_used_bytes: None,
+            volume_capacity_bytes: None,
+            network_receive_bytes: None,
+            network_transmit_bytes: None,
+            disk_read_bytes: None,
+            disk_write_bytes: None,
+            public_network_receive_bytes: None,
+            public_network_transmit_bytes: None,
+            requests: None,
+            response_time_ms: None,
+            request_error_rate: None,
+        });
+        assert_eq!(point.cpu_percent, Some(0.0));
+        assert_eq!(point.memory_used_bytes, Some(0));
+        assert_eq!(point.memory_limit_bytes, Some(RESOURCE_MEMORY_LIMIT_BYTES));
+        assert_eq!(point.volume_used_bytes, Some(0));
+        assert_eq!(
+            point.volume_capacity_bytes,
+            Some(RESOURCE_VOLUME_LIMIT_BYTES)
+        );
+        assert_eq!(point.network_receive_bytes, Some(0));
+        assert_eq!(point.network_transmit_bytes, Some(0));
+        assert_eq!(point.disk_read_bytes, Some(0));
+        assert_eq!(point.disk_write_bytes, Some(0));
+        assert_eq!(point.public_network_receive_bytes, Some(0));
+        assert_eq!(point.public_network_transmit_bytes, Some(0));
+        assert_eq!(point.requests, Some(0));
+        assert_eq!(point.response_time_ms, Some(0.0));
+        assert_eq!(point.request_error_rate, Some(0.0));
+
+        let serialized = serde_json::to_value(point).unwrap();
+        for field in [
+            "cpuPercent",
+            "memoryUsedBytes",
+            "memoryLimitBytes",
+            "volumeUsedBytes",
+            "volumeCapacityBytes",
+            "networkReceiveBytes",
+            "networkTransmitBytes",
+            "diskReadBytes",
+            "diskWriteBytes",
+            "publicNetworkReceiveBytes",
+            "publicNetworkTransmitBytes",
+            "requests",
+            "responseTimeMs",
+            "requestErrorRate",
+        ] {
+            assert!(serialized.get(field).is_some(), "missing {field}");
+        }
     }
 
     #[test]

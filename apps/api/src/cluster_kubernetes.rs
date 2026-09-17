@@ -6,9 +6,10 @@ use kube::{
     Client,
     api::{
         Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch,
-        PatchParams,
+        PatchParams, Request as KubeRequest,
     },
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::time::sleep;
 
@@ -100,9 +101,7 @@ pub async fn provision(config: &Config, spec: &ClusterSpec) -> Result<Provisione
             .downcast_ref::<KubernetesCapacityUnavailable>()
             .is_some()
         {
-            if let Err(cleanup_error) = stateful_sets
-                .delete(&name, &DeleteParams::default())
-                .await
+            if let Err(cleanup_error) = stateful_sets.delete(&name, &DeleteParams::default()).await
             {
                 tracing::warn!(
                     namespace,
@@ -266,31 +265,36 @@ pub struct ProvisionedApp {
     pub port: u16,
 }
 
-/// Read runtime counters for a Kubernetes App service from metrics-server.
+/// Read complete runtime counters for a Kubernetes App service.
 ///
 /// The control-plane API runs in the same namespace as tenant workloads and
 /// stores the Deployment name in `container_name` for Kubernetes services. A
-/// live pod is selected by that Deployment prefix, then its `PodMetrics`
-/// object is read from the aggregated `metrics.k8s.io` API. metrics-server
-/// exposes CPU and memory only; network, block I/O, and writable-layer usage
-/// remain explicitly unavailable for this provider.
+/// live pod is selected by that Deployment prefix, then the kubelet summary
+/// and cAdvisor endpoints are used for CPU, memory, ephemeral storage,
+/// network, and block I/O counters.
 pub async fn collect_app_service_runtime_metrics(
     config: &Config,
     deployment_name: &str,
+) -> Result<RuntimeMetrics> {
+    collect_runtime_metrics(config, deployment_name, "app").await
+}
+
+/// Read complete runtime counters for a Kubernetes workload.
+pub async fn collect_runtime_metrics(
+    config: &Config,
+    workload_name: &str,
+    container_name: &str,
 ) -> Result<RuntimeMetrics> {
     let client = Client::try_default()
         .await
         .context("could not connect to the Kubernetes API for runtime metrics")?;
     let namespace = config.database_cluster_namespace.as_str();
     let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
-    let pod_prefix = format!("{deployment_name}-");
+    let pod_prefix = format!("{workload_name}-");
     let pod = pods
-        .list(
-            &ListParams::default()
-                .labels("app.knotree.com/component=app-service,app.knotree.com/managed-by=knotree-api"),
-        )
+        .list(&ListParams::default().labels("app.knotree.com/managed-by=knotree-api"))
         .await
-        .context("could not list Kubernetes App service pods")?
+        .context("could not list Kubernetes workload pods")?
         .items
         .into_iter()
         .find(|pod| {
@@ -305,52 +309,47 @@ pub async fn collect_app_service_runtime_metrics(
                     == Some("Running")
         })
         .with_context(|| {
-            format!(
-                "could not find a running Kubernetes App service pod for Deployment {deployment_name}"
-            )
+            format!("could not find a running Kubernetes workload pod for {workload_name}")
         })?;
     let pod_name = pod
         .metadata
         .name
         .as_deref()
-        .context("Kubernetes App service pod has no name")?;
-
-    let pod_metrics: Api<DynamicObject> = namespaced_api(
-        client,
-        namespace,
-        GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"),
-    );
-    let metrics = pod_metrics
-        .get(pod_name)
-        .await
-        .with_context(|| format!("could not read Kubernetes metrics for pod {pod_name}"))?;
-    let container_metrics = metrics
-        .data
-        .get("containers")
-        .and_then(Value::as_array)
-        .context("Kubernetes PodMetrics response has no containers")?;
-    let container_metrics = container_metrics
+        .context("Kubernetes workload pod has no name")?;
+    let node_name = pod
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.node_name.as_deref())
+        .context("Kubernetes workload pod has no node name")?;
+    let summary = kubelet_stats_summary(&client, node_name).await?;
+    let pod_stats = summary
+        .pods
         .iter()
-        .find(|container| container.get("name").and_then(Value::as_str) == Some("app"))
-        .or_else(|| container_metrics.first())
-        .context("Kubernetes PodMetrics response has no container usage")?;
-    let usage = container_metrics
-        .get("usage")
-        .and_then(Value::as_object)
-        .context("Kubernetes PodMetrics container has no usage")?;
-    let cpu_cores = usage
-        .get("cpu")
-        .and_then(Value::as_str)
-        .context("Kubernetes PodMetrics has no CPU usage")
-        .and_then(parse_kubernetes_quantity)?;
-    let memory_used_bytes = usage
-        .get("memory")
-        .and_then(Value::as_str)
-        .context("Kubernetes PodMetrics has no memory usage")
-        .and_then(parse_kubernetes_bytes)?;
+        .find(|stats| stats.pod_ref.namespace == namespace && stats.pod_ref.name == pod_name)
+        .with_context(|| format!("kubelet has no stats for pod {namespace}/{pod_name}"))?;
+    let container_stats = pod_stats
+        .containers
+        .iter()
+        .find(|container| container.name == container_name)
+        .or_else(|| pod_stats.containers.first())
+        .with_context(|| format!("kubelet has no stats for container {container_name}"))?;
 
-    let cpu_limit_cores = pod_container_limit(&pod, "app", "cpu");
-    let memory_limit_bytes = pod_container_limit(&pod, "app", "memory")
+    let cpu_cores = container_stats
+        .cpu
+        .as_ref()
+        .and_then(|cpu| cpu.usage_nano_cores)
+        .map(|nano_cores| nano_cores as f64 / 1_000_000_000.0)
+        .unwrap_or_default();
+    let memory_used_bytes = container_stats
+        .memory
+        .as_ref()
+        .and_then(|memory| memory.working_set_bytes.or(memory.usage_bytes))
+        .map(i64_from_u64)
+        .transpose()?
+        .unwrap_or_default();
+
+    let cpu_limit_cores = pod_container_limit(&pod, container_name, "cpu");
+    let memory_limit_bytes = pod_container_limit(&pod, container_name, "memory")
         .map(|value| parse_bytes_value(value, "memory limit"))
         .transpose()?;
     let cpu_percent = cpu_limit_cores
@@ -361,17 +360,282 @@ pub async fn collect_app_service_runtime_metrics(
         bail!("Kubernetes returned an invalid CPU percentage");
     }
 
+    let volume_used_bytes = pod_storage_bytes(pod_stats, container_stats);
+    let network_receive_bytes = pod_stats
+        .network
+        .as_ref()
+        .and_then(|network| network.rx_bytes)
+        .map(i64_from_u64)
+        .transpose()?
+        .unwrap_or_default();
+    let network_transmit_bytes = pod_stats
+        .network
+        .as_ref()
+        .and_then(|network| network.tx_bytes)
+        .map(i64_from_u64)
+        .transpose()?
+        .unwrap_or_default();
+    let (disk_read_bytes, disk_write_bytes) =
+        collect_cadvisor_io_metrics(&client, node_name, pod_name, container_name)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    node = node_name,
+                    pod = pod_name,
+                    container = container_name,
+                    error = %error,
+                    "could not read kubelet cAdvisor disk metrics; using kubelet I/O counters"
+                );
+                (
+                    container_stats
+                        .io
+                        .as_ref()
+                        .and_then(|io| io.read_bytes)
+                        .and_then(|value| i64::try_from(value).ok())
+                        .unwrap_or_default(),
+                    container_stats
+                        .io
+                        .as_ref()
+                        .and_then(|io| io.write_bytes)
+                        .and_then(|value| i64::try_from(value).ok())
+                        .unwrap_or_default(),
+                )
+            });
+
     Ok(RuntimeMetrics {
         cpu_percent: Some(cpu_percent.min(100.0)),
         memory_used_bytes: Some(memory_used_bytes),
         memory_limit_bytes,
-        volume_used_bytes: None,
+        volume_used_bytes: Some(volume_used_bytes.unwrap_or_default()),
         volume_capacity_bytes: Some(RESOURCE_VOLUME_LIMIT_BYTES),
-        network_receive_bytes: None,
-        network_transmit_bytes: None,
-        disk_read_bytes: None,
-        disk_write_bytes: None,
+        network_receive_bytes: Some(network_receive_bytes),
+        network_transmit_bytes: Some(network_transmit_bytes),
+        disk_read_bytes: Some(disk_read_bytes),
+        disk_write_bytes: Some(disk_write_bytes),
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletStatsSummary {
+    #[serde(default)]
+    pods: Vec<KubeletPodStats>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletPodStats {
+    pod_ref: KubeletPodReference,
+    #[serde(default)]
+    containers: Vec<KubeletContainerStats>,
+    #[serde(rename = "ephemeral-storage")]
+    ephemeral_storage: Option<KubeletFsStats>,
+    #[serde(default)]
+    volume: Vec<KubeletFsStats>,
+    network: Option<KubeletNetworkStats>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletPodReference {
+    name: String,
+    namespace: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletContainerStats {
+    name: String,
+    cpu: Option<KubeletCpuStats>,
+    memory: Option<KubeletMemoryStats>,
+    io: Option<KubeletIoStats>,
+    rootfs: Option<KubeletFsStats>,
+    logs: Option<KubeletFsStats>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletCpuStats {
+    usage_nano_cores: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletMemoryStats {
+    working_set_bytes: Option<u64>,
+    usage_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletIoStats {
+    read_bytes: Option<u64>,
+    write_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletFsStats {
+    used_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KubeletNetworkStats {
+    rx_bytes: Option<u64>,
+    tx_bytes: Option<u64>,
+}
+
+async fn kubelet_stats_summary(client: &Client, node_name: &str) -> Result<KubeletStatsSummary> {
+    let request = KubeRequest::new(format!("/api/v1/nodes/{node_name}/proxy/stats/summary"))
+        .list(&ListParams::default())?;
+    client
+        .request(request)
+        .await
+        .with_context(|| format!("could not read kubelet stats summary for node {node_name}"))
+}
+
+async fn collect_cadvisor_io_metrics(
+    client: &Client,
+    node_name: &str,
+    pod_name: &str,
+    container_name: &str,
+) -> Result<(i64, i64)> {
+    let request = KubeRequest::new(format!("/api/v1/nodes/{node_name}/proxy/metrics/cadvisor"))
+        .list(&ListParams::default())?;
+    let payload = client
+        .request_text(request)
+        .await
+        .with_context(|| format!("could not read kubelet cAdvisor metrics for node {node_name}"))?;
+    parse_cadvisor_io_metrics(&payload, pod_name, container_name)
+}
+
+fn pod_storage_bytes(
+    pod_stats: &KubeletPodStats,
+    container_stats: &KubeletContainerStats,
+) -> Option<i64> {
+    let volume_bytes = pod_stats
+        .volume
+        .iter()
+        .filter_map(|stats| stats.used_bytes)
+        .try_fold(0i64, |total, value| {
+            i64_from_u64(value)
+                .ok()
+                .and_then(|value| total.checked_add(value))
+        });
+    let ephemeral_bytes = pod_stats
+        .ephemeral_storage
+        .as_ref()
+        .and_then(|storage| storage.used_bytes)
+        .or_else(|| {
+            [
+                container_stats.rootfs.as_ref(),
+                container_stats.logs.as_ref(),
+            ]
+            .into_iter()
+            .filter_map(|stats| stats.and_then(|stats| stats.used_bytes))
+            .try_fold(0u64, |total, value| total.checked_add(value))
+        });
+    match (
+        ephemeral_bytes.map(i64_from_u64).transpose().ok()?,
+        volume_bytes,
+    ) {
+        (Some(ephemeral), Some(volume)) => ephemeral.checked_add(volume),
+        (Some(bytes), None) | (None, Some(bytes)) => Some(bytes),
+        (None, None) => None,
+    }
+}
+
+fn i64_from_u64(value: u64) -> Result<i64> {
+    i64::try_from(value).context("Kubernetes runtime metric exceeded i64 range")
+}
+
+fn parse_cadvisor_io_metrics(
+    payload: &str,
+    pod_name: &str,
+    container_name: &str,
+) -> Result<(i64, i64)> {
+    let mut read_bytes = 0i64;
+    let mut write_bytes = 0i64;
+    let mut matched = false;
+    for line in payload.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let metric = fields
+            .next()
+            .context("cAdvisor returned a malformed metric")?;
+        let value = fields
+            .next()
+            .context("cAdvisor returned a metric without a value")?
+            .parse::<f64>()?;
+        let (name, labels) = metric
+            .split_once('{')
+            .map(|(name, labels)| (name, labels.strip_suffix('}').unwrap_or(labels)))
+            .unwrap_or((metric, ""));
+        if prometheus_label_value(labels, "pod").as_deref() != Some(pod_name)
+            || prometheus_label_value(labels, "container").as_deref() != Some(container_name)
+        {
+            continue;
+        }
+        let bytes = parse_prometheus_counter(value)?;
+        match name {
+            "container_fs_reads_bytes_total" => {
+                read_bytes = read_bytes
+                    .checked_add(bytes)
+                    .context("cAdvisor read metric overflowed")?;
+                matched = true;
+            }
+            "container_fs_writes_bytes_total" => {
+                write_bytes = write_bytes
+                    .checked_add(bytes)
+                    .context("cAdvisor write metric overflowed")?;
+                matched = true;
+            }
+            _ => {}
+        }
+    }
+    if !matched {
+        bail!("cAdvisor returned no disk metrics for pod {pod_name} container {container_name}");
+    }
+    Ok((read_bytes, write_bytes))
+}
+
+fn prometheus_label_value(labels: &str, key: &str) -> Option<String> {
+    labels.split(',').find_map(|label| {
+        let (label_key, raw_value) = label.trim().split_once('=')?;
+        if label_key != key {
+            return None;
+        }
+        let raw_value = raw_value.strip_prefix('"')?.strip_suffix('"')?;
+        let mut value = String::with_capacity(raw_value.len());
+        let mut escaped = false;
+        for character in raw_value.chars() {
+            if escaped {
+                value.push(match character {
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    other => other,
+                });
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else {
+                value.push(character);
+            }
+        }
+        (!escaped).then_some(value)
+    })
+}
+
+fn parse_prometheus_counter(value: f64) -> Result<i64> {
+    if !value.is_finite() || value < 0.0 || value > i64::MAX as f64 {
+        bail!("cAdvisor returned an invalid disk counter");
+    }
+    Ok(value.round() as i64)
 }
 
 fn pod_container_limit(pod: &Pod, container_name: &str, resource_name: &str) -> Option<f64> {
@@ -450,7 +714,11 @@ pub fn redis_resource_name(project_id: uuid::Uuid) -> String {
 }
 
 pub fn redis_service_dns(project_id: uuid::Uuid, namespace: &str) -> String {
-    format!("{}.{}.svc.cluster.local", redis_resource_name(project_id), namespace)
+    format!(
+        "{}.{}.svc.cluster.local",
+        redis_resource_name(project_id),
+        namespace
+    )
 }
 
 pub fn redis_service_manifest(project_id: uuid::Uuid, namespace: &str, labels: &Value) -> Value {
@@ -624,10 +892,7 @@ pub fn project_network_policy_manifest(project_id: uuid::Uuid, namespace: &str) 
     })
 }
 
-pub async fn provision_app(
-    config: &Config,
-    spec: &AppWorkloadSpec,
-) -> Result<ProvisionedApp> {
+pub async fn provision_app(config: &Config, spec: &AppWorkloadSpec) -> Result<ProvisionedApp> {
     let client = Client::try_default()
         .await
         .context("could not connect to the Kubernetes API")?;
@@ -657,7 +922,10 @@ pub async fn provision_app(
         client.clone(),
         &namespace,
         GroupVersionKind::gvk("networking.k8s.io", "v1", "NetworkPolicy"),
-        &format!("knotree-net-{}", &spec.project_id.simple().to_string()[..20]),
+        &format!(
+            "knotree-net-{}",
+            &spec.project_id.simple().to_string()[..20]
+        ),
         project_network_policy_manifest(spec.project_id, &namespace),
     )
     .await?;
@@ -711,7 +979,10 @@ pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<Prov
         client.clone(),
         &namespace,
         GroupVersionKind::gvk("networking.k8s.io", "v1", "NetworkPolicy"),
-        &format!("knotree-net-{}", &spec.project_id.simple().to_string()[..20]),
+        &format!(
+            "knotree-net-{}",
+            &spec.project_id.simple().to_string()[..20]
+        ),
         project_network_policy_manifest(spec.project_id, &namespace),
     )
     .await?;
@@ -733,9 +1004,7 @@ pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<Prov
             .downcast_ref::<KubernetesCapacityUnavailable>()
             .is_some()
         {
-            if let Err(cleanup_error) = stateful_sets
-                .delete(&name, &DeleteParams::default())
-                .await
+            if let Err(cleanup_error) = stateful_sets.delete(&name, &DeleteParams::default()).await
             {
                 tracing::warn!(
                     namespace,
@@ -808,7 +1077,9 @@ async fn wait_for_deployment(
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!("Kubernetes App service Deployment did not become ready before the startup timeout");
+            bail!(
+                "Kubernetes App service Deployment did not become ready before the startup timeout"
+            );
         }
         sleep(Duration::from_secs(2)).await;
     }
@@ -978,7 +1249,10 @@ mod tests {
             manifest["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
             "10Gi"
         );
-        assert_eq!(container["resources"]["limits"]["ephemeral-storage"], "10Gi");
+        assert_eq!(
+            container["resources"]["limits"]["ephemeral-storage"],
+            "10Gi"
+        );
     }
 
     #[test]
@@ -992,7 +1266,10 @@ mod tests {
                 service_id,
                 image: "nginx:alpine".to_owned(),
                 app_port: 80,
-                env: vec![("DATABASE_URL".to_owned(), "postgres://postgres:5432/db".to_owned())],
+                env: vec![(
+                    "DATABASE_URL".to_owned(),
+                    "postgres://postgres:5432/db".to_owned(),
+                )],
             },
             "knotree-cloud",
             None,
@@ -1011,7 +1288,10 @@ mod tests {
             let container = &manifest["spec"]["template"]["spec"]["containers"][0];
             assert_eq!(container["resources"]["limits"]["cpu"], "1");
             assert_eq!(container["resources"]["limits"]["memory"], "1Gi");
-            assert_eq!(container["resources"]["limits"]["ephemeral-storage"], "10Gi");
+            assert_eq!(
+                container["resources"]["limits"]["ephemeral-storage"],
+                "10Gi"
+            );
         }
         assert_eq!(
             redis["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
@@ -1019,10 +1299,7 @@ mod tests {
         );
         assert_eq!(crate::limits::TENANT_RESOURCE_CAPS.cpu, "1");
         let redis_name = redis_resource_name(project_id);
-        assert_eq!(
-            redis_name,
-            format!("knotree-redis-{}", project_id.simple())
-        );
+        assert_eq!(redis_name, format!("knotree-redis-{}", project_id.simple()));
         assert_ne!(redis_name, crate::cluster::PROJECT_NETWORK_REDIS_ALIAS);
         assert_eq!(
             redis_service_dns(project_id, "knotree-cloud"),
@@ -1051,5 +1328,61 @@ mod tests {
         assert_eq!(parse_kubernetes_bytes("1Gi").unwrap(), 1_073_741_824);
         assert!(parse_kubernetes_quantity("-1").is_err());
         assert!(parse_kubernetes_quantity("wat").is_err());
+    }
+
+    #[test]
+    fn parses_kubelet_summary_runtime_fields() {
+        let summary = serde_json::from_value::<KubeletStatsSummary>(serde_json::json!({
+            "pods": [{
+                "podRef": {
+                    "name": "workload-abc123",
+                    "namespace": "knotree-cloud"
+                },
+                "containers": [{
+                    "name": "app",
+                    "cpu": { "usageNanoCores": 500000000 },
+                    "memory": { "workingSetBytes": 4096 },
+                    "io": { "readBytes": 30, "writeBytes": 40 },
+                    "rootfs": { "usedBytes": 100 },
+                    "logs": { "usedBytes": 20 }
+                }],
+                "ephemeral-storage": { "usedBytes": 2048 },
+                "volume": [{ "name": "cache", "usedBytes": 10 }],
+                "network": { "rxBytes": 500, "txBytes": 600 }
+            }]
+        }))
+        .unwrap();
+        let pod = &summary.pods[0];
+        assert_eq!(pod.pod_ref.name, "workload-abc123");
+        assert_eq!(pod.pod_ref.namespace, "knotree-cloud");
+        assert_eq!(
+            pod.ephemeral_storage.as_ref().unwrap().used_bytes,
+            Some(2048)
+        );
+        assert_eq!(pod.network.as_ref().unwrap().rx_bytes, Some(500));
+        assert_eq!(
+            pod.containers[0].cpu.as_ref().unwrap().usage_nano_cores,
+            Some(500000000)
+        );
+        assert_eq!(
+            pod.containers[0].memory.as_ref().unwrap().working_set_bytes,
+            Some(4096)
+        );
+        assert_eq!(pod.containers[0].io.as_ref().unwrap().write_bytes, Some(40));
+        assert_eq!(pod_storage_bytes(pod, &pod.containers[0]), Some(2058));
+    }
+
+    #[test]
+    fn parses_cadvisor_disk_counters_for_target_container() {
+        let payload = concat!(
+            "# HELP container_fs_reads_bytes_total read bytes\n",
+            "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 123\n",
+            "container_fs_writes_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 456\n",
+            "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"other-pod\"} 999\n",
+        );
+        assert_eq!(
+            parse_cadvisor_io_metrics(payload, "workload-abc123", "app").unwrap(),
+            (123, 456)
+        );
     }
 }

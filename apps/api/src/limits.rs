@@ -6,6 +6,7 @@ pub const RESOURCE_CPU_LIMIT: &str = "1";
 pub const RESOURCE_MEMORY_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_SWAP_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_LIMIT_KUBERNETES: &str = "1Gi";
+pub const RESOURCE_MEMORY_LIMIT_BYTES: i64 = 1024 * 1024 * 1024;
 pub const RESOURCE_VOLUME_LIMIT_DOCKER: &str = "10G";
 pub const RESOURCE_VOLUME_LIMIT_KUBERNETES: &str = "10Gi";
 pub const RESOURCE_VOLUME_LIMIT_BYTES: i64 = 10 * 1024 * 1024 * 1024;
@@ -148,18 +149,12 @@ mod tests {
         assert_eq!(kube["limits"]["cpu"], "1");
         assert_eq!(kube["limits"]["memory"], "1Gi");
         assert_eq!(kube["limits"]["ephemeral-storage"], "10Gi");
-        assert_eq!(
-            kubernetes_storage_request()["requests"]["storage"],
-            "10Gi"
-        );
+        assert_eq!(kubernetes_storage_request()["requests"]["storage"], "10Gi");
     }
 
     #[test]
     fn rejects_rate_limits_outside_the_safe_window() {
-        assert_eq!(
-            validate_rate_limit_rpm(60).unwrap().requests_per_minute,
-            60
-        );
+        assert_eq!(validate_rate_limit_rpm(60).unwrap().requests_per_minute, 60);
         assert!(validate_rate_limit_rpm(0).is_err());
         assert!(validate_rate_limit_rpm(10_001).is_err());
     }
