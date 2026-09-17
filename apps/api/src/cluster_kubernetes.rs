@@ -594,15 +594,16 @@ fn parse_cadvisor_io_metrics(
         {
             continue;
         }
-        let bytes = parse_prometheus_counter(value)?;
         match name {
             "container_fs_reads_bytes_total" => {
+                let bytes = parse_prometheus_counter(value)?;
                 read_bytes = read_bytes
                     .checked_add(bytes)
                     .context("cAdvisor read metric overflowed")?;
                 matched = true;
             }
             "container_fs_writes_bytes_total" => {
+                let bytes = parse_prometheus_counter(value)?;
                 write_bytes = write_bytes
                     .checked_add(bytes)
                     .context("cAdvisor write metric overflowed")?;
@@ -1391,6 +1392,7 @@ mod tests {
         let payload = concat!(
             "# HELP container_fs_reads_bytes_total read bytes\n",
             "cadvisor_version_info{cadvisorRevision=\"\",cadvisorVersion=\"\",dockerVersion=\"\",kernelVersion=\"6.14.0\",osVersion=\"Ubuntu 25.04\"} 1\n",
+            "container_spec_cpu_quota{container=\"app\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} -1\n",
             "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 123\n",
             "container_fs_writes_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 456\n",
             "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"other-pod\"} 999\n",
