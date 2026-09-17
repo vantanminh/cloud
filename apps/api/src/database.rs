@@ -566,6 +566,14 @@ pub fn spawn_storage_guard(state: AppState) -> tokio::task::JoinHandle<()> {
 }
 
 async fn guard_ready_resource_storage(state: &AppState) -> Result<(), sqlx::Error> {
+    if state.config.uses_kubernetes_workloads() {
+        // Kubernetes enforces the ephemeral-storage limit through pod
+        // resource limits. The Docker watchdog cannot inspect Kubernetes
+        // workloads and would only produce repeated `docker`-unavailable
+        // warnings in production.
+        return Ok(());
+    }
+
     let databases = sqlx::query_as::<_, StorageGuardDatabaseRow>(
         "SELECT id, cluster_name
          FROM project_postgres_databases

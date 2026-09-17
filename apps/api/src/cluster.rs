@@ -110,6 +110,13 @@ pub async fn collect_app_service_runtime_metrics(
     config: &Config,
     container_name: &str,
 ) -> Result<RuntimeMetrics> {
+    if config.uses_kubernetes_workloads() {
+        return super::cluster_kubernetes::collect_app_service_runtime_metrics(
+            config,
+            container_name,
+        )
+        .await;
+    }
     collect_docker_runtime_metrics(config, container_name, APP_SERVICE_VOLUME_PATH).await
 }
 

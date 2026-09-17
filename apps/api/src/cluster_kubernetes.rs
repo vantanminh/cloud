@@ -4,7 +4,10 @@ use anyhow::{Context, Result, bail};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Client,
-    api::{Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, Patch, PatchParams},
+    api::{
+        Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch,
+        PatchParams,
+    },
 };
 use serde_json::{Value, json};
 use tokio::time::sleep;
@@ -12,10 +15,12 @@ use tokio::time::sleep;
 use crate::{
     cluster::{
         ClusterSpec, KubernetesCapacityUnavailable, PROJECT_NETWORK_APP_ALIAS,
-        PROJECT_NETWORK_REDIS_ALIAS, PROVIDER_KUBERNETES, ProvisionedCluster,
+        PROJECT_NETWORK_REDIS_ALIAS, PROVIDER_KUBERNETES, ProvisionedCluster, RuntimeMetrics,
     },
     config::Config,
-    limits::{kubernetes_resource_requirements, kubernetes_storage_request},
+    limits::{
+        RESOURCE_VOLUME_LIMIT_BYTES, kubernetes_resource_requirements, kubernetes_storage_request,
+    },
 };
 
 const POSTGRES_PORT: u16 = 5432;
@@ -259,6 +264,181 @@ pub struct ProvisionedApp {
     pub namespace: String,
     pub host: String,
     pub port: u16,
+}
+
+/// Read runtime counters for a Kubernetes App service from metrics-server.
+///
+/// The control-plane API runs in the same namespace as tenant workloads and
+/// stores the Deployment name in `container_name` for Kubernetes services. A
+/// live pod is selected by that Deployment prefix, then its `PodMetrics`
+/// object is read from the aggregated `metrics.k8s.io` API. metrics-server
+/// exposes CPU and memory only; network, block I/O, and writable-layer usage
+/// remain explicitly unavailable for this provider.
+pub async fn collect_app_service_runtime_metrics(
+    config: &Config,
+    deployment_name: &str,
+) -> Result<RuntimeMetrics> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API for runtime metrics")?;
+    let namespace = config.database_cluster_namespace.as_str();
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let pod_prefix = format!("{deployment_name}-");
+    let pod = pods
+        .list(
+            &ListParams::default()
+                .labels("app.knotree.com/component=app-service,app.knotree.com/managed-by=knotree-api"),
+        )
+        .await
+        .context("could not list Kubernetes App service pods")?
+        .items
+        .into_iter()
+        .find(|pod| {
+            pod.metadata
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with(&pod_prefix))
+                && pod
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_deref())
+                    == Some("Running")
+        })
+        .with_context(|| {
+            format!(
+                "could not find a running Kubernetes App service pod for Deployment {deployment_name}"
+            )
+        })?;
+    let pod_name = pod
+        .metadata
+        .name
+        .as_deref()
+        .context("Kubernetes App service pod has no name")?;
+
+    let pod_metrics: Api<DynamicObject> = namespaced_api(
+        client,
+        namespace,
+        GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"),
+    );
+    let metrics = pod_metrics
+        .get(pod_name)
+        .await
+        .with_context(|| format!("could not read Kubernetes metrics for pod {pod_name}"))?;
+    let container_metrics = metrics
+        .data
+        .get("containers")
+        .and_then(Value::as_array)
+        .context("Kubernetes PodMetrics response has no containers")?;
+    let container_metrics = container_metrics
+        .iter()
+        .find(|container| container.get("name").and_then(Value::as_str) == Some("app"))
+        .or_else(|| container_metrics.first())
+        .context("Kubernetes PodMetrics response has no container usage")?;
+    let usage = container_metrics
+        .get("usage")
+        .and_then(Value::as_object)
+        .context("Kubernetes PodMetrics container has no usage")?;
+    let cpu_cores = usage
+        .get("cpu")
+        .and_then(Value::as_str)
+        .context("Kubernetes PodMetrics has no CPU usage")
+        .and_then(parse_kubernetes_quantity)?;
+    let memory_used_bytes = usage
+        .get("memory")
+        .and_then(Value::as_str)
+        .context("Kubernetes PodMetrics has no memory usage")
+        .and_then(parse_kubernetes_bytes)?;
+
+    let cpu_limit_cores = pod_container_limit(&pod, "app", "cpu");
+    let memory_limit_bytes = pod_container_limit(&pod, "app", "memory")
+        .map(|value| parse_bytes_value(value, "memory limit"))
+        .transpose()?;
+    let cpu_percent = cpu_limit_cores
+        .filter(|limit| *limit > 0.0)
+        .map(|limit| (cpu_cores / limit) * 100.0)
+        .unwrap_or(cpu_cores * 100.0);
+    if !cpu_percent.is_finite() || cpu_percent < 0.0 {
+        bail!("Kubernetes returned an invalid CPU percentage");
+    }
+
+    Ok(RuntimeMetrics {
+        cpu_percent: Some(cpu_percent.min(100.0)),
+        memory_used_bytes: Some(memory_used_bytes),
+        memory_limit_bytes,
+        volume_used_bytes: None,
+        volume_capacity_bytes: Some(RESOURCE_VOLUME_LIMIT_BYTES),
+        network_receive_bytes: None,
+        network_transmit_bytes: None,
+        disk_read_bytes: None,
+        disk_write_bytes: None,
+    })
+}
+
+fn pod_container_limit(pod: &Pod, container_name: &str, resource_name: &str) -> Option<f64> {
+    pod.spec
+        .as_ref()?
+        .containers
+        .iter()
+        .find(|container| container.name == container_name)
+        .or_else(|| pod.spec.as_ref()?.containers.first())
+        .and_then(|container| container.resources.as_ref())
+        .and_then(|resources| resources.limits.as_ref())
+        .and_then(|limits| limits.get(resource_name))
+        .and_then(|quantity| parse_kubernetes_quantity(&quantity.0).ok())
+}
+
+fn parse_kubernetes_bytes(input: &str) -> Result<i64> {
+    parse_kubernetes_quantity(input).and_then(|value| parse_bytes_value(value, "metric"))
+}
+
+fn parse_bytes_value(value: f64, label: &str) -> Result<i64> {
+    if !value.is_finite() || value < 0.0 || value > i64::MAX as f64 {
+        bail!("Kubernetes returned an invalid {label} quantity");
+    }
+    Ok(value.round() as i64)
+}
+
+fn parse_kubernetes_quantity(input: &str) -> Result<f64> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        bail!("Kubernetes returned an empty quantity");
+    }
+    if let Ok(value) = raw.parse::<f64>() {
+        return validate_kubernetes_quantity(value);
+    }
+
+    const SUFFIXES: [(&str, f64); 15] = [
+        ("Ei", 1.1529215046068469e18),
+        ("Pi", 1.125899906842624e15),
+        ("Ti", 1.099511627776e12),
+        ("Gi", 1.073741824e9),
+        ("Mi", 1.048576e6),
+        ("Ki", 1.024e3),
+        ("n", 1e-9),
+        ("u", 1e-6),
+        ("m", 1e-3),
+        ("k", 1e3),
+        ("M", 1e6),
+        ("G", 1e9),
+        ("T", 1e12),
+        ("P", 1e15),
+        ("E", 1e18),
+    ];
+    let (number, multiplier) = SUFFIXES
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            raw.strip_suffix(suffix).map(|number| (number, *multiplier))
+        })
+        .context("Kubernetes returned an unknown quantity suffix")?;
+    let value = number.parse::<f64>()? * multiplier;
+    validate_kubernetes_quantity(value)
+}
+
+fn validate_kubernetes_quantity(value: f64) -> Result<f64> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("Kubernetes returned an invalid quantity");
+    }
+    Ok(value)
 }
 
 pub fn app_resource_name(service_id: uuid::Uuid) -> String {
@@ -860,5 +1040,16 @@ mod tests {
             service["metadata"]["name"],
             crate::cluster::PROJECT_NETWORK_REDIS_ALIAS
         );
+    }
+
+    #[test]
+    fn parses_kubernetes_runtime_quantities() {
+        let cpu_nanos = parse_kubernetes_quantity("2164329n").unwrap();
+        assert!((cpu_nanos - 0.002164329).abs() < 1e-12);
+        assert_eq!(parse_kubernetes_quantity("500m").unwrap(), 0.5);
+        assert_eq!(parse_kubernetes_bytes("6100Ki").unwrap(), 6_246_400);
+        assert_eq!(parse_kubernetes_bytes("1Gi").unwrap(), 1_073_741_824);
+        assert!(parse_kubernetes_quantity("-1").is_err());
+        assert!(parse_kubernetes_quantity("wat").is_err());
     }
 }
