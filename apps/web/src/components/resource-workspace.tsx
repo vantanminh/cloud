@@ -320,9 +320,12 @@ function DeploymentsPane({
   const isReady =
     node.resource?.status === "ready" ||
     (node.id === "project" && !node.resource)
+  const isError = node.resource?.status === "error"
   const status = isReady
     ? "ACTIVE"
-    : (node.resource?.status.toUpperCase() ?? "NOT DEPLOYED")
+    : isError
+      ? "ERROR"
+      : (node.resource?.status.toUpperCase() ?? "NOT DEPLOYED")
   const appService =
     node.resource?.resourceType === "app" ? node.resource : undefined
   const postgresResource =
@@ -338,7 +341,9 @@ function DeploymentsPane({
       <div className="resource-workspace-banner">
         <p>
           {node.id === "postgres"
-            ? "This database is isolated to the current project and ready for application connections."
+            ? isError
+              ? "This database could not be scheduled on the Kubernetes cluster. Retry after capacity is available."
+              : "This database is isolated to the current project and ready for application connections."
             : appService
               ? "This Docker image runs as the application entry point for the current project."
               : "Deploy a Docker image to make this project available as an application service."}
@@ -401,8 +406,11 @@ function DeploymentsPane({
                   ? appService
                     ? "Container is running and ready for traffic"
                     : "Ready to accept connections"
-                  : appService?.status === "error"
-                    ? (appService.errorMessage ?? "Deployment failed")
+                  : isError
+                    ? (node.resource?.errorMessage ??
+                      (node.id === "postgres"
+                        ? "The cluster has no schedulable capacity."
+                        : "Deployment failed"))
                     : "Deploy an image to start this service"}
               </div>
             </div>
@@ -423,8 +431,8 @@ function DeploymentsPane({
               ? appService?.serviceUrl
                 ? `Service URL · ${appService.serviceUrl}`
                 : "Deployment successful"
-              : appService?.status === "error"
-                ? "Deployment failed — open Add to retry"
+              : isError
+                ? "Provisioning failed — open Add to retry"
                 : appService?.publicDomain
                   ? `Domain assigned · ${appService.publicDomain}`
                   : "Deployment not started"}
@@ -486,7 +494,9 @@ function DeploymentsPane({
         <div>
           <strong>
             {postgresResource
-              ? "Database provisioned"
+              ? isError
+                ? "Database provisioning failed"
+                : "Database provisioned"
               : appService
                 ? "App service deployed"
                 : "Project created"}
@@ -495,7 +505,9 @@ function DeploymentsPane({
             Current environment · Knotree Cloud
           </div>
         </div>
-        <span className="resource-workspace-history-status">READY</span>
+        <span className="resource-workspace-history-status">
+          {isReady ? "READY" : status}
+        </span>
       </article>
     </section>
   )
@@ -539,6 +551,7 @@ function DatabasePane({
   const tableRequestId = useRef(0)
   const resourceId = node.resource?.id
   const isReady = node.resource?.status === "ready"
+  const isError = node.resource?.status === "error"
   const selectedTableName = selectedTable?.tableName
   const selectedTableSchemaName = selectedTable?.schemaName
 
@@ -795,8 +808,17 @@ function DatabasePane({
       ) : !isReady ? (
         <ResourceEmptyState
           icon={<ActivityIcon aria-hidden="true" />}
-          title="Database is provisioning"
-          description="Database management becomes available as soon as the dedicated PostgreSQL cluster is ready."
+          title={
+            isError
+              ? "Database provisioning failed"
+              : "Database is provisioning"
+          }
+          description={
+            isError
+              ? (node.resource?.errorMessage ??
+                "The dedicated PostgreSQL cluster could not be scheduled. Retry when capacity is available.")
+              : "Database management becomes available as soon as the dedicated PostgreSQL cluster is ready."
+          }
         />
       ) : (
         <>

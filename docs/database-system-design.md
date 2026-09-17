@@ -35,9 +35,10 @@ proxy path remains available as a compatibility fallback.
 ## Isolation boundary
 
 Creating a PostgreSQL resource is idempotent per project. The first request
-creates a generated database credential record, then provisions a dedicated
-instance outside the control-plane transaction. A deterministic provider name
-makes retries safe:
+creates a generated database credential record and queues provisioning outside
+the control-plane transaction; the API returns the durable `provisioning`
+resource immediately. A deterministic provider name makes retries safe, and a
+ready resource is returned without creating a second database:
 
 - Docker development: one `postgres:16-alpine` container and one named volume
   per project, bound to a random localhost port and attached to the project's
@@ -46,7 +47,12 @@ makes retries safe:
   container when its mounted data volume reaches 10 GiB.
 - Kubernetes production: one StatefulSet with one pod, one PVC, one Secret, and
   one Service in the configured namespace. The API service account has only
-  namespaced RBAC for those resources.
+  namespaced RBAC for those resources. Provisioning is queued in a durable
+  `provisioning` row and completed by a background worker, so the HTTP request
+  is never held open while the scheduler or image pull is slow. A reconciler
+  resumes rows after an API restart. If the scheduler reports an unschedulable
+  pod, the worker removes the pending StatefulSet and records a safe capacity
+  error for retry.
 
 The one-replica StatefulSet is a dedicated server/storage boundary. It is not
 HA; a future provider can add replication/failover without changing the

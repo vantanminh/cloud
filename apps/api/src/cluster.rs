@@ -25,6 +25,15 @@ pub const POSTGRES_VOLUME_PATH: &str = "/var/lib/postgresql/data";
 pub const APP_SERVICE_VOLUME_PATH: &str = "/";
 pub const REDIS_VOLUME_PATH: &str = "/data";
 
+/// The Kubernetes scheduler could not place the tenant workload on any node.
+///
+/// This is deliberately a typed error so API workers can persist an actionable
+/// message without leaking scheduler details (node names, taints, or internal
+/// workload metadata) to the browser.
+#[derive(Debug, thiserror::Error)]
+#[error("Kubernetes has no schedulable capacity for this workload")]
+pub struct KubernetesCapacityUnavailable;
+
 fn is_running_docker_state(state: &str) -> bool {
     state.trim().eq_ignore_ascii_case("running")
 }

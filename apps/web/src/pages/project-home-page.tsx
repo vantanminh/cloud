@@ -359,6 +359,34 @@ function TopologyDashboard({
     (service) => service.status === "provisioning"
   )
 
+  const postgresIsProvisioning = postgresResource?.status === "provisioning"
+
+  useEffect(() => {
+    if (!postgresIsProvisioning) {
+      return undefined
+    }
+
+    let active = true
+    const refresh = () => {
+      void listPostgresResources(workspaceSlug, projectSlug)
+        .then((resources) => {
+          if (active) {
+            setPostgresResource(resources[0] ?? null)
+            setResourceError(null)
+          }
+        })
+        .catch(() => {
+          // Keep the last resource snapshot visible if a background refresh
+          // is temporarily unavailable.
+        })
+    }
+    const intervalId = window.setInterval(refresh, 2000)
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [postgresIsProvisioning, projectSlug, workspaceSlug])
+
   useEffect(() => {
     if (!appServiceIsProvisioning) {
       return undefined
@@ -484,7 +512,11 @@ function TopologyDashboard({
     setResourceError(null)
     setPostgresDialogOpen(false)
     setSelectedNode("postgres")
-    showToast("Postgres database is ready")
+    showToast(
+      resource.status === "provisioning"
+        ? "Postgres database creation started"
+        : "Postgres database is ready"
+    )
   }
 
   function handleRedisAdd() {
@@ -919,7 +951,9 @@ function TopologyDashboard({
                       label={
                         postgresResource?.status === "ready"
                           ? "Postgres (ready)"
-                          : "Postgres"
+                          : postgresResource?.status === "provisioning"
+                            ? "Postgres (creating)"
+                            : "Postgres"
                       }
                       onClick={handlePostgresAdd}
                     />

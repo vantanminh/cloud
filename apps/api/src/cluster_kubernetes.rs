@@ -1,17 +1,18 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Client,
-    api::{Api, ApiResource, DynamicObject, GroupVersionKind, Patch, PatchParams},
+    api::{Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, Patch, PatchParams},
 };
 use serde_json::{Value, json};
 use tokio::time::sleep;
 
 use crate::{
     cluster::{
-        ClusterSpec, PROJECT_NETWORK_APP_ALIAS, PROJECT_NETWORK_REDIS_ALIAS, PROVIDER_KUBERNETES,
-        ProvisionedCluster,
+        ClusterSpec, KubernetesCapacityUnavailable, PROJECT_NETWORK_APP_ALIAS,
+        PROJECT_NETWORK_REDIS_ALIAS, PROVIDER_KUBERNETES, ProvisionedCluster,
     },
     config::Config,
     limits::{kubernetes_resource_requirements, kubernetes_storage_request},
@@ -81,12 +82,33 @@ pub async fn provision(config: &Config, spec: &ClusterSpec) -> Result<Provisione
         &namespace,
         GroupVersionKind::gvk("apps", "v1", "StatefulSet"),
     );
-    wait_for_stateful_set(
+    let pods: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    let wait_result = wait_for_stateful_set(
         &stateful_sets,
+        &pods,
         &name,
         config.database_cluster_startup_timeout_seconds,
     )
-    .await?;
+    .await;
+    if let Err(error) = wait_result {
+        if error
+            .downcast_ref::<KubernetesCapacityUnavailable>()
+            .is_some()
+        {
+            if let Err(cleanup_error) = stateful_sets
+                .delete(&name, &DeleteParams::default())
+                .await
+            {
+                tracing::warn!(
+                    namespace,
+                    stateful_set = name,
+                    error = %cleanup_error,
+                    "could not remove unschedulable PostgreSQL StatefulSet"
+                );
+            }
+        }
+        return Err(error);
+    }
 
     let internal_host = format!("{name}.{namespace}.svc.cluster.local");
     let (public_host, public_port) = public_endpoint(config, &client, &namespace, &name).await?;
@@ -514,16 +536,37 @@ pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<Prov
     )
     .await?;
     let stateful_sets: Api<DynamicObject> = namespaced_api(
-        client,
+        client.clone(),
         &namespace,
         GroupVersionKind::gvk("apps", "v1", "StatefulSet"),
     );
-    wait_for_stateful_set(
+    let pods: Api<Pod> = Api::namespaced(client, &namespace);
+    let wait_result = wait_for_stateful_set(
         &stateful_sets,
+        &pods,
         &name,
         config.database_cluster_startup_timeout_seconds,
     )
-    .await?;
+    .await;
+    if let Err(error) = wait_result {
+        if error
+            .downcast_ref::<KubernetesCapacityUnavailable>()
+            .is_some()
+        {
+            if let Err(cleanup_error) = stateful_sets
+                .delete(&name, &DeleteParams::default())
+                .await
+            {
+                tracing::warn!(
+                    namespace,
+                    stateful_set = name,
+                    error = %cleanup_error,
+                    "could not remove unschedulable Redis StatefulSet"
+                );
+            }
+        }
+        return Err(error);
+    }
     Ok(ProvisionedCluster {
         provider: PROVIDER_KUBERNETES.to_owned(),
         name: name.clone(),
@@ -616,6 +659,7 @@ async fn apply_resource(
 
 async fn wait_for_stateful_set(
     api: &Api<DynamicObject>,
+    pods: &Api<Pod>,
     name: &str,
     timeout_seconds: u32,
 ) -> Result<()> {
@@ -634,6 +678,9 @@ async fn wait_for_stateful_set(
         if ready_replicas >= 1 {
             return Ok(());
         }
+        if pod_is_unschedulable(pods, name).await? {
+            return Err(KubernetesCapacityUnavailable.into());
+        }
         if tokio::time::Instant::now() >= deadline {
             bail!(
                 "Kubernetes PostgreSQL StatefulSet did not become ready before the startup timeout"
@@ -641,6 +688,28 @@ async fn wait_for_stateful_set(
         }
         sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn pod_is_unschedulable(pods: &Api<Pod>, stateful_set_name: &str) -> Result<bool> {
+    let pod_name = format!("{stateful_set_name}-0");
+    let Some(pod) = pods
+        .get_opt(&pod_name)
+        .await
+        .with_context(|| format!("could not read Kubernetes pod {pod_name}"))?
+    else {
+        return Ok(false);
+    };
+
+    Ok(pod
+        .status
+        .and_then(|status| status.conditions)
+        .unwrap_or_default()
+        .into_iter()
+        .any(|condition| {
+            condition.type_ == "PodScheduled"
+                && condition.status == "False"
+                && condition.reason.as_deref() == Some("Unschedulable")
+        }))
 }
 
 async fn public_endpoint(

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -21,6 +23,8 @@ const STATUS_PROVISIONING: &str = "provisioning";
 const STATUS_ERROR: &str = "error";
 const PROVIDER_LEGACY_SHARED: &str = "legacy_shared";
 const PROVISIONING_ERROR_MESSAGE: &str = "A dedicated PostgreSQL cluster could not be provisioned. Check the cluster provider and try again.";
+const CAPACITY_ERROR_MESSAGE: &str = "The Kubernetes cluster has no schedulable capacity for this database. Free CPU or memory requests, add a node, then try again.";
+const PROVISIONING_RECONCILE_INTERVAL_SECONDS: u64 = 5;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct PostgresResourceRow {
@@ -89,9 +93,15 @@ pub async fn create(
             message: "Only PostgreSQL resources are available right now.",
         });
     }
+    if state.config.database_cluster_provider == PROVIDER_LEGACY_SHARED {
+        return Err(AppError::Conflict {
+            code: "LEGACY_SHARED_CLUSTER",
+            message: "This environment must select a dedicated database cluster provider before PostgreSQL resources can be created.",
+        });
+    }
 
     let name = validate_resource_name(input.name.as_deref().unwrap_or("Postgres"))?;
-    let (resource, is_new) = {
+    let (resource, should_provision) = {
         let mut transaction = state.db.begin().await?;
         let lock_key = advisory_lock_key(project_id);
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -99,14 +109,31 @@ pub async fn create(
             .execute(&mut *transaction)
             .await?;
 
-        let resource = match sqlx::query_as::<_, PostgresResourceRow>(&format!(
+        let (resource, should_provision) = match sqlx::query_as::<_, PostgresResourceRow>(&format!(
             "SELECT {RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 FOR UPDATE"
         ))
         .bind(project_id)
         .fetch_optional(&mut *transaction)
         .await?
         {
-            Some(resource) => (resource, false),
+            Some(resource) if resource.cluster_provider == PROVIDER_LEGACY_SHARED => {
+                (resource, false)
+            }
+            Some(resource) if resource.status == STATUS_READY => (resource, false),
+            Some(resource) if resource.status == STATUS_PROVISIONING => (resource, false),
+            Some(resource) => {
+                let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+                    "UPDATE project_postgres_databases
+                     SET status = $1, error_message = NULL, updated_at = now()
+                     WHERE id = $2
+                     RETURNING {RESOURCE_COLUMNS}"
+                ))
+                .bind(STATUS_PROVISIONING)
+                .bind(resource.id)
+                .fetch_one(&mut *transaction)
+                .await?;
+                (resource, true)
+            }
             None => {
                 let resource_id = Uuid::new_v4();
                 let database_name = format!("knotree_db_{}", project_id.simple());
@@ -135,7 +162,7 @@ pub async fn create(
             }
         };
         transaction.commit().await?;
-        resource
+        (resource, should_provision)
     };
 
     if resource.cluster_provider == PROVIDER_LEGACY_SHARED {
@@ -145,10 +172,179 @@ pub async fn create(
         });
     }
 
+    let response = resource_response(&resource, &state)?;
+    if should_provision {
+        let worker_state = state.clone();
+        let resource_id = resource.id;
+        tokio::spawn(async move {
+            run_provisioning(worker_state, resource_id).await;
+        });
+    }
+    let status = if resource.status == STATUS_PROVISIONING {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+/// Reconcile rows that were marked provisioning before an API process restart.
+/// The worker is idempotent and uses a PostgreSQL advisory lock so the request
+/// path, the reconciler, and duplicate browser clicks cannot provision twice.
+pub fn spawn_provisioning_reconciler(state: AppState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(
+            PROVISIONING_RECONCILE_INTERVAL_SECONDS,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match provisioning_resource_ids(&state).await {
+                Ok(resource_ids) => {
+                    for resource_id in resource_ids {
+                        let worker_state = state.clone();
+                        tokio::spawn(async move {
+                            run_provisioning(worker_state, resource_id).await;
+                        });
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "could not enumerate PostgreSQL resources for provisioning reconciliation"
+                    );
+                }
+            }
+        }
+    })
+}
+
+async fn provisioning_resource_ids(state: &AppState) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM project_postgres_databases WHERE status = $1 ORDER BY updated_at ASC",
+    )
+    .bind(STATUS_PROVISIONING)
+    .fetch_all(&state.db)
+    .await
+}
+
+async fn run_provisioning(state: AppState, resource_id: Uuid) {
+    let Ok(_provisioning_permit) = state.postgres_provisioning_slots.try_acquire() else {
+        return;
+    };
+
+    let project_id = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT project_id FROM project_postgres_databases WHERE id = $1",
+    )
+    .bind(resource_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(project_id)) => project_id,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                resource_id = %resource_id,
+                error = %error,
+                "could not find PostgreSQL resource project"
+            );
+            return;
+        }
+    };
+
+    let lock_key = advisory_lock_key(project_id);
+    let mut lock_connection = match state.db.acquire().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                resource_id = %resource_id,
+                error = %error,
+                "could not acquire PostgreSQL provisioning lock connection"
+            );
+            return;
+        }
+    };
+    let lock_acquired = match sqlx::query_scalar::<_, bool>(
+        "SELECT pg_try_advisory_lock($1)",
+    )
+    .bind(lock_key)
+    .fetch_one(&mut *lock_connection)
+    .await
+    {
+        Ok(lock_acquired) => lock_acquired,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                resource_id = %resource_id,
+                error = %error,
+                "could not acquire PostgreSQL provisioning advisory lock"
+            );
+            return;
+        }
+    };
+    if !lock_acquired {
+        return;
+    }
+
+    let resource = match sqlx::query_as::<_, PostgresResourceRow>(&format!(
+        "SELECT {RESOURCE_COLUMNS}
+         FROM project_postgres_databases
+         WHERE id = $1 AND status = $2"
+    ))
+    .bind(resource_id)
+    .bind(STATUS_PROVISIONING)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(resource) => resource,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project_id,
+                resource_id = %resource_id,
+                error = %error,
+                "could not load PostgreSQL resource for provisioning"
+            );
+            None
+        }
+    };
+
+    if let Some(resource) = resource {
+        if let Err(error) = provision_resource(&state, project_id, &resource).await {
+            tracing::error!(
+                project_id = %project_id,
+                resource_id = %resource.id,
+                error = %error,
+                "postgres resource provisioning failed"
+            );
+            mark_provisioning_error(&state, resource.id, &error).await;
+        }
+    }
+
+    if let Err(error) = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(&mut *lock_connection)
+        .await
+    {
+        tracing::warn!(
+            project_id = %project_id,
+            resource_id = %resource_id,
+            error = %error,
+            "could not release PostgreSQL provisioning advisory lock"
+        );
+    }
+}
+
+async fn provision_resource(
+    state: &AppState,
+    project_id: Uuid,
+    resource: &PostgresResourceRow,
+) -> anyhow::Result<()> {
     let password = security::decrypt_secret(
         &resource.password_ciphertext,
         &state.config.database_credentials_encryption_key,
-    )?;
+    )
+    .map_err(|_| anyhow::anyhow!("could not decrypt database credentials"))?;
     let provisioned = cluster::provision_with_provider(
         &state.config,
         &resource.cluster_provider,
@@ -159,30 +355,7 @@ pub async fn create(
             password,
         },
     )
-    .await;
-    let provisioned = match provisioned {
-        Ok(provisioned) => provisioned,
-        Err(error) => {
-            tracing::error!(
-                project_id = %project_id,
-                resource_id = %resource.id,
-                error = %error,
-                "postgres resource provisioning failed"
-            );
-            sqlx::query(
-                "UPDATE project_postgres_databases SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
-            )
-            .bind(STATUS_ERROR)
-            .bind(PROVISIONING_ERROR_MESSAGE)
-            .bind(resource.id)
-            .execute(&state.db)
-            .await?;
-            return Err(AppError::ServiceUnavailable {
-                code: "DATABASE_PROVISIONING_FAILED",
-                message: PROVISIONING_ERROR_MESSAGE,
-            });
-        }
-    };
+    .await?;
 
     let internal_host = provisioned.internal_host.clone();
     let internal_port = i32::from(provisioned.internal_port);
@@ -192,9 +365,14 @@ pub async fn create(
         .unwrap_or_else(|| internal_host.clone());
     let response_port = i32::from(provisioned.public_port.unwrap_or(provisioned.internal_port));
     drop(state.remove_database_pool(resource.id));
-    let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
-        "UPDATE project_postgres_databases SET status = $1, error_message = NULL, host = $2, port = $3, cluster_provider = $4, cluster_name = $5, cluster_namespace = $6, cluster_volume = $7, cluster_host = $8, cluster_port = $9, public_host = $10, public_port = $11, updated_at = now() WHERE id = $12 RETURNING {RESOURCE_COLUMNS}"
-    ))
+    sqlx::query(
+        "UPDATE project_postgres_databases
+         SET status = $1, error_message = NULL, host = $2, port = $3,
+             cluster_provider = $4, cluster_name = $5, cluster_namespace = $6,
+             cluster_volume = $7, cluster_host = $8, cluster_port = $9,
+             public_host = $10, public_port = $11, updated_at = now()
+         WHERE id = $12 AND status = $13",
+    )
     .bind(STATUS_READY)
     .bind(response_host)
     .bind(response_port)
@@ -207,17 +385,43 @@ pub async fn create(
     .bind(provisioned.public_host)
     .bind(provisioned.public_port.map(i32::from))
     .bind(resource.id)
-    .fetch_one(&state.db)
+    .bind(STATUS_PROVISIONING)
+    .execute(&state.db)
     .await?;
+    Ok(())
+}
 
-    let response = resource_response(&resource, &state)?;
-
-    let status = if is_new {
-        StatusCode::CREATED
+async fn mark_provisioning_error(
+    state: &AppState,
+    resource_id: Uuid,
+    error: &anyhow::Error,
+) {
+    let message = if error
+        .downcast_ref::<cluster::KubernetesCapacityUnavailable>()
+        .is_some()
+    {
+        CAPACITY_ERROR_MESSAGE
     } else {
-        StatusCode::OK
+        PROVISIONING_ERROR_MESSAGE
     };
-    Ok((status, Json(response)).into_response())
+    if let Err(update_error) = sqlx::query(
+        "UPDATE project_postgres_databases
+         SET status = $1, error_message = $2, updated_at = now()
+         WHERE id = $3 AND status = $4",
+    )
+    .bind(STATUS_ERROR)
+    .bind(message)
+    .bind(resource_id)
+    .bind(STATUS_PROVISIONING)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(
+            resource_id = %resource_id,
+            error = %update_error,
+            "could not mark PostgreSQL resource as failed"
+        );
+    }
 }
 
 fn validate_resource_name(value: &str) -> Result<String, AppError> {

@@ -215,8 +215,9 @@ Click Sign out
   → Add → Postgres
   → database display name
   → POST /workspaces/:slug/projects/:projectSlug/resources
-  → dedicated PostgreSQL instance + own volume + login role + connectivity check
-  → ready Postgres card + resource workspace
+  → queued dedicated PostgreSQL instance + own volume + login role
+  → poll the resource until connectivity is confirmed
+  → ready Postgres card + resource workspace (or a safe capacity error)
   → Add → App service
   → service name + Docker image + public/private image source + container port
   → GitHub connection when the source is private
@@ -445,7 +446,9 @@ theme uses the same layout and replaces the page-local surface tokens.
   adapter expose an explicit unavailable message instead of fabricated values.
 - Resource loading and provisioning failures keep the Add action available and
   show a safe, page-level message; raw database or Docker errors never reach
-  the browser.
+  the browser. PostgreSQL creation returns a durable provisioning resource and
+  the dashboard polls it until ready or failed, so a slow Kubernetes scheduler
+  cannot leave the create dialog waiting on an HTTP request.
 - Activity, notifications, Agent, Resources, Settings, undo/redo, and
   layers provide explicit placeholder feedback until their APIs exist.
 - Direct project lookup failures show `Project unavailable` and a `Back to
