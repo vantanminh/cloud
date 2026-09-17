@@ -563,14 +563,28 @@ fn parse_cadvisor_io_metrics(
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let mut fields = line.split_whitespace();
-        let metric = fields
-            .next()
-            .context("cAdvisor returned a malformed metric")?;
-        let value = fields
-            .next()
-            .context("cAdvisor returned a metric without a value")?
-            .parse::<f64>()?;
+        let (metric, value_token) = if let Some(close_brace) = line.rfind('}') {
+            let (metric, remainder) = line.split_at(close_brace + 1);
+            (
+                metric,
+                remainder
+                    .split_whitespace()
+                    .next()
+                    .context("cAdvisor returned a metric without a value")?,
+            )
+        } else {
+            let (metric, remainder) = line
+                .split_once(char::is_whitespace)
+                .context("cAdvisor returned a malformed metric")?;
+            (
+                metric,
+                remainder
+                    .split_whitespace()
+                    .next()
+                    .context("cAdvisor returned a metric without a value")?,
+            )
+        };
+        let value = value_token.parse::<f64>()?;
         let (name, labels) = metric
             .split_once('{')
             .map(|(name, labels)| (name, labels.strip_suffix('}').unwrap_or(labels)))
@@ -1376,6 +1390,7 @@ mod tests {
     fn parses_cadvisor_disk_counters_for_target_container() {
         let payload = concat!(
             "# HELP container_fs_reads_bytes_total read bytes\n",
+            "cadvisor_version_info{cadvisorRevision=\"\",cadvisorVersion=\"\",dockerVersion=\"\",kernelVersion=\"6.14.0\",osVersion=\"Ubuntu 25.04\"} 1\n",
             "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 123\n",
             "container_fs_writes_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"workload-abc123\"} 456\n",
             "container_fs_reads_bytes_total{container=\"app\",device=\"/dev/sda\",namespace=\"knotree-cloud\",pod=\"other-pod\"} 999\n",
