@@ -48,6 +48,8 @@ pub struct Config {
     pub github_oauth_redirect_uri: String,
     pub database_credentials_encryption_key: [u8; 32],
     pub kong_admin_url: Option<String>,
+    pub kong_traffic_log_endpoint: Option<String>,
+    pub kong_traffic_log_token: Option<String>,
     pub docs_dir: String,
     pub mcp_public_base_url: String,
     pub mcp_access_ttl_seconds: i64,
@@ -184,6 +186,8 @@ impl Config {
             });
         validate_non_empty_token("GITHUB_OAUTH_REDIRECT_URI", &github_oauth_redirect_uri)?;
         let kong_admin_url = optional_env("KONG_ADMIN_URL");
+        let kong_traffic_log_endpoint = optional_env("KONG_TRAFFIC_LOG_ENDPOINT");
+        let kong_traffic_log_token = optional_env("KONG_TRAFFIC_LOG_TOKEN");
         let docs_dir = env::var("KNOTREE_DOCS_DIR").unwrap_or_else(|_| {
             if std::path::Path::new("/usr/share/knotree/docs").exists() {
                 "/usr/share/knotree/docs".to_owned()
@@ -243,6 +247,8 @@ impl Config {
             github_oauth_redirect_uri,
             database_credentials_encryption_key: credentials_encryption_key(&app_env)?,
             kong_admin_url,
+            kong_traffic_log_endpoint,
+            kong_traffic_log_token,
             docs_dir,
             mcp_public_base_url,
             mcp_access_ttl_seconds: env_i64("MCP_ACCESS_TTL_SECONDS", 3600)?,
@@ -527,6 +533,8 @@ impl Config {
                 .to_owned(),
             database_credentials_encryption_key: [7; 32],
             kong_admin_url: None,
+            kong_traffic_log_endpoint: None,
+            kong_traffic_log_token: None,
             docs_dir: "docs".to_owned(),
             mcp_public_base_url: "http://localhost:8080".to_owned(),
             mcp_access_ttl_seconds: 3600,

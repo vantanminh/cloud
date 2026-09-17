@@ -25,7 +25,29 @@ pub fn kong_rate_limiting_plugin(policy: RateLimitPolicy) -> Value {
     })
 }
 
-pub fn declarative_config(routes: &[KongAppRoute]) -> Result<Value> {
+fn kong_http_log_plugin(endpoint: &str, token: &str, service_id: Uuid) -> Value {
+    json!({
+        "name": "http-log",
+        "config": {
+            "http_endpoint": format!(
+                "{}/{}",
+                endpoint.trim_end_matches('/'),
+                service_id.simple()
+            ),
+            "method": "POST",
+            "content_type": "application/json",
+            "headers": {
+                "x-knotree-traffic-token": token,
+            },
+        },
+    })
+}
+
+pub fn declarative_config(
+    routes: &[KongAppRoute],
+    traffic_log_endpoint: Option<&str>,
+    traffic_log_token: Option<&str>,
+) -> Result<Value> {
     let mut services = Vec::with_capacity(routes.len());
     for route in routes {
         let policy = validate_rate_limit_rpm(route.rate_limit_rpm)
@@ -37,6 +59,12 @@ pub fn declarative_config(routes: &[KongAppRoute]) -> Result<Value> {
                 )
             })?;
         let name = format!("knotree-app-{}", route.service_id.simple());
+        let mut plugins = vec![kong_rate_limiting_plugin(policy)];
+        if let (Some(endpoint), Some(token)) = (traffic_log_endpoint, traffic_log_token) {
+            if !endpoint.trim().is_empty() && !token.trim().is_empty() {
+                plugins.push(kong_http_log_plugin(endpoint, token, route.service_id));
+            }
+        }
         services.push(json!({
             "name": name,
             "url": route.upstream_url,
@@ -50,7 +78,7 @@ pub fn declarative_config(routes: &[KongAppRoute]) -> Result<Value> {
                 "strip_path": false,
                 "preserve_host": true,
             }],
-            "plugins": [kong_rate_limiting_plugin(policy)],
+            "plugins": plugins,
         }));
     }
     Ok(json!({
@@ -123,7 +151,7 @@ mod tests {
                 upstream_url: "http://knotree-app-two:8080".to_owned(),
                 rate_limit_rpm: 200,
             },
-        ])
+        ], None, None)
         .unwrap();
 
         let services = config["services"].as_array().unwrap();
@@ -134,6 +162,37 @@ mod tests {
         assert_ne!(
             services[0]["routes"][0]["hosts"][0],
             services[1]["routes"][0]["hosts"][0]
+        );
+    }
+
+    #[test]
+    fn declarative_config_logs_each_service_request_to_the_api() {
+        let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let config = declarative_config(
+            &[KongAppRoute {
+                service_id,
+                public_host: "app-one.knotree.org".to_owned(),
+                upstream_url: "http://knotree-app-one:8080".to_owned(),
+                rate_limit_rpm: 30,
+            }],
+            Some("http://knotree-api:8080/internal/public-traffic"),
+            Some("traffic-secret"),
+        )
+        .unwrap();
+
+        let plugins = config["services"][0]["plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 2);
+        assert_eq!(plugins[1]["name"], "http-log");
+        assert_eq!(
+            plugins[1]["config"]["http_endpoint"],
+            format!(
+                "http://knotree-api:8080/internal/public-traffic/{}",
+                service_id.simple()
+            )
+        );
+        assert_eq!(
+            plugins[1]["config"]["headers"]["x-knotree-traffic-token"],
+            "traffic-secret"
         );
     }
 

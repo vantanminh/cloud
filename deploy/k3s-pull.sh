@@ -44,6 +44,13 @@ if ! kubectl -n "$NS" get secret knotree-api-secrets >/dev/null 2>&1; then
     --from-literal=DATABASE_URL="$DATABASE_URL" \
     --from-literal=DATABASE_CREDENTIALS_ENCRYPTION_KEY="$ENC_KEY"
 fi
+if ! kubectl -n "$NS" get secret knotree-api-secrets \
+  -o jsonpath='{.data.KONG_TRAFFIC_LOG_TOKEN}' | grep -q '[^[:space:]]'; then
+  TRAFFIC_LOG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  TRAFFIC_LOG_TOKEN_B64="$(printf '%s' "$TRAFFIC_LOG_TOKEN" | base64 | tr -d '\n')"
+  kubectl -n "$NS" patch secret knotree-api-secrets --type=merge \
+    -p "{\"data\":{\"KONG_TRAFFIC_LOG_TOKEN\":\"$TRAFFIC_LOG_TOKEN_B64\"}}"
+fi
 
 helm upgrade --install "$RELEASE" "$ROOT/deploy/helm/knotree-api" \
   --namespace "$NS" \

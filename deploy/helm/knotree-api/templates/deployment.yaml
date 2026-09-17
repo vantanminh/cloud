@@ -135,6 +135,18 @@ spec:
               value: {{ .Values.env.githubOAuthRedirectUri | quote }}
             - name: KONG_ADMIN_URL
               value: {{ if .Values.env.kongAdminUrl }}{{ .Values.env.kongAdminUrl | quote }}{{ else }}{{ printf "http://%s-apps-kong:%d" (include "knotree-api.fullname" .) (int .Values.appsKong.adminPort) | quote }}{{ end }}
+            - name: KONG_TRAFFIC_LOG_ENDPOINT
+              {{ if and .Values.env.appServicePublicDomain .Values.appsKong.enabled }}
+              value: {{ printf "http://%s:%d/internal/public-traffic" (include "knotree-api.fullname" .) (int .Values.service.port) | quote }}
+              {{ else }}
+              value: ""
+              {{ end }}
+            - name: KONG_TRAFFIC_LOG_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: KONG_TRAFFIC_LOG_TOKEN
+                  optional: true
             - name: MCP_PUBLIC_BASE_URL
               value: {{ .Values.env.mcpPublicBaseUrl | quote }}
             - name: MCP_ACCESS_TTL_SECONDS

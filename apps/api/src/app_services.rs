@@ -19,6 +19,7 @@ use axum::{
 };
 use futures_util::{StreamExt, stream};
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
@@ -29,7 +30,7 @@ use uuid::Uuid;
 
 use crate::{
     auth,
-    cluster::{self, PROVIDER_DOCKER},
+    cluster,
     cluster_kubernetes::{self, AppWorkloadSpec},
     error::AppError,
     github::{self, GithubDockerCredentials},
@@ -640,6 +641,101 @@ pub async fn public_proxy_path(
     proxy_public_request(&state, app_service_id, request).await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum KongTrafficLogPayload {
+    Batch(Vec<KongTrafficLogEntry>),
+    Single(KongTrafficLogEntry),
+}
+
+impl KongTrafficLogPayload {
+    fn into_entries(self) -> Vec<KongTrafficLogEntry> {
+        match self {
+            Self::Batch(entries) => entries,
+            Self::Single(entry) => vec![entry],
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct KongTrafficLogEntry {
+    request: Option<KongTrafficLogRequest>,
+    response: Option<KongTrafficLogResponse>,
+    latencies: Option<KongTrafficLogLatencies>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct KongTrafficLogRequest {
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct KongTrafficLogResponse {
+    size: Option<u64>,
+    status: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct KongTrafficLogLatencies {
+    request: Option<f64>,
+}
+
+pub(crate) async fn record_kong_public_traffic(
+    State(state): State<AppState>,
+    Path(app_service_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<KongTrafficLogPayload>,
+) -> Result<StatusCode, AppError> {
+    let expected = state
+        .config
+        .kong_traffic_log_token
+        .as_deref()
+        .ok_or(AppError::NotFound {
+            code: "PUBLIC_TRAFFIC_LOGGING_DISABLED",
+            message: "Public traffic logging is not configured.",
+        })?;
+    let presented = headers
+        .get("x-knotree-traffic-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let expected_hash = security::token_hash(expected);
+    let presented_hash = security::token_hash(presented);
+    if expected_hash.as_slice().ct_eq(presented_hash.as_slice()).unwrap_u8() != 1 {
+        return Err(AppError::Unauthorized {
+            code: "PUBLIC_TRAFFIC_LOG_UNAUTHORIZED",
+            message: "The public traffic log token is invalid.",
+        });
+    }
+
+    for entry in payload.into_entries() {
+        let request_bytes = entry
+            .request
+            .and_then(|request| request.size)
+            .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+            .unwrap_or_default();
+        let response = entry.response.unwrap_or_default();
+        let response_bytes = response
+            .size
+            .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+            .unwrap_or_default();
+        let response_time_ms = entry
+            .latencies
+            .and_then(|latencies| latencies.request)
+            .unwrap_or_default()
+            .max(0.0);
+        let is_error = response.status.map(|status| status >= 400).unwrap_or(true);
+        state.record_public_app_service_request(
+            app_service_id,
+            request_bytes,
+            response_bytes,
+            response_time_ms,
+            is_error,
+        );
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn public_domain_fallback(
     State(state): State<AppState>,
     request: Request<Body>,
@@ -1228,7 +1324,11 @@ pub(crate) async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
     .fetch_all(&state.db)
     .await?;
     let routes = kong_routes_from_rows(&rows, state.config.app_service_public_domain.as_deref());
-    let config = kong::declarative_config(&routes)?;
+    let config = kong::declarative_config(
+        &routes,
+        state.config.kong_traffic_log_endpoint.as_deref(),
+        state.config.kong_traffic_log_token.as_deref(),
+    )?;
     kong::apply_declarative_config(admin_url, &config).await
 }
 
