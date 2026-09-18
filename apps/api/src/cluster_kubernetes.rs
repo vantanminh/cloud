@@ -1138,17 +1138,14 @@ async fn wait_for_stateful_set(
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(u64::from(timeout_seconds));
     loop {
-        let stateful_set = api
-            .get(name)
+        api.get(name)
             .await
             .with_context(|| format!("could not read Kubernetes StatefulSet {name}"))?;
-        let ready_replicas = stateful_set
-            .data
-            .get("status")
-            .and_then(|status| status.get("readyReplicas"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        if ready_replicas >= 1 {
+        // Do not rely on StatefulSet.readyReplicas alone: that value can be
+        // briefly stale while a changed template is replacing an old pod.
+        // The pod readiness condition is the source of truth for accepting
+        // client connections.
+        if pod_is_ready(pods, name).await? {
             return Ok(());
         }
         if pod_is_unschedulable(pods, name).await? {
@@ -1161,6 +1158,24 @@ async fn wait_for_stateful_set(
         }
         sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn pod_is_ready(pods: &Api<Pod>, stateful_set_name: &str) -> Result<bool> {
+    let pod_name = format!("{stateful_set_name}-0");
+    let Some(pod) = pods
+        .get_opt(&pod_name)
+        .await
+        .with_context(|| format!("could not read Kubernetes pod {pod_name}"))?
+    else {
+        return Ok(false);
+    };
+
+    Ok(pod
+        .status
+        .and_then(|status| status.conditions)
+        .unwrap_or_default()
+        .into_iter()
+        .any(|condition| condition.type_ == "Ready" && condition.status == "True"))
 }
 
 async fn pod_is_unschedulable(pods: &Api<Pod>, stateful_set_name: &str) -> Result<bool> {
