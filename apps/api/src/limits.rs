@@ -7,10 +7,10 @@ pub const RESOURCE_CPU_LIMIT: &str = "1";
 /// App services use a smaller host quota so a small node can run many mostly
 /// idle services without reserving one physical core per service.
 pub const APP_SERVICE_VIRTUAL_CPU: &str = "1 vCPU";
-pub const KUBERNETES_APP_CPU_REQUEST: &str = "1m";
+pub const KUBERNETES_APP_CPU_REQUEST: &str = "0";
 pub const KUBERNETES_APP_CPU_LIMIT: &str = "250m";
-pub const KUBERNETES_APP_MEMORY_REQUEST: &str = "32Mi";
-pub const KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST: &str = "64Mi";
+pub const KUBERNETES_APP_MEMORY_REQUEST: &str = "0";
+pub const KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST: &str = "0";
 pub const RESOURCE_MEMORY_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_SWAP_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_LIMIT_KUBERNETES: &str = "1Gi";
@@ -131,11 +131,11 @@ pub fn kubernetes_resource_requirements() -> Value {
 
 /// Requirements for a Kubernetes App service.
 ///
-/// Do not remove requests entirely: when a limit is present and a request is
-/// omitted, Kubernetes may copy the limit into the request and recreate the
-/// capacity problem this policy is intended to solve. These small requests
-/// reserve only startup headroom; the product-facing 1 vCPU allocation is a
-/// virtual plan value while the actual host CPU quota is 250m.
+/// Keep explicit zero requests instead of omitting the field: when a limit is
+/// present and a request is omitted, Kubernetes may copy the limit into the
+/// request and recreate the capacity problem this policy is intended to solve.
+/// The product-facing 1 vCPU allocation is a virtual plan value while the
+/// actual host CPU quota is 250m.
 pub fn kubernetes_app_resource_requirements() -> Value {
     json!({
         "requests": {

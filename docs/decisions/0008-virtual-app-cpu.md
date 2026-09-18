@@ -5,12 +5,12 @@ id: DEC-0008
 links:
   - US-036
   - IN-035
-notes: "Keep the product-facing App service allocation at 1 virtual vCPU, 1Gi RAM, and 10Gi storage, but do not reserve one physical CPU per service on a small VPS. Kubernetes App pods use minimal scheduler requests (1m CPU, 32Mi memory, 64Mi ephemeral storage) and a 250m host CPU limit. The displayed 1 vCPU is a virtual plan unit; Postgres and Redis limits remain unchanged."
+notes: "Keep the product-facing App service allocation at 1 virtual vCPU, 1Gi RAM, and 10Gi storage, but do not reserve one physical CPU per service on a small VPS. Kubernetes App pods use explicit zero scheduler requests (rather than omitting requests, which can inherit limits) and a 250m host CPU limit. The displayed 1 vCPU is a virtual plan unit; Postgres and Redis limits remain unchanged."
 status: accepted
 title: Virtual CPU allocation for Kubernetes App services
 type: decision
-updated_at: "2026-09-18T11:48:21.021475669+00:00"
-verify: API unit tests assert the App Deployment manifest uses the virtual CPU requests and 250m host limit; rendered Settings text labels App CPU as virtual; production rollout should redeploy App workloads to pick up the manifest.
+updated_at: "2026-09-18T11:55:20.891598322+00:00"
+verify: API unit tests assert the App Deployment manifest uses explicit zero requests and a 250m host limit; kubectl server-side dry-run accepts zero requests; rendered Settings text labels App CPU as virtual; production rollout should redeploy App workloads to pick up the manifest.
 ---
 
 # Virtual CPU allocation for Kubernetes App services

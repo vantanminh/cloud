@@ -11,10 +11,10 @@ Every tenant workload has this product-facing allocation:
 - 10 GiB storage
 
 The 1 vCPU value is a virtual plan unit, not a reservation of one physical
-core. On Kubernetes, App services use a small scheduler request and a 250m
-host CPU quota so a 6-CPU VPS can admit many mostly idle services. The memory
-and storage limits remain enforced when the workload is created; a noisy App
-service cannot take the whole node.
+core. On Kubernetes, App services make no scheduler reservation and use a
+250m host CPU quota, so a 6-CPU VPS can admit many mostly idle services. The
+memory and storage limits remain enforced when the workload is created; a noisy
+App service cannot take the whole node.
 
 ## Public hostnames
 

@@ -183,7 +183,7 @@ history, and hover detail as the database Metrics tab. Its volume series tracks
 the container writable layer, while the Docker storage guard also handles
 mounted data paths. The resource Settings tab shows the enforced 1 vCPU, 1 GB
 RAM, and 10 GB storage allocation for both resource types. For Kubernetes App
-services, 1 vCPU is a virtual product allocation: the pod reserves only small
+services, 1 vCPU is a virtual product allocation: the pod uses explicit zero
 startup requests and is capped at 250m of host CPU so a small node is not
 blocked by one physical-core reservation per service.
 
