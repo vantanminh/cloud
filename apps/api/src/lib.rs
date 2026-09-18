@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             get(resources::list).post(resources::create),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/retry",
+            post(resources::retry),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/deployments/{deployment_id}/events",
             get(app_services::deployment_events),
         )

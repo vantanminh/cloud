@@ -188,6 +188,104 @@ pub async fn create(
     Ok((status, Json(response)).into_response())
 }
 
+/// Retry provisioning for a PostgreSQL resource that previously failed.
+///
+/// The retry is deliberately a separate idempotent endpoint so the resource
+/// workspace can offer a direct action without creating a second database.
+/// A transaction lock makes repeated clicks safe: only the first request
+/// transitions an errored row back to `provisioning` and starts a worker.
+pub async fn retry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+) -> Result<Response, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+
+    if !state.config.database_provisioning_enabled {
+        return Err(AppError::ServiceUnavailable {
+            code: "DATABASE_PROVISIONING_DISABLED",
+            message: "PostgreSQL provisioning is not enabled for this environment.",
+        });
+    }
+    if state.config.database_cluster_provider == PROVIDER_LEGACY_SHARED {
+        return Err(AppError::Conflict {
+            code: "LEGACY_SHARED_CLUSTER",
+            message: "This environment must select a dedicated database cluster provider before PostgreSQL resources can be retried.",
+        });
+    }
+
+    let (resource, should_provision) = {
+        let mut transaction = state.db.begin().await?;
+        let lock_key = advisory_lock_key(project_id);
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *transaction)
+            .await?;
+
+        let Some(resource) = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+            "SELECT {RESOURCE_COLUMNS}
+             FROM project_postgres_databases
+             WHERE id = $1 AND project_id = $2
+             FOR UPDATE"
+        ))
+        .bind(resource_id)
+        .bind(project_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            return Err(AppError::NotFound {
+                code: "RESOURCE_NOT_FOUND",
+                message: "The PostgreSQL resource was not found in this project.",
+            });
+        };
+
+        if resource.cluster_provider == PROVIDER_LEGACY_SHARED {
+            return Err(AppError::Conflict {
+                code: "LEGACY_SHARED_CLUSTER",
+                message: "This PostgreSQL resource uses a shared cluster and must be migrated before it can be retried.",
+            });
+        }
+
+        let (resource, should_provision) = match resource.status.as_str() {
+            STATUS_READY | STATUS_PROVISIONING => (resource, false),
+            _ => {
+                let resource = sqlx::query_as::<_, PostgresResourceRow>(&format!(
+                    "UPDATE project_postgres_databases
+                     SET status = $1, error_message = NULL, updated_at = now()
+                     WHERE id = $2 AND project_id = $3
+                     RETURNING {RESOURCE_COLUMNS}"
+                ))
+                .bind(STATUS_PROVISIONING)
+                .bind(resource.id)
+                .bind(project_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+                (resource, true)
+            }
+        };
+        transaction.commit().await?;
+        (resource, should_provision)
+    };
+
+    let response = resource_response(&resource, &state)?;
+    if should_provision {
+        let worker_state = state.clone();
+        let resource_id = resource.id;
+        tokio::spawn(async move {
+            run_provisioning(worker_state, resource_id).await;
+        });
+    }
+    let status = if resource.status == STATUS_PROVISIONING {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(response)).into_response())
+}
+
 /// Reconcile rows that were marked provisioning before an API process restart.
 /// The worker is idempotent and uses a PostgreSQL advisory lock so the request
 /// path, the reconciler, and duplicate browser clicks cannot provision twice.

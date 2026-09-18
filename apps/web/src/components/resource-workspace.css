@@ -364,6 +364,21 @@
   font-weight: 600;
 }
 
+.resource-workspace-retry-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.resource-workspace-retry-error {
+  max-width: 18rem;
+  color: var(--project-danger, #b42318);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .resource-workspace-deploy-card.pending .resource-workspace-deploy-bottom {
   border-top-color: color-mix(
     in oklch,
@@ -899,6 +914,10 @@
   max-width: 36rem;
   margin: 0;
   line-height: 1.6;
+}
+
+.resource-workspace-empty-state .resource-workspace-retry-action {
+  margin-top: 18px;
 }
 
 .resource-workspace-hint-banner {

@@ -121,6 +121,25 @@ pub fn kubernetes_resource_requirements() -> Value {
     })
 }
 
+/// PostgreSQL keeps the same tenant hard limits as every other managed
+/// workload, but uses a small scheduler request so a single-node cluster can
+/// admit a database while its actual usage is idle. The limit still protects
+/// the node from a database consuming more than the product cap.
+pub fn kubernetes_database_resource_requirements() -> Value {
+    json!({
+        "requests": {
+            "cpu": "1m",
+            "memory": "64Mi",
+            "ephemeral-storage": "256Mi",
+        },
+        "limits": {
+            "cpu": TENANT_RESOURCE_CAPS.cpu,
+            "memory": TENANT_RESOURCE_CAPS.memory_kubernetes,
+            "ephemeral-storage": TENANT_RESOURCE_CAPS.storage_kubernetes,
+        },
+    })
+}
+
 pub fn kubernetes_storage_request() -> Value {
     json!({
         "requests": { "storage": TENANT_RESOURCE_CAPS.storage_kubernetes },
@@ -146,6 +165,11 @@ mod tests {
                 .any(|pair| pair == ["--storage-opt", "size=10G"])
         );
         let kube = kubernetes_resource_requirements();
+        let database_kube = kubernetes_database_resource_requirements();
+        assert_eq!(database_kube["requests"]["cpu"], "1m");
+        assert_eq!(database_kube["requests"]["memory"], "64Mi");
+        assert_eq!(database_kube["limits"]["cpu"], "1");
+        assert_eq!(database_kube["limits"]["memory"], "1Gi");
         assert_eq!(kube["limits"]["cpu"], "1");
         assert_eq!(kube["limits"]["memory"], "1Gi");
         assert_eq!(kube["limits"]["ephemeral-storage"], "10Gi");

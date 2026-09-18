@@ -144,6 +144,17 @@ export function createPostgresResource(
   )
 }
 
+export function retryPostgresResource(
+  workspaceSlug: string,
+  projectSlug: string,
+  resourceId: string
+) {
+  return apiRequest<PostgresResource>(
+    `${resourcesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(resourceId)}/retry`,
+    { method: "POST" }
+  )
+}
+
 function redisPath(workspaceSlug: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/redis`
 }

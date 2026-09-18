@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   getAppServiceLogs: vi.fn(),
   listDatabaseTables: vi.fn(),
   listPostgresResources: vi.fn(),
+  retryPostgresResource: vi.fn(),
   updateAppService: vi.fn(),
   updateAppServiceAutoDeploy: vi.fn(),
   updateAppServiceDatabase: vi.fn(),
@@ -116,6 +117,68 @@ describe("ResourceWorkspace database pane", () => {
       message: null,
     })
     mocks.listPostgresResources.mockResolvedValue([])
+  })
+
+  it("lets a failed PostgreSQL resource be deployed again", async () => {
+    const user = userEvent.setup()
+    const onPostgresUpdated = vi.fn()
+    const onToast = vi.fn()
+    const resource = {
+      id: "resource-id",
+      name: "Analytics",
+      resourceType: "postgres" as const,
+      status: "error" as const,
+      databaseName: "knotree_db_analytics",
+      username: "knotree_role_analytics",
+      host: "knotree-cloud-knotree-api-pg",
+      port: 5432,
+      connectionString: null,
+      clusterProvider: "kubernetes" as const,
+      errorMessage:
+        "The Kubernetes cluster has no schedulable capacity for this database.",
+    }
+    const retriedResource = { ...resource, status: "provisioning" as const }
+    mocks.retryPostgresResource.mockResolvedValue(retriedResource)
+
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "postgres",
+          title: "Analytics",
+          type: "PostgreSQL database",
+          volume: "analytics-volume",
+          status: "ERROR",
+          resource,
+        }}
+        environment="production"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+        onPostgresUpdated={onPostgresUpdated}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    expect(
+      within(dialog).getByText(/no schedulable capacity/i)
+    ).toBeInTheDocument()
+    await user.click(
+      within(dialog).getByRole("button", { name: "Deploy PostgreSQL again" })
+    )
+
+    await waitFor(() => {
+      expect(mocks.retryPostgresResource).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "resource-id"
+      )
+    })
+    expect(onPostgresUpdated).toHaveBeenCalledWith(retriedResource)
+    expect(onToast).toHaveBeenCalledWith("Postgres redeploy started")
   })
 
   it("uses the first real table in the starter query", async () => {

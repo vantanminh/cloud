@@ -20,7 +20,8 @@ use crate::{
     },
     config::Config,
     limits::{
-        RESOURCE_VOLUME_LIMIT_BYTES, kubernetes_resource_requirements, kubernetes_storage_request,
+        RESOURCE_VOLUME_LIMIT_BYTES, kubernetes_database_resource_requirements,
+        kubernetes_resource_requirements, kubernetes_storage_request,
     },
 };
 
@@ -229,7 +230,7 @@ fn stateful_set_manifest(
                             "timeoutSeconds": 5,
                             "failureThreshold": 6,
                         },
-                        "resources": kubernetes_resource_requirements(),
+                        "resources": kubernetes_database_resource_requirements(),
                         "volumeMounts": [{
                             "name": "data",
                             "mountPath": "/var/lib/postgresql/data",
@@ -1258,6 +1259,8 @@ mod tests {
             1
         );
         let container = &manifest["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(container["resources"]["requests"]["cpu"], "1m");
+        assert_eq!(container["resources"]["requests"]["memory"], "64Mi");
         assert_eq!(container["resources"]["limits"]["cpu"], "1");
         assert_eq!(container["resources"]["limits"]["memory"], "1Gi");
         assert_eq!(

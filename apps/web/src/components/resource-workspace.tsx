@@ -42,6 +42,7 @@ import {
   getDatabaseTableData,
   listDatabaseTables,
   listPostgresResources,
+  retryPostgresResource,
   updateAppService,
   updateAppServiceAutoDeploy,
   updateAppServiceDatabase,
@@ -106,6 +107,7 @@ type ResourceWorkspaceProps = {
   onToast: (message: string) => void
   onOpenLogs: () => void
   onAppServiceUpdated?: (resource: AppService) => void
+  onPostgresUpdated?: (resource: PostgresResource) => void
 }
 
 const DEFAULT_QUERY = "SELECT 1"
@@ -133,6 +135,7 @@ export function ResourceWorkspace({
   onToast,
   onOpenLogs,
   onAppServiceUpdated,
+  onPostgresUpdated,
 }: ResourceWorkspaceProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [activeTab, setActiveTab] =
@@ -254,9 +257,12 @@ export function ResourceWorkspace({
           {activeTab === "deployments" && (
             <DeploymentsPane
               node={node}
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
               onToast={onToast}
               onOpenLogs={onOpenLogs}
               onOpenRuntimeLogs={() => setActiveTab("console")}
+              onPostgresUpdated={onPostgresUpdated}
             />
           )}
           {activeTab === "database" && (
@@ -268,6 +274,7 @@ export function ResourceWorkspace({
               copiedConnectionString={copiedConnectionString}
               onCopyConnectionString={onCopyConnectionString}
               onToast={onToast}
+              onPostgresUpdated={onPostgresUpdated}
             />
           )}
           {activeTab === "backups" && <BackupsPane onToast={onToast} />}
@@ -308,14 +315,20 @@ export function ResourceWorkspace({
 
 function DeploymentsPane({
   node,
+  workspaceSlug,
+  projectSlug,
   onToast,
   onOpenLogs,
   onOpenRuntimeLogs,
+  onPostgresUpdated,
 }: {
   node: ResourceWorkspaceNode
+  workspaceSlug: string
+  projectSlug: string
   onToast: (message: string) => void
   onOpenLogs: () => void
   onOpenRuntimeLogs: () => void
+  onPostgresUpdated?: (resource: PostgresResource) => void
 }) {
   const isReady =
     node.resource?.status === "ready" ||
@@ -432,11 +445,20 @@ function DeploymentsPane({
                 ? `Service URL · ${appService.serviceUrl}`
                 : "Deployment successful"
               : isError
-                ? "Provisioning failed — open Add to retry"
+                ? "Provisioning failed — deploy again when capacity is available"
                 : appService?.publicDomain
                   ? `Domain assigned · ${appService.publicDomain}`
                   : "Deployment not started"}
           </span>
+          {isError && postgresResource && (
+            <PostgresRetryButton
+              workspaceSlug={workspaceSlug}
+              projectSlug={projectSlug}
+              resource={postgresResource}
+              onToast={onToast}
+              onUpdated={onPostgresUpdated}
+            />
+          )}
           {isReady && appService?.serviceUrl && (
             <a
               className="resource-workspace-ghost-link"
@@ -513,6 +535,74 @@ function DeploymentsPane({
   )
 }
 
+function PostgresRetryButton({
+  workspaceSlug,
+  projectSlug,
+  resource,
+  onToast,
+  onUpdated,
+}: {
+  workspaceSlug: string
+  projectSlug: string
+  resource: PostgresResource
+  onToast: (message: string) => void
+  onUpdated?: (resource: PostgresResource) => void
+}) {
+  const [retrying, setRetrying] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleRetry() {
+    if (retrying || resource.status === "provisioning") {
+      return
+    }
+    setRetrying(true)
+    setError(null)
+    try {
+      const nextResource = await retryPostgresResource(
+        workspaceSlug,
+        projectSlug,
+        resource.id
+      )
+      onUpdated?.(nextResource)
+      onToast("Postgres redeploy started")
+    } catch (requestError) {
+      const message =
+        requestError instanceof ApiError
+          ? requestError.message
+          : "Postgres redeploy failed. Please try again."
+      setError(message)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
+  return (
+    <span className="resource-workspace-retry-action">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={retrying || resource.status === "provisioning"}
+        aria-label="Deploy PostgreSQL again"
+        onClick={() => {
+          void handleRetry()
+        }}
+      >
+        <RefreshCwIcon
+          data-icon="inline-start"
+          className={cn(retrying && "animate-spin")}
+        />
+        {retrying ? "Deploying…" : "Deploy again"}
+      </Button>
+      {error && (
+        <span className="resource-workspace-retry-error" role="alert">
+          {error}
+        </span>
+      )}
+    </span>
+  )
+}
+
 function DatabasePane({
   node,
   workspaceSlug,
@@ -521,6 +611,7 @@ function DatabasePane({
   copiedConnectionString,
   onCopyConnectionString,
   onToast,
+  onPostgresUpdated,
 }: {
   node: ResourceWorkspaceNode
   workspaceSlug: string
@@ -529,6 +620,7 @@ function DatabasePane({
   copiedConnectionString: boolean
   onCopyConnectionString: (value: string) => void
   onToast: (message: string) => void
+  onPostgresUpdated?: (resource: PostgresResource) => void
 }) {
   const [view, setView] = useState<"data" | "stats" | "config">("data")
   const [search, setSearch] = useState("")
@@ -818,6 +910,17 @@ function DatabasePane({
               ? (node.resource?.errorMessage ??
                 "The dedicated PostgreSQL cluster could not be scheduled. Retry when capacity is available.")
               : "Database management becomes available as soon as the dedicated PostgreSQL cluster is ready."
+          }
+          action={
+            isError && node.resource?.resourceType === "postgres" ? (
+              <PostgresRetryButton
+                workspaceSlug={workspaceSlug}
+                projectSlug={projectSlug}
+                resource={node.resource}
+                onToast={onToast}
+                onUpdated={onPostgresUpdated}
+              />
+            ) : undefined
           }
         />
       ) : (
@@ -3185,16 +3288,19 @@ function ResourceEmptyState({
   icon,
   title,
   description,
+  action,
 }: {
   icon: ReactNode
   title: string
   description: string
+  action?: ReactNode
 }) {
   return (
     <div className="resource-workspace-empty-state">
       <span className="resource-workspace-empty-icon">{icon}</span>
       <h3>{title}</h3>
       <p>{description}</p>
+      {action}
     </div>
   )
 }

@@ -1238,6 +1238,10 @@ function TopologyDashboard({
             )
             setResourceError(null)
           }}
+          onPostgresUpdated={(resource) => {
+            setPostgresResource(resource)
+            setResourceError(null)
+          }}
         />
       )}
 
