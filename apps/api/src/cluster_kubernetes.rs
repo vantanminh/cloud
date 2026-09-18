@@ -417,7 +417,7 @@ pub async fn collect_runtime_metrics(
         cpu_percent: Some(cpu_percent.min(100.0)),
         memory_used_bytes: Some(memory_used_bytes),
         memory_limit_bytes,
-        volume_used_bytes: Some(volume_used_bytes.unwrap_or_default()),
+        volume_used_bytes,
         volume_capacity_bytes: Some(RESOURCE_VOLUME_LIMIT_BYTES),
         network_receive_bytes: Some(network_receive_bytes),
         network_transmit_bytes: Some(network_transmit_bytes),
