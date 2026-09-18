@@ -74,6 +74,19 @@ pub fn has_system_metrics(sample: &ResourceMetricPoint) -> bool {
         || sample.disk_write_bytes.is_some()
 }
 
+/// Keep storage charts from presenting an impossible value (used > capacity)
+/// left by a provider that reports backing-filesystem usage instead of the
+/// resource's allocated volume. A missing/invalid value is rendered as
+/// unavailable rather than as a false full disk.
+pub fn sanitize_volume_metric(used: Option<i64>, capacity: Option<i64>) -> Option<i64> {
+    match (used, capacity) {
+        (Some(used), Some(capacity)) if used >= 0 && capacity > 0 && used <= capacity => {
+            Some(used)
+        }
+        _ => None,
+    }
+}
+
 pub fn downsample_metric_points(
     points: Vec<ResourceMetricPoint>,
     max_points: usize,
@@ -114,5 +127,14 @@ mod tests {
         assert_eq!(metric_sample_concurrency(4), 2);
         assert_eq!(metric_sample_concurrency(10), 4);
         assert_eq!(metric_sample_concurrency(100), 4);
+    }
+
+    #[test]
+    fn rejects_storage_usage_that_exceeds_capacity() {
+        assert_eq!(sanitize_volume_metric(Some(5), Some(10)), Some(5));
+        assert_eq!(sanitize_volume_metric(Some(11), Some(10)), None);
+        assert_eq!(sanitize_volume_metric(Some(-1), Some(10)), None);
+        assert_eq!(sanitize_volume_metric(Some(5), Some(0)), None);
+        assert_eq!(sanitize_volume_metric(Some(5), None), None);
     }
 }

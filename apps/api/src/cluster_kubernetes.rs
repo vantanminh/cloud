@@ -367,7 +367,11 @@ pub async fn collect_runtime_metrics(
         bail!("Kubernetes returned an invalid CPU percentage");
     }
 
-    let volume_used_bytes = pod_storage_bytes(pod_stats, container_stats);
+    // Kubelet reports local-path PVC usage from the backing node filesystem,
+    // not from the directory allocated to the claim. Treat that value as
+    // unavailable so the PostgreSQL metrics layer can use database size
+    // instead of showing node usage as PVC usage.
+    let volume_used_bytes = pod_volume_used_bytes(pod_stats, container_stats);
     let network_receive_bytes = pod_stats
         .network
         .as_ref()
@@ -484,6 +488,8 @@ struct KubeletIoStats {
 #[serde(rename_all = "camelCase")]
 struct KubeletFsStats {
     used_bytes: Option<u64>,
+    #[serde(default)]
+    pvc_ref: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -550,6 +556,24 @@ fn pod_storage_bytes(
         (Some(ephemeral), Some(volume)) => ephemeral.checked_add(volume),
         (Some(bytes), None) | (None, Some(bytes)) => Some(bytes),
         (None, None) => None,
+    }
+}
+
+fn pod_has_persistent_volume(pod_stats: &KubeletPodStats) -> bool {
+    pod_stats
+        .volume
+        .iter()
+        .any(|stats| stats.pvc_ref.is_some())
+}
+
+fn pod_volume_used_bytes(
+    pod_stats: &KubeletPodStats,
+    container_stats: &KubeletContainerStats,
+) -> Option<i64> {
+    if pod_has_persistent_volume(pod_stats) {
+        None
+    } else {
+        pod_storage_bytes(pod_stats, container_stats)
     }
 }
 
@@ -1413,6 +1437,35 @@ mod tests {
         );
         assert_eq!(pod.containers[0].io.as_ref().unwrap().write_bytes, Some(40));
         assert_eq!(pod_storage_bytes(pod, &pod.containers[0]), Some(2058));
+        assert!(!pod_has_persistent_volume(pod));
+    }
+
+    #[test]
+    fn identifies_pvc_stats_that_report_backing_filesystem_usage() {
+        let summary = serde_json::from_value::<KubeletStatsSummary>(serde_json::json!({
+            "pods": [{
+                "podRef": {"name": "postgres-0", "namespace": "knotree-cloud"},
+                "containers": [{
+                    "name": "postgres",
+                    "rootfs": {"usedBytes": 100},
+                    "logs": {"usedBytes": 20}
+                }],
+                "ephemeral-storage": {"usedBytes": 2048},
+                "volume": [{
+                    "name": "data",
+                    "usedBytes": 78739943424u64,
+                    "capacityBytes": 102915489792u64,
+                    "pvcRef": {
+                        "name": "data-postgres-0",
+                        "namespace": "knotree-cloud"
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let pod = &summary.pods[0];
+        assert!(pod_has_persistent_volume(pod));
+        assert_eq!(pod_volume_used_bytes(pod, &pod.containers[0]), None);
     }
 
     #[test]

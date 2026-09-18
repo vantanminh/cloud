@@ -24,7 +24,7 @@ use crate::{
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
         MetricRange, downsample_metric_points, has_system_metrics, metric_sample_concurrency,
-        parse_metric_range, unix_timestamp,
+        parse_metric_range, sanitize_volume_metric, unix_timestamp,
     },
     models::{DatabaseMetricPoint, DatabaseMetricsResponse},
     projects, security,
@@ -873,7 +873,10 @@ async fn load_metric_history(
                 cpu_percent: row.cpu_percent,
                 memory_used_bytes: row.memory_used_bytes,
                 memory_limit_bytes: row.memory_limit_bytes,
-                volume_used_bytes: row.volume_used_bytes,
+                volume_used_bytes: sanitize_volume_metric(
+                    row.volume_used_bytes,
+                    row.volume_capacity_bytes,
+                ),
                 volume_capacity_bytes: row.volume_capacity_bytes,
                 network_receive_bytes: row.network_receive_bytes,
                 network_transmit_bytes: row.network_transmit_bytes,

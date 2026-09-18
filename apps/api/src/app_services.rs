@@ -42,7 +42,7 @@ use crate::{
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
         downsample_metric_points, has_system_metrics, metric_sample_concurrency,
-        parse_metric_range, unix_timestamp,
+        parse_metric_range, sanitize_volume_metric, unix_timestamp,
     },
     models::{
         AccountDeploymentLog, AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse,
@@ -545,11 +545,17 @@ fn complete_app_service_metric_point(mut point: AppServiceMetricPoint) -> AppSer
             .memory_limit_bytes
             .unwrap_or(RESOURCE_MEMORY_LIMIT_BYTES),
     );
-    point.volume_used_bytes = Some(point.volume_used_bytes.unwrap_or_default());
     point.volume_capacity_bytes = Some(
         point
             .volume_capacity_bytes
             .unwrap_or(RESOURCE_VOLUME_LIMIT_BYTES),
+    );
+    point.volume_used_bytes = Some(
+        sanitize_volume_metric(
+            point.volume_used_bytes,
+            point.volume_capacity_bytes,
+        )
+        .unwrap_or_default(),
     );
     point.network_receive_bytes = Some(point.network_receive_bytes.unwrap_or_default());
     point.network_transmit_bytes = Some(point.network_transmit_bytes.unwrap_or_default());
