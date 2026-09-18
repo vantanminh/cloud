@@ -258,6 +258,7 @@ describe("ResourceWorkspace database pane", () => {
 
   it("renders live app service runtime metrics", async () => {
     const user = userEvent.setup()
+    const onToast = vi.fn()
     render(
       <ResourceWorkspace
         node={{
@@ -286,7 +287,7 @@ describe("ResourceWorkspace database pane", () => {
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
         copiedConnectionString={false}
-        onToast={vi.fn()}
+        onToast={onToast}
         onOpenLogs={vi.fn()}
       />
     )
@@ -309,6 +310,10 @@ describe("ResourceWorkspace database pane", () => {
       within(dialog).getByRole("heading", { name: "Request Error Rate" })
     ).toBeInTheDocument()
     expect(within(dialog).getByText("1.20%")).toBeInTheDocument()
+    expect(within(dialog).getByText("Telemetry active")).toBeInTheDocument()
+    expect(within(dialog).getByText("1 samples · every 5s")).toBeInTheDocument()
+    expect(within(dialog).getByText("Resolution")).toBeInTheDocument()
+    expect(within(dialog).getByText("30 days")).toBeInTheDocument()
     const requestsCard = within(dialog)
       .getByRole("heading", { name: "Requests" })
       .closest("article")!
@@ -330,6 +335,12 @@ describe("ResourceWorkspace database pane", () => {
       "app-resource-id",
       "24h"
     )
+
+    await user.click(within(dialog).getByRole("button", { name: "Live" }))
+    expect(
+      within(dialog).getByRole("button", { name: "Paused" })
+    ).toBeInTheDocument()
+    expect(onToast).toHaveBeenCalledWith("Live metrics paused")
   })
 
   it("shows the manually assigned private database connection", async () => {

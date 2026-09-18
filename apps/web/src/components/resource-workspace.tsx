@@ -1722,77 +1722,336 @@ function MetricsPane({
   const selectedRangeLabel =
     METRIC_RANGE_OPTIONS.find((option) => option.value === range)?.label ??
     "Last 24 hours"
-  const lastUpdated = current
-    ? new Date(current.timestamp * 1_000).toLocaleTimeString([], {
+  const lastSampleTimestamp = current?.timestamp ?? metrics?.toTimestamp
+  const lastUpdated = lastSampleTimestamp
+    ? new Date(lastSampleTimestamp * 1_000).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
       })
     : null
+  const retentionDays = Math.round(
+    (metrics?.retentionSeconds ?? 30 * 24 * 60 * 60) / (24 * 60 * 60)
+  )
+  const sampleInterval = metrics?.sampleIntervalSeconds ?? 5
+  const resolution = metrics?.resolutionSeconds ?? sampleInterval
+  const telemetryLabel =
+    loading && !metrics
+      ? "Connecting telemetry"
+      : metrics?.systemMetricsAvailable === false
+        ? "Limited telemetry"
+        : "Telemetry active"
+  const metricCards: MetricCardProps[] = [
+    {
+      title: "CPU",
+      description: "Container usage",
+      legend: "CPU utilization",
+      accent: "blue",
+      featured: true,
+      points,
+      rangeLabel: selectedRangeLabel,
+      series: [
+        {
+          label: "CPU",
+          colorClass: "blue",
+          getValue: (point) => point.cpuPercent,
+          formatValue: (value) => `${value.toFixed(2)}%`,
+        },
+      ],
+      scaleMax: 100,
+      axisMaxLabel: "100%",
+    },
+    {
+      title: "Memory",
+      description: "Container usage",
+      legend: "Memory utilization",
+      accent: "violet",
+      featured: true,
+      points,
+      rangeLabel: selectedRangeLabel,
+      series: [
+        {
+          label: "Used",
+          colorClass: "violet",
+          getValue: (point) => memoryPercent(point),
+          formatValue: (value) => `${value.toFixed(1)}%`,
+          getDisplayValue: (point) =>
+            point.memoryUsedBytes !== null && point.memoryLimitBytes !== null
+              ? `${formatBytes(point.memoryUsedBytes)} / ${formatBytes(point.memoryLimitBytes)}`
+              : "Unavailable",
+        },
+      ],
+      scaleMax: 100,
+      axisMaxLabel: "100%",
+    },
+    {
+      title: "Volume",
+      description: "Persistent storage usage",
+      legend: "Used · capacity",
+      accent: "ink",
+      points,
+      rangeLabel: selectedRangeLabel,
+      series: [
+        {
+          label: "Used",
+          colorClass: "ink",
+          getValue: (point) => volumePercent(point),
+          formatValue: (value) => `${value.toFixed(1)}%`,
+          getDisplayValue: (point) =>
+            point.volumeUsedBytes !== null && point.volumeCapacityBytes !== null
+              ? `${formatBytes(point.volumeUsedBytes)} / ${formatBytes(point.volumeCapacityBytes)}`
+              : point.volumeUsedBytes !== null
+                ? formatBytes(point.volumeUsedBytes)
+                : "Unavailable",
+        },
+      ],
+      scaleMax: 100,
+      axisMaxLabel: "100%",
+    },
+    {
+      title: "Network I/O",
+      description: "Container network counters",
+      legend: "RX · TX totals",
+      accent: "green",
+      points,
+      rangeLabel: selectedRangeLabel,
+      series: [
+        {
+          label: "RX",
+          colorClass: "green",
+          getValue: (point) => point.networkReceiveBytes,
+          formatValue: formatBytes,
+        },
+        {
+          label: "TX",
+          colorClass: "blue",
+          getValue: (point) => point.networkTransmitBytes,
+          formatValue: formatBytes,
+        },
+      ],
+    },
+  ]
+  if (isAppService) {
+    metricCards.push(
+      {
+        title: "Public Network Traffic",
+        description: "Traffic to and from the internet",
+        legend: "Inbound · outbound payload",
+        accent: "green",
+        points,
+        rangeLabel: selectedRangeLabel,
+        series: [
+          {
+            label: "Inbound",
+            colorClass: "green",
+            getValue: (point) => point.publicNetworkReceiveBytes ?? null,
+            formatValue: formatBytes,
+          },
+          {
+            label: "Outbound",
+            colorClass: "blue",
+            getValue: (point) => point.publicNetworkTransmitBytes ?? null,
+            formatValue: formatBytes,
+          },
+        ],
+      },
+      {
+        title: "Requests",
+        description: "Public HTTP requests",
+        legend: "Request count",
+        accent: "blue",
+        points,
+        rangeLabel: selectedRangeLabel,
+        axisFormat: formatCount,
+        series: [
+          {
+            label: "Requests",
+            colorClass: "blue",
+            getValue: (point) => point.requests ?? null,
+            formatValue: formatCount,
+          },
+        ],
+      },
+      {
+        title: "Response Time",
+        description: "Average request latency",
+        legend: "Average latency",
+        accent: "orange",
+        points,
+        rangeLabel: selectedRangeLabel,
+        axisFormat: formatMilliseconds,
+        series: [
+          {
+            label: "Average",
+            colorClass: "orange",
+            getValue: (point) => point.responseTimeMs ?? null,
+            formatValue: (value) => `${value.toFixed(0)} ms`,
+          },
+        ],
+      },
+      {
+        title: "Request Error Rate",
+        description: "4xx and 5xx responses",
+        legend: "Failed request rate",
+        accent: "violet",
+        points,
+        rangeLabel: selectedRangeLabel,
+        scaleMax: 100,
+        axisMaxLabel: "100%",
+        series: [
+          {
+            label: "Errors",
+            colorClass: "violet",
+            getValue: (point) => point.requestErrorRate ?? null,
+            formatValue: (value) => `${value.toFixed(2)}%`,
+          },
+        ],
+      }
+    )
+  }
+  metricCards.push({
+    title: "Disk I/O",
+    description: "Container storage counters",
+    legend: "Read · write totals",
+    accent: "orange",
+    points,
+    rangeLabel: selectedRangeLabel,
+    series: [
+      {
+        label: "Read",
+        colorClass: "orange",
+        getValue: (point) => point.diskReadBytes,
+        formatValue: formatBytes,
+      },
+      {
+        label: "Write",
+        colorClass: "ink",
+        getValue: (point) => point.diskWriteBytes,
+        formatValue: formatBytes,
+      },
+    ],
+  })
 
   return (
     <section
-      className="resource-workspace-pane"
+      className="resource-workspace-pane resource-workspace-metrics-pane"
       id="resource-pane-metrics"
       role="tabpanel"
       aria-labelledby="resource-tab-metrics"
     >
-      <div className="resource-workspace-metric-toolbar">
-        <div className="resource-workspace-metric-status">
-          <span className="resource-workspace-muted">
-            {selectedRangeLabel}
-            {lastUpdated ? ` · updated ${lastUpdated}` : ""}
+      <div className="resource-workspace-metrics-header">
+        <div className="resource-workspace-metrics-heading">
+          <span className="resource-workspace-metrics-eyebrow">
+            <ActivityIcon aria-hidden="true" /> Observability
           </span>
-          <span className="resource-workspace-muted">
-            Up to{" "}
-            {Math.round(
-              (metrics?.retentionSeconds ?? 30 * 24 * 60 * 60) / (24 * 60 * 60)
-            )}{" "}
-            days
-          </span>
-          {refreshing && (
-            <span className="resource-workspace-muted">Refreshing…</span>
-          )}
+          <h3>Runtime metrics</h3>
+          <p>
+            {node.title} · {resourceLabel}
+          </p>
         </div>
-        <label className="resource-workspace-metric-range">
-          <span>Range</span>
-          <select
-            aria-label="Metric time range"
-            value={range}
-            onChange={(event) => {
-              const nextRange = event.target.value as DatabaseMetricsRange
-              setRange(nextRange)
-              setMetrics(null)
-              setError(null)
-              setLoading(true)
+        <div className="resource-workspace-metrics-controls">
+          <label className="resource-workspace-metric-range">
+            <span>Range</span>
+            <select
+              aria-label="Metric time range"
+              value={range}
+              onChange={(event) => {
+                const nextRange = event.target.value as DatabaseMetricsRange
+                setRange(nextRange)
+                setMetrics(null)
+                setError(null)
+                setLoading(true)
+              }}
+            >
+              {METRIC_RANGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="resource-workspace-metrics-control"
+            aria-pressed={live}
+            onClick={() => {
+              const nextLive = !live
+              setLive(nextLive)
+              onToast(nextLive ? "Live metrics resumed" : "Live metrics paused")
             }}
           >
-            {METRIC_RANGE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-pressed={live}
-          onClick={() => {
-            setLive((currentLive) => {
-              const nextLive = !currentLive
-              onToast(nextLive ? "Live metrics resumed" : "Live metrics paused")
-              return nextLive
-            })
-          }}
-        >
+            <span
+              className={cn("resource-workspace-live-dot", !live && "paused")}
+              aria-hidden="true"
+            />
+            {live ? "Live" : "Paused"}
+          </button>
+          <button
+            type="button"
+            className="resource-workspace-metrics-control"
+            aria-label="Refresh metrics"
+            disabled={loading || refreshing}
+            onClick={() => void loadMetrics(true)}
+          >
+            <RefreshCwIcon
+              aria-hidden="true"
+              className={cn(refreshing && "resource-workspace-refreshing-icon")}
+            />
+            <span className="resource-workspace-refresh-label">Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="resource-workspace-metrics-meta">
+        <div className="resource-workspace-metrics-telemetry">
           <span
-            className={cn("resource-workspace-live-dot", !live && "paused")}
+            className={cn(
+              "resource-workspace-metrics-pulse",
+              metrics?.systemMetricsAvailable === false && "limited",
+              loading && !metrics && "loading",
+              !live && "paused"
+            )}
             aria-hidden="true"
-          />
-          {live ? "Live" : "Paused"}
-        </Button>
+          >
+            <span />
+          </span>
+          <span>
+            <strong>{telemetryLabel}</strong>
+            <small>
+              {refreshing
+                ? "Syncing latest sample…"
+                : points.length
+                  ? `${points.length} samples · every ${formatMetricDuration(sampleInterval)}`
+                  : "Waiting for the first sample"}
+            </small>
+          </span>
+        </div>
+        <dl className="resource-workspace-metrics-meta-list">
+          <div>
+            <dt>Last sample</dt>
+            <dd>{lastUpdated ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Resolution</dt>
+            <dd>{formatMetricDuration(resolution)}</dd>
+          </div>
+          <div>
+            <dt>Retention</dt>
+            <dd>{retentionDays} days</dd>
+          </div>
+          <div>
+            <dt>Provider</dt>
+            <dd>{metrics?.provider ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Window</dt>
+            <dd>
+              {metrics?.fromTimestamp !== undefined
+                ? `${formatMetricAxisTimestamp(metrics.fromTimestamp)} – ${formatMetricAxisTimestamp(metrics.toTimestamp)}`
+                : "—"}
+            </dd>
+          </div>
+        </dl>
       </div>
 
       {error && (
@@ -1814,222 +2073,52 @@ function MetricsPane({
         />
       ) : (
         <div className="resource-workspace-metrics-grid">
-          <MetricCard
-            title="CPU"
-            legend="Container usage"
-            accent="blue"
-            points={points}
-            rangeLabel={selectedRangeLabel}
-            series={[
-              {
-                label: "CPU",
-                colorClass: "blue",
-                getValue: (point) => point.cpuPercent,
-                formatValue: (value) => `${value.toFixed(2)}%`,
-              },
-            ]}
-            scaleMax={100}
-            axisMaxLabel="100%"
-          />
-          <MetricCard
-            title="Memory"
-            legend="Container usage"
-            accent="violet"
-            points={points}
-            rangeLabel={selectedRangeLabel}
-            series={[
-              {
-                label: "Used",
-                colorClass: "violet",
-                getValue: (point) => memoryPercent(point),
-                formatValue: (value) => `${value.toFixed(1)}%`,
-                getDisplayValue: (point) =>
-                  point.memoryUsedBytes !== null &&
-                  point.memoryLimitBytes !== null
-                    ? `${formatBytes(point.memoryUsedBytes)} / ${formatBytes(point.memoryLimitBytes)}`
-                    : "Unavailable",
-              },
-            ]}
-            scaleMax={100}
-            axisMaxLabel="100%"
-          />
-          <MetricCard
-            title="Volume"
-            legend="Used · Capacity"
-            accent="ink"
-            points={points}
-            rangeLabel={selectedRangeLabel}
-            series={[
-              {
-                label: "Used",
-                colorClass: "ink",
-                getValue: (point) => volumePercent(point),
-                formatValue: (value) => `${value.toFixed(1)}%`,
-                getDisplayValue: (point) =>
-                  point.volumeUsedBytes !== null &&
-                  point.volumeCapacityBytes !== null
-                    ? `${formatBytes(point.volumeUsedBytes)} / ${formatBytes(point.volumeCapacityBytes)}`
-                    : point.volumeUsedBytes !== null
-                      ? formatBytes(point.volumeUsedBytes)
-                      : "Unavailable",
-              },
-            ]}
-            scaleMax={100}
-            axisMaxLabel="100%"
-          />
-          <MetricCard
-            title="Network I/O"
-            legend="RX · TX totals"
-            accent="green"
-            points={points}
-            rangeLabel={selectedRangeLabel}
-            series={[
-              {
-                label: "RX",
-                colorClass: "green",
-                getValue: (point) => point.networkReceiveBytes,
-                formatValue: formatBytes,
-              },
-              {
-                label: "TX",
-                colorClass: "blue",
-                getValue: (point) => point.networkTransmitBytes,
-                formatValue: formatBytes,
-              },
-            ]}
-          />
-          {isAppService && (
-            <>
-              <MetricCard
-                title="Public Network Traffic"
-                legend="Inbound / Outbound payload"
-                accent="green"
-                points={points}
-                rangeLabel={selectedRangeLabel}
-                series={[
-                  {
-                    label: "Inbound",
-                    colorClass: "green",
-                    getValue: (point) =>
-                      point.publicNetworkReceiveBytes ?? null,
-                    formatValue: formatBytes,
-                  },
-                  {
-                    label: "Outbound",
-                    colorClass: "blue",
-                    getValue: (point) =>
-                      point.publicNetworkTransmitBytes ?? null,
-                    formatValue: formatBytes,
-                  },
-                ]}
-              />
-              <MetricCard
-                title="Requests"
-                legend="Public HTTP requests"
-                accent="blue"
-                points={points}
-                rangeLabel={selectedRangeLabel}
-                axisFormat={formatCount}
-                series={[
-                  {
-                    label: "Requests",
-                    colorClass: "blue",
-                    getValue: (point) => point.requests ?? null,
-                    formatValue: formatCount,
-                  },
-                ]}
-              />
-              <MetricCard
-                title="Response Time"
-                legend="Average latency"
-                accent="orange"
-                points={points}
-                rangeLabel={selectedRangeLabel}
-                axisFormat={formatMilliseconds}
-                series={[
-                  {
-                    label: "Average",
-                    colorClass: "orange",
-                    getValue: (point) => point.responseTimeMs ?? null,
-                    formatValue: (value) => `${value.toFixed(0)} ms`,
-                  },
-                ]}
-              />
-              <MetricCard
-                title="Request Error Rate"
-                legend="4xx / 5xx responses"
-                accent="violet"
-                points={points}
-                rangeLabel={selectedRangeLabel}
-                scaleMax={100}
-                axisMaxLabel="100%"
-                series={[
-                  {
-                    label: "Errors",
-                    colorClass: "violet",
-                    getValue: (point) => point.requestErrorRate ?? null,
-                    formatValue: (value) => `${value.toFixed(2)}%`,
-                  },
-                ]}
-              />
-            </>
-          )}
-          <MetricCard
-            title="Disk I/O"
-            legend="Read · Write totals"
-            accent="orange"
-            points={points}
-            rangeLabel={selectedRangeLabel}
-            series={[
-              {
-                label: "Read",
-                colorClass: "orange",
-                getValue: (point) => point.diskReadBytes,
-                formatValue: formatBytes,
-              },
-              {
-                label: "Write",
-                colorClass: "ink",
-                getValue: (point) => point.diskWriteBytes,
-                formatValue: formatBytes,
-              },
-            ]}
-          />
+          {metricCards.map((metric) => (
+            <MetricCard key={metric.title} {...metric} />
+          ))}
         </div>
       )}
     </section>
   )
 }
 
+type MetricAccent = "blue" | "violet" | "ink" | "green" | "orange"
+
 type MetricSeries = {
   label: string
-  colorClass: "blue" | "violet" | "ink" | "green" | "orange"
+  colorClass: MetricAccent
   getValue: (point: ResourceMetricPoint) => number | null
   formatValue: (value: number) => string
   getDisplayValue?: (point: ResourceMetricPoint) => string
 }
 
-function MetricCard({
-  title,
-  legend,
-  accent,
-  points,
-  series,
-  rangeLabel,
-  scaleMax,
-  axisMaxLabel,
-  axisFormat,
-}: {
+type MetricCardProps = {
   title: string
+  description: string
   legend: string
-  accent: "blue" | "violet" | "ink" | "green" | "orange"
+  accent: MetricAccent
+  featured?: boolean
   points: ResourceMetricPoint[]
   series: MetricSeries[]
   rangeLabel: string
   scaleMax?: number
   axisMaxLabel?: string
   axisFormat?: (value: number) => string
-}) {
+}
+
+function MetricCard({
+  title,
+  description,
+  legend,
+  accent,
+  featured = false,
+  points,
+  series,
+  rangeLabel,
+  scaleMax,
+  axisMaxLabel,
+  axisFormat,
+}: MetricCardProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const current = points[points.length - 1] ?? null
   const allValues = series.flatMap((item) =>
@@ -2042,8 +2131,9 @@ function MetricCard({
   const chartMax = scaleMax ?? Math.max(measuredMax, 1)
   const chartWidth = 310
   const chartLeft = 40
-  const chartBottom = 160
-  const chartHeight = 140
+  const chartBottom = 156
+  const chartTop = 18
+  const chartHeight = chartBottom - chartTop
   const xForIndex = (index: number) =>
     chartLeft +
     (points.length > 1
@@ -2052,11 +2142,33 @@ function MetricCard({
   const yForValue = (value: number) =>
     chartBottom -
     (Math.max(0, Math.min(value, chartMax)) / chartMax) * chartHeight
-  const axisLabel =
-    axisMaxLabel ?? axisFormat?.(chartMax) ?? formatBytes(chartMax)
+  const hasChartData = allValues.length > 0
+  const axisLabel = !hasChartData
+    ? "—"
+    : (axisMaxLabel ??
+      (measuredMax === 0
+        ? axisFormat?.(0) ?? formatBytes(0)
+        : axisFormat?.(chartMax) ?? formatBytes(chartMax)))
+  const axisMidLabel = !hasChartData
+    ? "—"
+    : measuredMax === 0
+      ? axisFormat?.(0) ?? formatBytes(0)
+      : axisFormat
+        ? axisFormat(chartMax / 2)
+        : axisMaxLabel?.endsWith("%")
+          ? `${Math.round(chartMax / 2)}%`
+          : formatBytes(chartMax / 2)
   const hoveredPoint =
     hoveredIndex === null ? null : (points[hoveredIndex] ?? null)
   const hoveredX = hoveredIndex === null ? null : xForIndex(hoveredIndex)
+  const cardClassName = cn(
+    "resource-workspace-metric-card",
+    accent,
+    featured && "featured",
+    !hasChartData && "is-empty"
+  )
+  const tooltipId = `metric-tooltip-${title.toLowerCase().replaceAll(" ", "-")}`
+  const tickIndices = getMetricTickIndices(points.length)
 
   function handleChartMove(event: React.MouseEvent<SVGSVGElement>) {
     if (!points.length) {
@@ -2077,11 +2189,37 @@ function MetricCard({
     setHoveredIndex(index)
   }
 
+  function handleChartKeyDown(event: React.KeyboardEvent<SVGSVGElement>) {
+    if (!points.length) return
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault()
+      const direction = event.key === "ArrowLeft" ? -1 : 1
+      setHoveredIndex((index) => {
+        const nextIndex = (index ?? points.length - 1) + direction
+        return Math.max(0, Math.min(points.length - 1, nextIndex))
+      })
+    }
+    if (event.key === "Escape") {
+      setHoveredIndex(null)
+    }
+  }
+
   return (
-    <article className={cn("resource-workspace-metric-card", accent)}>
-      <span className="resource-workspace-metric-legend">● {legend}</span>
-      <h3>{title}</h3>
-      <div className="resource-workspace-metric-values">
+    <article className={cardClassName}>
+      <div className="resource-workspace-metric-card-head">
+        <div>
+          <span className="resource-workspace-metric-label">Metric</span>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+        <span className="resource-workspace-metric-legend">
+          <i className={accent} aria-hidden="true" /> {legend}
+        </span>
+      </div>
+      <div
+        className="resource-workspace-metric-values"
+        aria-label={`${title} current values`}
+      >
         {series.map((item) => {
           return (
             <span key={item.label} className={item.colorClass}>
@@ -2097,33 +2235,61 @@ function MetricCard({
       </div>
       <div className="resource-workspace-chart-wrap">
         <svg
-          viewBox="0 0 360 180"
+          viewBox="0 0 360 190"
           preserveAspectRatio="none"
           role="img"
           aria-label={`${title} usage, ${rangeLabel.toLowerCase()}`}
+          tabIndex={points.length ? 0 : -1}
+          aria-describedby={hoveredPoint ? tooltipId : undefined}
           onMouseMove={handleChartMove}
           onMouseLeave={() => setHoveredIndex(null)}
+          onFocus={() =>
+            setHoveredIndex(points.length ? points.length - 1 : null)
+          }
+          onKeyDown={handleChartKeyDown}
         >
           <g className="resource-workspace-chart-grid">
-            <line x1="40" y1="20" x2="350" y2="20" />
-            <line x1="40" y1="55" x2="350" y2="55" />
-            <line x1="40" y1="90" x2="350" y2="90" />
-            <line x1="40" y1="125" x2="350" y2="125" />
-            <line x1="40" y1="160" x2="350" y2="160" />
+            <line x1="40" y1="18" x2="350" y2="18" />
+            <line x1="40" y1="52.5" x2="350" y2="52.5" />
+            <line x1="40" y1="87" x2="350" y2="87" />
+            <line x1="40" y1="121.5" x2="350" y2="121.5" />
+            <line x1="40" y1="156" x2="350" y2="156" />
+            <line x1="40" y1="18" x2="40" y2="156" />
+            <line x1="350" y1="18" x2="350" y2="156" />
           </g>
-          <text x="0" y="24">
+          <text x="0" y="22">
             {axisLabel}
           </text>
-          <text x="0" y="164">
+          <text x="0" y="90">
+            {axisMidLabel}
+          </text>
+          <text x="0" y="160">
             0
           </text>
+          {tickIndices.map((index, tickIndex) => (
+            <text
+              key={index}
+              className="resource-workspace-chart-axis-label"
+              x={xForIndex(index)}
+              y="178"
+              textAnchor={
+                tickIndex === 0
+                  ? "start"
+                  : tickIndex === tickIndices.length - 1
+                    ? "end"
+                    : "middle"
+              }
+            >
+              {formatMetricAxisTimestamp(points[index]?.timestamp)}
+            </text>
+          ))}
           {hoveredPoint && hoveredX !== null && (
             <line
               className="resource-workspace-chart-hover-line"
               x1={hoveredX}
-              y1="20"
+              y1={chartTop}
               x2={hoveredX}
-              y2="160"
+              y2={chartBottom}
             />
           )}
           {points.length > 0 &&
@@ -2139,14 +2305,22 @@ function MetricCard({
                 .filter((point): point is string => point !== null)
                 .join(" ")
               return linePoints ? (
-                <polyline
-                  key={item.label}
-                  className={cn(
-                    "resource-workspace-chart-line",
-                    item.colorClass
-                  )}
-                  points={linePoints}
-                />
+                <g key={item.label}>
+                  <polygon
+                    className={cn(
+                      "resource-workspace-chart-area",
+                      item.colorClass
+                    )}
+                    points={`${linePoints} ${xForIndex(points.length - 1)},${chartBottom} ${xForIndex(0)},${chartBottom}`}
+                  />
+                  <polyline
+                    className={cn(
+                      "resource-workspace-chart-line",
+                      item.colorClass
+                    )}
+                    points={linePoints}
+                  />
+                </g>
               ) : null
             })}
           {hoveredPoint &&
@@ -2162,15 +2336,23 @@ function MetricCard({
                   )}
                   cx={hoveredX}
                   cy={yForValue(value)}
-                  r="4"
+                  r="4.5"
                 />
               )
             })}
         </svg>
+        {!hasChartData && (
+          <div className="resource-workspace-chart-empty" role="note">
+            <span aria-hidden="true">—</span>
+            <strong>No samples for this series</strong>
+            <small>Telemetry is not reported by this resource.</small>
+          </div>
+        )}
         {hoveredPoint && hoveredX !== null && (
           <div
             className="resource-workspace-chart-tooltip"
             role="status"
+            id={tooltipId}
             style={{
               left: `${Math.min(92, Math.max(8, (hoveredX / 360) * 100))}%`,
             }}
@@ -2209,6 +2391,45 @@ function formatMetricTimestamp(timestamp: number) {
     minute: "2-digit",
     second: "2-digit",
   })
+}
+
+function formatMetricAxisTimestamp(timestamp: number | undefined) {
+  if (timestamp === undefined) {
+    return "—"
+  }
+  return new Date(timestamp * 1_000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+function getMetricTickIndices(pointCount: number) {
+  if (pointCount <= 0) {
+    return []
+  }
+  if (pointCount === 1) {
+    return [0]
+  }
+  const middle = Math.floor((pointCount - 1) / 2)
+  return middle === 0 || middle === pointCount - 1
+    ? [0, pointCount - 1]
+    : [0, middle, pointCount - 1]
+}
+
+function formatMetricDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "—"
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`
+  }
+  if (seconds < 60 * 60) {
+    return `${Math.round(seconds / 60)}m`
+  }
+  if (seconds < 24 * 60 * 60) {
+    return `${Math.round(seconds / (60 * 60))}h`
+  }
+  return `${Math.round(seconds / (24 * 60 * 60))}d`
 }
 
 function formatCount(value: number) {
