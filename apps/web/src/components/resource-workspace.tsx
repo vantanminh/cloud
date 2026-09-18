@@ -3089,10 +3089,11 @@ function SettingsPane({
     {
       id: "limits",
       title: "Resource limits",
-      description:
-        "Hard limits applied to this resource so it cannot consume the host beyond its allocation.",
+      description: appService
+        ? "The product allocation is virtual: Kubernetes gives each App service a smaller host CPU quota so idle services can share a small node."
+        : "Hard limits applied to this resource so it cannot consume the host beyond its allocation.",
       rows: [
-        ["CPU", "1 vCPU"],
+        ["CPU", appService ? "1 vCPU (virtual)" : "1 vCPU"],
         ["Memory", "1 GB RAM"],
         ["Volume", "10 GB (writes stop at the limit)"],
       ],

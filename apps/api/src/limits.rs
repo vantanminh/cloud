@@ -3,6 +3,14 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 pub const RESOURCE_CPU_LIMIT: &str = "1";
+/// The CPU allocation shown in the product contract is virtual. Kubernetes
+/// App services use a smaller host quota so a small node can run many mostly
+/// idle services without reserving one physical core per service.
+pub const APP_SERVICE_VIRTUAL_CPU: &str = "1 vCPU";
+pub const KUBERNETES_APP_CPU_REQUEST: &str = "1m";
+pub const KUBERNETES_APP_CPU_LIMIT: &str = "250m";
+pub const KUBERNETES_APP_MEMORY_REQUEST: &str = "32Mi";
+pub const KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST: &str = "64Mi";
 pub const RESOURCE_MEMORY_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_SWAP_LIMIT_DOCKER: &str = "1g";
 pub const RESOURCE_MEMORY_LIMIT_KUBERNETES: &str = "1Gi";
@@ -121,6 +129,28 @@ pub fn kubernetes_resource_requirements() -> Value {
     })
 }
 
+/// Requirements for a Kubernetes App service.
+///
+/// Do not remove requests entirely: when a limit is present and a request is
+/// omitted, Kubernetes may copy the limit into the request and recreate the
+/// capacity problem this policy is intended to solve. These small requests
+/// reserve only startup headroom; the product-facing 1 vCPU allocation is a
+/// virtual plan value while the actual host CPU quota is 250m.
+pub fn kubernetes_app_resource_requirements() -> Value {
+    json!({
+        "requests": {
+            "cpu": KUBERNETES_APP_CPU_REQUEST,
+            "memory": KUBERNETES_APP_MEMORY_REQUEST,
+            "ephemeral-storage": KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST,
+        },
+        "limits": {
+            "cpu": KUBERNETES_APP_CPU_LIMIT,
+            "memory": TENANT_RESOURCE_CAPS.memory_kubernetes,
+            "ephemeral-storage": TENANT_RESOURCE_CAPS.storage_kubernetes,
+        },
+    })
+}
+
 /// PostgreSQL keeps the same tenant hard limits as every other managed
 /// workload, but uses a small scheduler request so a single-node cluster can
 /// admit a database while its actual usage is idle. The limit still protects
@@ -174,6 +204,21 @@ mod tests {
         assert_eq!(kube["limits"]["memory"], "1Gi");
         assert_eq!(kube["limits"]["ephemeral-storage"], "10Gi");
         assert_eq!(kubernetes_storage_request()["requests"]["storage"], "10Gi");
+    }
+
+    #[test]
+    fn app_services_use_a_virtual_cpu_allocation_with_small_scheduler_requests() {
+        let app = kubernetes_app_resource_requirements();
+        assert_eq!(APP_SERVICE_VIRTUAL_CPU, "1 vCPU");
+        assert_eq!(app["requests"]["cpu"], KUBERNETES_APP_CPU_REQUEST);
+        assert_eq!(app["requests"]["memory"], KUBERNETES_APP_MEMORY_REQUEST);
+        assert_eq!(
+            app["requests"]["ephemeral-storage"],
+            KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST
+        );
+        assert_eq!(app["limits"]["cpu"], KUBERNETES_APP_CPU_LIMIT);
+        assert_eq!(app["limits"]["memory"], "1Gi");
+        assert_eq!(app["limits"]["ephemeral-storage"], "10Gi");
     }
 
     #[test]

@@ -4,13 +4,17 @@ Knotree Cloud runs App services, PostgreSQL, and Redis for a project. This phase
 
 ## Resource caps
 
-Every tenant workload is hard-capped at:
+Every tenant workload has this product-facing allocation:
 
-- 1 vCPU
+- 1 virtual CPU
 - 1 GiB RAM
 - 10 GiB storage
 
-Caps are applied when the container or Kubernetes object is created. A noisy App service cannot take the whole node.
+The 1 vCPU value is a virtual plan unit, not a reservation of one physical
+core. On Kubernetes, App services use a small scheduler request and a 250m
+host CPU quota so a 6-CPU VPS can admit many mostly idle services. The memory
+and storage limits remain enforced when the workload is created; a noisy App
+service cannot take the whole node.
 
 ## Public hostnames
 

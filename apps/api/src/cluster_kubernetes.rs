@@ -20,8 +20,9 @@ use crate::{
     },
     config::Config,
     limits::{
-        RESOURCE_VOLUME_LIMIT_BYTES, kubernetes_database_resource_requirements,
-        kubernetes_resource_requirements, kubernetes_storage_request,
+        RESOURCE_VOLUME_LIMIT_BYTES, kubernetes_app_resource_requirements,
+        kubernetes_database_resource_requirements, kubernetes_resource_requirements,
+        kubernetes_storage_request,
     },
 };
 
@@ -815,7 +816,7 @@ pub fn app_deployment_manifest(
                 "protocol": "TCP",
             }],
             "env": env,
-            "resources": kubernetes_resource_requirements(),
+            "resources": kubernetes_app_resource_requirements(),
             "securityContext": {
                 "allowPrivilegeEscalation": false,
                 "readOnlyRootFilesystem": false,
@@ -1268,6 +1269,10 @@ async fn public_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{
+        KUBERNETES_APP_CPU_LIMIT, KUBERNETES_APP_CPU_REQUEST,
+        KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST, KUBERNETES_APP_MEMORY_REQUEST,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -1323,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn app_and_redis_manifests_use_the_same_hard_caps() {
+    fn app_and_redis_manifests_keep_virtual_app_cpu_and_tenant_caps() {
         let config = Config::test_fixture();
         let project_id = Uuid::nil();
         let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
@@ -1351,15 +1356,36 @@ mod tests {
             },
             "knotree-cloud",
         );
-        for manifest in [&app, &redis] {
-            let container = &manifest["spec"]["template"]["spec"]["containers"][0];
-            assert_eq!(container["resources"]["limits"]["cpu"], "1");
-            assert_eq!(container["resources"]["limits"]["memory"], "1Gi");
-            assert_eq!(
-                container["resources"]["limits"]["ephemeral-storage"],
-                "10Gi"
-            );
-        }
+        let app_container = &app["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(
+            app_container["resources"]["requests"]["cpu"],
+            KUBERNETES_APP_CPU_REQUEST
+        );
+        assert_eq!(
+            app_container["resources"]["requests"]["memory"],
+            KUBERNETES_APP_MEMORY_REQUEST
+        );
+        assert_eq!(
+            app_container["resources"]["requests"]["ephemeral-storage"],
+            KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST
+        );
+        assert_eq!(
+            app_container["resources"]["limits"]["cpu"],
+            KUBERNETES_APP_CPU_LIMIT
+        );
+        assert_eq!(app_container["resources"]["limits"]["memory"], "1Gi");
+        assert_eq!(
+            app_container["resources"]["limits"]["ephemeral-storage"],
+            "10Gi"
+        );
+
+        let redis_container = &redis["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(redis_container["resources"]["limits"]["cpu"], "1");
+        assert_eq!(redis_container["resources"]["limits"]["memory"], "1Gi");
+        assert_eq!(
+            redis_container["resources"]["limits"]["ephemeral-storage"],
+            "10Gi"
+        );
         assert_eq!(
             redis["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"]["storage"],
             "10Gi"

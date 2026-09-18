@@ -21,9 +21,11 @@ six App services, represented by image and runtime metadata in the control plane
 and executed in separate Docker containers. Each service keeps its own
 image/container lifecycle and never shares the PostgreSQL volume or API
 connection pool, but Docker resources join the same project-scoped private
-network when the Docker provider is active. Both planes apply a hard allocation
-of at most 1 vCPU, 1 GiB RAM, and 10 GiB of writable storage; storage reaching
-the ceiling stops the resource so writes cannot continue consuming the host.
+network when the Docker provider is active. Both planes expose a product
+allocation of 1 virtual CPU, 1 GiB RAM, and 10 GiB of writable storage;
+Docker uses a 1-core host cap while Kubernetes App services use a smaller
+virtualized host CPU quota. Storage reaching the ceiling stops the resource so
+writes cannot continue consuming the host.
 
 When `APP_SERVICE_PUBLIC_DOMAIN` is configured, each App service also receives
 a stable random `public_subdomain`. The API ingress accepts the configured
@@ -180,7 +182,10 @@ The App service Metrics tab uses the same five-second live polling, bounded
 history, and hover detail as the database Metrics tab. Its volume series tracks
 the container writable layer, while the Docker storage guard also handles
 mounted data paths. The resource Settings tab shows the enforced 1 vCPU, 1 GB
-RAM, and 10 GB storage allocation for both resource types.
+RAM, and 10 GB storage allocation for both resource types. For Kubernetes App
+services, 1 vCPU is a virtual product allocation: the pod reserves only small
+startup requests and is capped at 250m of host CPU so a small node is not
+blocked by one physical-core reservation per service.
 
 ## Migration note
 

@@ -36,8 +36,8 @@ use crate::{
     github::{self, GithubDockerCredentials},
     kong,
     limits::{
-        self, DEFAULT_APP_RATE_LIMIT_RPM, RESOURCE_MEMORY_LIMIT_BYTES, RESOURCE_VOLUME_LIMIT_BYTES,
-        validate_rate_limit_rpm,
+        self, APP_SERVICE_VIRTUAL_CPU, DEFAULT_APP_RATE_LIMIT_RPM, KUBERNETES_APP_CPU_LIMIT,
+        RESOURCE_MEMORY_LIMIT_BYTES, RESOURCE_VOLUME_LIMIT_BYTES, validate_rate_limit_rpm,
     },
     metrics::{
         MAX_METRIC_RESPONSE_POINTS, METRIC_RETENTION_SECONDS, METRIC_SAMPLE_INTERVAL_SECONDS,
@@ -3037,7 +3037,9 @@ async fn provision_kubernetes(
     log_deployment(
         logger,
         "Apply resource limits",
-        "Capping the service at 1 vCPU, 1 GiB RAM, and 10 GiB ephemeral storage.",
+        &format!(
+            "Applying the {APP_SERVICE_VIRTUAL_CPU} virtual allocation ({KUBERNETES_APP_CPU_LIMIT} host CPU), 1 GiB RAM, and 10 GiB ephemeral storage."
+        ),
     )
     .await?;
     let provisioned = cluster_kubernetes::provision_app(
