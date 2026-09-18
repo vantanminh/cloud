@@ -190,7 +190,13 @@ fn stateful_set_manifest(
                 "spec": {
                     "automountServiceAccountToken": false,
                     "securityContext": {
-                        "runAsNonRoot": true,
+                        // The official PostgreSQL image starts its entrypoint
+                        // as root so it can initialize and chown the data
+                        // directory, then drops to the postgres user before
+                        // starting the server. Kubernetes must therefore not
+                        // reject the image at admission time for running as
+                        // root initially.
+                        "runAsNonRoot": false,
                         "seccompProfile": { "type": "RuntimeDefault" },
                     },
                     "containers": [{
@@ -1257,6 +1263,10 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            manifest["spec"]["template"]["spec"]["securityContext"]["runAsNonRoot"],
+            false
         );
         let container = &manifest["spec"]["template"]["spec"]["containers"][0];
         assert_eq!(container["resources"]["requests"]["cpu"], "1m");
