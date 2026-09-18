@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use knotree_api::{
-    app_services, config::Config, database, resources, router, state::AppState,
+    app_services, cluster_kubernetes, config::Config, database, resources, router, state::AppState,
 };
 
 #[tokio::main]
@@ -30,10 +30,13 @@ async fn main() -> Result<()> {
     }
 
     let bind_addr = config.bind_addr;
-    let state = AppState::new(db, config);
+    let state = AppState::new(db, config.clone());
     let metrics_sampler = database::spawn_metrics_sampler(state.clone());
     let storage_guard = database::spawn_storage_guard(state.clone());
     let postgres_provisioning_reconciler = resources::spawn_provisioning_reconciler(state.clone());
+    let app_resource_reconciler = config
+        .uses_kubernetes_workloads()
+        .then(|| cluster_kubernetes::spawn_app_resource_reconciler(config.as_ref().clone()));
     let auto_deployer = app_services::spawn_auto_deployer(state.clone());
     let kong_syncer = app_services::spawn_kong_route_syncer(state.clone());
     let listener = TcpListener::bind(bind_addr).await?;
@@ -45,6 +48,9 @@ async fn main() -> Result<()> {
     metrics_sampler.abort();
     storage_guard.abort();
     postgres_provisioning_reconciler.abort();
+    if let Some(reconciler) = app_resource_reconciler {
+        reconciler.abort();
+    }
     auto_deployer.abort();
     kong_syncer.abort();
     Ok(())

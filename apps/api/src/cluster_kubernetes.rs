@@ -28,6 +28,7 @@ use crate::{
 
 const POSTGRES_PORT: u16 = 5432;
 const FIELD_MANAGER: &str = "knotree-api";
+const APP_RESOURCE_RECONCILE_INTERVAL_SECONDS: u64 = 300;
 
 pub async fn provision(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
     let client = Client::try_default()
@@ -995,6 +996,85 @@ pub async fn provision_app(config: &Config, spec: &AppWorkloadSpec) -> Result<Pr
     })
 }
 
+/// Keep already-running App services on the current virtual CPU policy after
+/// an API rollout. The patch is deliberately limited to container resources;
+/// image, port, environment, and routing remain owned by the deployment flow.
+pub fn spawn_app_resource_reconciler(config: Config) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(
+            APP_RESOURCE_RECONCILE_INTERVAL_SECONDS,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match reconcile_app_resource_requirements(&config).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!(count, "reconciled Kubernetes App service resource limits");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "could not reconcile Kubernetes App service resource limits"
+                    );
+                }
+            }
+        }
+    })
+}
+
+pub async fn reconcile_app_resource_requirements(config: &Config) -> Result<usize> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let namespace = config.database_cluster_namespace.clone();
+    let deployments: Api<DynamicObject> = namespaced_api(
+        client,
+        &namespace,
+        GroupVersionKind::gvk("apps", "v1", "Deployment"),
+    );
+    let list = deployments
+        .list(&ListParams::default().labels("app.knotree.com/component=app-service"))
+        .await
+        .context("could not list Kubernetes App service Deployments")?;
+    let mut reconciled = 0;
+    for deployment in list.items {
+        let Some(name) = deployment.metadata.name.as_deref() else {
+            continue;
+        };
+        deployments
+            .patch(
+                name,
+                &PatchParams::default(),
+                &Patch::Strategic(app_resource_patch(&namespace, name)),
+            )
+            .await
+            .with_context(|| {
+                format!("could not reconcile Kubernetes App service {namespace}/{name}")
+            })?;
+        reconciled += 1;
+    }
+    Ok(reconciled)
+}
+
+fn app_resource_patch(namespace: &str, name: &str) -> Value {
+    json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": name, "namespace": namespace },
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [{
+                        "name": "app",
+                        "resources": kubernetes_app_resource_requirements(),
+                    }],
+                },
+            },
+        },
+    })
+}
+
 pub async fn provision_redis(config: &Config, spec: &ClusterSpec) -> Result<ProvisionedCluster> {
     let client = Client::try_default()
         .await
@@ -1410,6 +1490,28 @@ mod tests {
             service["metadata"]["name"],
             crate::cluster::PROJECT_NETWORK_REDIS_ALIAS
         );
+    }
+
+    #[test]
+    fn app_resource_reconcile_patch_only_changes_the_app_container_resources() {
+        let patch = app_resource_patch("knotree-cloud", "knotree-app-example");
+        assert_eq!(patch["metadata"]["name"], "knotree-app-example");
+        assert_eq!(patch["metadata"]["namespace"], "knotree-cloud");
+        assert_eq!(
+            patch["spec"]["template"]["spec"]["containers"][0]["name"],
+            "app"
+        );
+        assert_eq!(
+            patch["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["cpu"],
+            "0"
+        );
+        assert_eq!(
+            patch["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["cpu"],
+            "250m"
+        );
+        assert!(patch["spec"]["template"]["spec"]["containers"][0]
+            .get("image")
+            .is_none());
     }
 
     #[test]
