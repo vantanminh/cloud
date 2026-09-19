@@ -14,9 +14,6 @@ cd "$ROOT"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NS" delete limitrange --all --ignore-not-found
 kubectl -n "$NS" delete pod --field-selector=status.phase=Pending --ignore-not-found || true
-# Recreate a stuck Postgres pod so it picks up the current resource requests.
-kubectl -n "$NS" delete pod -l app.kubernetes.io/name=knotree-api-pg --ignore-not-found || true
-
 if [ -n "${GHCR_TOKEN:-}" ]; then
   kubectl -n "$NS" create secret docker-registry ghcr-cred \
     --docker-server=ghcr.io \

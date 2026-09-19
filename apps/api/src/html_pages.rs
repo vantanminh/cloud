@@ -170,9 +170,9 @@ pub fn nginx_conf() -> &'static str {
 "#
 }
 
-pub fn inject_analytics(html: &str, collect_origin: &str, site_id: Uuid) -> String {
+pub fn inject_analytics(html: &str, site_id: Uuid) -> String {
     let snippet = format!(
-        r#"<script defer src="{collect_origin}/api/v1/public/html-pages/{site_id}/analytics.js" data-kt-site="{site_id}"></script>"#
+        r#"<script defer src="/api/v1/public/html-pages/{site_id}/analytics.js" data-kt-site="{site_id}"></script>"#
     );
     if html.contains("html-pages/") && html.contains("/analytics.js") {
         return html.to_owned();
@@ -226,11 +226,10 @@ pub fn strip_injected_analytics(html: &str) -> String {
     out
 }
 
-pub fn analytics_javascript(collect_origin: &str, site_id: Uuid) -> String {
+pub fn analytics_javascript(site_id: Uuid) -> String {
     format!(
         r#"(function(){{
 var SITE="{site_id}";
-var ORIGIN="{collect_origin}";
 var sid=localStorage.getItem("kt.sid");
 if(!sid){{sid=Math.random().toString(36).slice(2)+Date.now().toString(36);localStorage.setItem("kt.sid",sid);}}
 var start=Date.now();
@@ -252,9 +251,9 @@ function send(type, extra){{
   try{{
     var body=JSON.stringify(payload(type, extra));
     if(navigator.sendBeacon){{
-      navigator.sendBeacon(ORIGIN+"/api/v1/public/html-pages/"+SITE+"/events", new Blob([body],{{type:"application/json"}}));
+      navigator.sendBeacon(location.origin+"/api/v1/public/html-pages/"+SITE+"/events", new Blob([body],{{type:"application/json"}}));
     }} else {{
-      fetch(ORIGIN+"/api/v1/public/html-pages/"+SITE+"/events",{{method:"POST",headers:{{"content-type":"application/json"}},body:body,keepalive:true,mode:"cors"}});
+      fetch(location.origin+"/api/v1/public/html-pages/"+SITE+"/events",{{method:"POST",headers:{{"content-type":"application/json"}},body:body,keepalive:true,mode:"cors"}});
     }}
   }}catch(e){{}}
 }}
@@ -391,7 +390,6 @@ fn should_skip(path: &str) -> bool {
 
 pub fn files_from_pasted_html(
     html: &str,
-    collect_origin: &str,
     site_id: Uuid,
 ) -> Result<Vec<HtmlFile>, AppError> {
     if html.trim().is_empty() || html.len() > MAX_INDEX_HTML_BYTES {
@@ -402,7 +400,7 @@ pub fn files_from_pasted_html(
         );
         return Err(AppError::validation(fields));
     }
-    let injected = inject_analytics(html, collect_origin, site_id);
+    let injected = inject_analytics(html, site_id);
     Ok(vec![HtmlFile {
         path: "index.html".to_owned(),
         content: injected.into_bytes(),
@@ -449,7 +447,6 @@ pub fn unzip_github_pages(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
 
 pub fn materialize_github_files(
     files: Vec<(String, Vec<u8>)>,
-    collect_origin: &str,
     site_id: Uuid,
 ) -> Result<Vec<HtmlFile>, AppError> {
     let paths = files.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
@@ -476,7 +473,7 @@ pub fn materialize_github_files(
         let mut body = content;
         if clean.ends_with(".html") || clean.ends_with(".htm") {
             if let Ok(html) = String::from_utf8(body.clone()) {
-                body = inject_analytics(&html, collect_origin, site_id).into_bytes();
+                body = inject_analytics(&html, site_id).into_bytes();
             }
         }
         out.push(HtmlFile {
@@ -684,7 +681,7 @@ pub async fn fetch_github_site(
 }
 
 pub fn is_public_html_path(path: &str) -> bool {
-    path.contains("/api/v1/public/html-pages/")
+    path.starts_with("/api/v1/public/html-pages/")
 }
 
 pub async fn public_cors(request: Request<Body>, next: Next) -> Response {
@@ -724,13 +721,13 @@ pub async fn analytics_script(
     AxumPath(app_service_id): AxumPath<Uuid>,
 ) -> Result<Response, AppError> {
     ensure_html_service(&state, app_service_id).await?;
-    let body = analytics_javascript(&collect_origin(&state.config), app_service_id);
+    let body = analytics_javascript(app_service_id);
     Ok((
         [
             (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
             (
                 header::CACHE_CONTROL,
-                "public, max-age=3600, stale-while-revalidate=86400",
+                "no-store",
             ),
         ],
         body,
@@ -1168,16 +1165,18 @@ mod tests {
     fn injects_analytics_into_head() {
         let html = "<html><head><title>Hi</title></head><body>ok</body></html>";
         let id = Uuid::nil();
-        let out = inject_analytics(html, "https://api.example", id);
+        let out = inject_analytics(html, id);
         assert!(out.contains("</script>\n</head>"));
-        assert!(out.contains("/analytics.js"));
+        assert!(out.contains(
+            "/api/v1/public/html-pages/00000000-0000-0000-0000-000000000000/analytics.js"
+        ));
     }
 
     #[test]
     fn editor_strips_injected_analytics_so_saves_do_not_stack_scripts() {
         let html = "<html><head><title>Hi</title></head><body>ok</body></html>";
         let id = Uuid::nil();
-        let injected = inject_analytics(html, "https://api.example", id);
+        let injected = inject_analytics(html, id);
         assert_eq!(strip_injected_analytics(&injected), html);
     }
 
@@ -1192,7 +1191,7 @@ mod tests {
             ("docs/style.css".to_owned(), b"body{}".to_vec()),
             ("docs/js/app.js".to_owned(), b"console.log(1)".to_vec()),
         ];
-        let out = materialize_github_files(files, "https://api.example", Uuid::nil()).unwrap();
+        let out = materialize_github_files(files, Uuid::nil()).unwrap();
         let paths = out.iter().map(|file| file.path.as_str()).collect::<Vec<_>>();
         assert!(paths.contains(&"index.html"));
         assert!(paths.contains(&"style.css"));
@@ -1490,7 +1489,6 @@ mod tests {
                 ("docs/style.css".to_owned(), b"body{color:red}".to_vec()),
                 ("docs/js/app.js".to_owned(), b"console.log(1)".to_vec()),
             ],
-            "https://collect.example",
             service_id,
         )
         .unwrap();

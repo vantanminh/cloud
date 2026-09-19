@@ -28,6 +28,14 @@ spec:
         - name: {{ include "knotree-api.fullname" . }}-web
           port: {{ .Values.web.service.port }}
 {{- end }}
+{{- if .Values.env.appServicePublicDomain }}
+    - match: HostRegexp(`^page-.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`) && PathPrefix(`/api/v1/public/html-pages/`)
+      kind: Rule
+      priority: 50
+      services:
+        - name: {{ include "knotree-api.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}
 {{ if and .Values.env.appServicePublicDomain .Values.appsKong.enabled }}
     - match: HostRegexp(`^page-.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
       kind: Rule

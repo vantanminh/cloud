@@ -754,6 +754,9 @@ pub async fn public_domain_fallback(
     State(state): State<AppState>,
     request: Request<Body>,
 ) -> Response {
+    if html_pages::is_public_html_path(request.uri().path()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     if !is_public_domain_request(&state, &request) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -765,7 +768,9 @@ pub async fn public_domain_router(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    if is_public_domain_request(&state, &request) {
+    if is_public_domain_request(&state, &request)
+        && !html_pages::is_public_html_path(request.uri().path())
+    {
         return public_domain_proxy(State(state), request).await;
     }
     next.run(request).await
@@ -1572,7 +1577,6 @@ pub async fn create_for_user(
     if image_source == IMAGE_SOURCE_HTML {
         html_pages::files_from_pasted_html(
             input.index_html.as_deref().unwrap_or(""),
-            &html_pages::collect_origin(&state.config),
             Uuid::nil(),
         )?;
     }
@@ -1638,7 +1642,6 @@ pub async fn create_for_user(
     if image_source == IMAGE_SOURCE_HTML {
         let files = html_pages::files_from_pasted_html(
             input.index_html.as_deref().unwrap_or(""),
-            &html_pages::collect_origin(&state.config),
             service.id,
         )?;
         html_pages::replace_files(&state.db, service.id, &files)
@@ -1751,7 +1754,6 @@ pub async fn update_html_page(
     }
     let files = html_pages::files_from_pasted_html(
         &input.index_html,
-        &html_pages::collect_origin(&state.config),
         existing.id,
     )?;
     html_pages::replace_files(&state.db, existing.id, &files)
@@ -2541,7 +2543,6 @@ async fn prepare_html_site(
         return Ok(None);
     }
     log_deployment(logger, "HTML site", "Building the static HTML site.").await?;
-    let origin = html_pages::collect_origin(&state.config);
     let files = if row.image_source == IMAGE_SOURCE_HTML_GITHUB {
         let repo = row
             .html_repo
@@ -2565,7 +2566,7 @@ async fn prepare_html_site(
             &format!("Fetched {owner}/{name}@{sha:.7} ({resolved_branch}) and detected the GitHub Pages root."),
         )
         .await?;
-        let files = html_pages::materialize_github_files(raw, &origin, service_id)
+        let files = html_pages::materialize_github_files(raw, service_id)
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         html_pages::replace_files(&state.db, service_id, &files).await?;
         sqlx::query(
