@@ -450,7 +450,7 @@ function DeploymentsPane({
                       (node.id === "postgres"
                         ? "The cluster has no schedulable capacity."
                         : "Deployment failed"))
-                    : isHtmlPage(appService)
+                    : appService && isHtmlPage(appService)
                       ? "Publish the HTML site to start this page"
                       : "Deploy an image to start this service"}
               </div>
