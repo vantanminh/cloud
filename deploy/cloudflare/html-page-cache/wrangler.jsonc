@@ -1,0 +1,11 @@
+{
+  "name": "knotree-html-page-cache",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-19",
+  "routes": [
+    {
+      "pattern": "*.knotree.org/*",
+      "zone_name": "knotree.org"
+    }
+  ]
+}

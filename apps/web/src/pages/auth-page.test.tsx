@@ -379,7 +379,13 @@ describe("AuthPage", () => {
     ).toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("button", { name: "App service" }))
+    await user.click(
+      screen.getByRole("button", { name: "App service / HTML page" })
+    )
+    await user.selectOptions(
+      await screen.findByLabelText("Service type"),
+      "docker"
+    )
     await user.type(
       await screen.findByLabelText("Docker image"),
       "nginx:alpine"

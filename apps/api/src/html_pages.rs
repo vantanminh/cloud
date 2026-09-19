@@ -1097,6 +1097,41 @@ pub async fn github_push_webhook(
 mod tests {
     use super::*;
 
+    async fn wait_app_service_status(state: &crate::state::AppState, id: Uuid, expected: &str) {
+        for _ in 0..80 {
+            let row = sqlx::query("SELECT status, error_message FROM project_app_services WHERE id = $1")
+                .bind(id)
+                .fetch_one(&state.db)
+                .await
+                .expect("app service status");
+            let status: String = row.get("status");
+            if status == expected {
+                return;
+            }
+            if status == "error" {
+                let error: Option<String> = row.get("error_message");
+                panic!("app service entered error while waiting for {expected}: {error:?}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        panic!("timed out waiting for app service status {expected}");
+    }
+
+    async fn wait_http_body_contains(port: u16, needle: &str) -> Option<String> {
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if let Ok(response) = reqwest::get(format!("http://127.0.0.1:{port}/")).await {
+                if response.status().is_success() {
+                    let body = response.text().await.unwrap_or_default();
+                    if body.contains(needle) {
+                        return Some(body);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn prefixes_unique_page_domains() {
         assert_eq!(page_subdomain("docs").unwrap(), "page-docs");
@@ -1307,8 +1342,12 @@ mod tests {
 
         let Json(summary) = analytics_summary(
             State(state.clone()),
-            headers,
-            AxumPath((seed.workspace_slug, seed.project_slug, created.id)),
+            headers.clone(),
+            AxumPath((
+                seed.workspace_slug.clone(),
+                seed.project_slug.clone(),
+                created.id,
+            )),
         )
         .await
         .expect("analytics summary");
@@ -1342,28 +1381,15 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
             let port = published.expect("HTML page nginx container should publish port 8080");
-            let mut body = String::new();
-            for _ in 0..20 {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                if let Ok(response) =
-                    reqwest::get(format!("http://127.0.0.1:{port}/")).await
-                {
-                    if response.status().is_success() {
-                        body = response.text().await.unwrap_or_default();
-                        break;
-                    }
-                }
-            }
+            let body = wait_http_body_contains(port, "hello")
+                .await
+                .expect("initial HTML page body");
             let runtime = crate::cluster::collect_app_service_runtime_metrics(
                 &state.config,
                 &container,
             )
             .await
             .expect("HTML nginx metrics");
-            let _ = tokio::process::Command::new("docker")
-                .args(["rm", "-f", &container])
-                .status()
-                .await;
             assert!(body.contains("hello"), "nginx body was {body}");
             assert!(
                 body.contains("/analytics.js"),
@@ -1373,6 +1399,73 @@ mod tests {
                 runtime.memory_used_bytes.is_some() || runtime.cpu_percent.is_some(),
                 "HTML pages should expose the same container metrics as app services"
             );
+
+            wait_app_service_status(&state, created.id, "ready").await;
+            let _ = crate::app_services::update_html_page(
+                State(state.clone()),
+                headers,
+                AxumPath((
+                    seed.workspace_slug.clone(),
+                    seed.project_slug.clone(),
+                    created.id,
+                )),
+                Json(UpdateHtmlPageRequest {
+                    index_html:
+                        "<html><head><title>Hi</title></head><body>updated-v2</body></html>"
+                            .to_owned(),
+                }),
+            )
+            .await
+            .expect("edit and redeploy pasted HTML");
+            wait_app_service_status(&state, created.id, "ready").await;
+            let mut published_after = None;
+            for _ in 0..60 {
+                let output = tokio::process::Command::new("docker")
+                    .args(["port", &container, "8080/tcp"])
+                    .output()
+                    .await
+                    .expect("docker port after update");
+                if output.status.success() {
+                    let mapping = String::from_utf8_lossy(&output.stdout);
+                    published_after = mapping
+                        .split(':')
+                        .next_back()
+                        .and_then(|value| value.trim().parse::<u16>().ok());
+                    if published_after.is_some() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let port_after =
+                published_after.expect("redeployed HTML nginx should publish port 8080");
+            let updated = wait_http_body_contains(port_after, "updated-v2")
+                .await
+                .unwrap_or_else(|| {
+                    panic!("redeployed HTML page body did not contain updated-v2")
+                });
+            assert!(
+                updated.contains("/analytics.js"),
+                "redeployed HTML should keep the injected analytics script"
+            );
+            let Json(index_after) = get_index_html(
+                State(state.clone()),
+                crate::test_support::session_headers(&state, seed.user_id).await,
+                AxumPath((seed.workspace_slug, seed.project_slug, created.id)),
+            )
+            .await
+            .expect("load edited index");
+            let editor_html = index_after["indexHtml"].as_str().unwrap();
+            assert!(editor_html.contains("updated-v2"));
+            assert!(
+                !editor_html.contains("/analytics.js"),
+                "editor HTML should still omit the injected collector"
+            );
+
+            let _ = tokio::process::Command::new("docker")
+                .args(["rm", "-f", &container])
+                .status()
+                .await;
         }
     }
 

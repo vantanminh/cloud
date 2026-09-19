@@ -983,4 +983,77 @@ describe("ResourceWorkspace settings pane", () => {
       "html-id"
     )
   })
+
+  it("edits pasted HTML from settings and redeploys", async () => {
+    const user = userEvent.setup()
+    const onToast = vi.fn()
+    mocks.getHtmlPageIndex.mockResolvedValue({
+      indexHtml: "<html><body>hello</body></html>",
+    })
+    mocks.updateHtmlPage.mockResolvedValue({
+      id: "html-id",
+      name: "Docs",
+      resourceType: "app",
+      status: "provisioning",
+      image: "nginxinc/nginx-unprivileged:1.27-alpine",
+      imageSource: "html",
+      appPort: 8080,
+      host: "localhost",
+      port: 8080,
+      serviceUrl: "https://page-docs.knotree.org",
+      publicDomain: "page-docs.knotree.org",
+      containerName: "knotree-app-html",
+    })
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "html-page",
+          title: "Docs",
+          type: "HTML page",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "html-id",
+            name: "Docs",
+            resourceType: "app",
+            status: "ready",
+            image: "nginxinc/nginx-unprivileged:1.27-alpine",
+            imageSource: "html",
+            appPort: 8080,
+            host: "localhost",
+            port: 8080,
+            serviceUrl: "https://page-docs.knotree.org",
+            publicDomain: "page-docs.knotree.org",
+            containerName: "knotree-app-html",
+          },
+        }}
+        environment="production"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    const editor = await within(dialog).findByLabelText("index.html")
+    await user.clear(editor)
+    await user.type(editor, "<html><body>updated-v2</body></html>")
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save and deploy" })
+    )
+    await waitFor(() => {
+      expect(mocks.updateHtmlPage).toHaveBeenCalledWith(
+        "mimo-i-tech",
+        "test-2",
+        "html-id",
+        { indexHtml: "<html><body>updated-v2</body></html>" }
+      )
+    })
+    expect(onToast).toHaveBeenCalledWith("HTML page redeploy started.")
+  })
 })

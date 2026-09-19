@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knotree-html-cache-probe
+  namespace: knotree-cloud
+  labels:
+    app.kubernetes.io/name: knotree-html-cache-probe
+    app.kubernetes.io/part-of: knotree-html-pages
+data:
+  index.html: |
+    <!doctype html>
+    <html><head><title>cache probe</title></head>
+    <body>knotree-html-cache-probe</body></html>
+  style.css: |
+    body{color:navy}
+  default.conf: |
+    server {
+      listen 8080;
+      server_tokens off;
+      root /usr/share/nginx/html;
+      location = / {
+        add_header Cache-Control "public, max-age=60, s-maxage=60, must-revalidate" always;
+        add_header CloudFlare-CDN-Cache-Control "max-age=60" always;
+        try_files /index.html =404;
+      }
+      location ~* \.(css|js|png|jpg|jpeg|gif|svg|ico|woff2)$ {
+        add_header Cache-Control "public, max-age=604800, s-maxage=604800" always;
+        add_header CloudFlare-CDN-Cache-Control "max-age=604800" always;
+        try_files $uri =404;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knotree-html-cache-probe
+  namespace: knotree-cloud
+  labels:
+    app.kubernetes.io/name: knotree-html-cache-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: knotree-html-cache-probe
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: knotree-html-cache-probe
+    spec:
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+          resources:
+            requests:
+              cpu: 1m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: html
+          configMap:
+            name: knotree-html-cache-probe
+            items:
+              - key: index.html
+                path: index.html
+              - key: style.css
+                path: style.css
+        - name: conf
+          configMap:
+            name: knotree-html-cache-probe
+            items:
+              - key: default.conf
+                path: default.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knotree-html-cache-probe
+  namespace: knotree-cloud
+spec:
+  selector:
+    app.kubernetes.io/name: knotree-html-cache-probe
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: knotree-html-cache-probe
+  namespace: knotree-cloud
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`page-cfcache.knotree.org`)
+      kind: Rule
+      priority: 80
+      services:
+        - name: knotree-html-cache-probe
+          port: 8080
