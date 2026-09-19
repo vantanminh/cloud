@@ -1,3 +1,5 @@
+{{- $htmlSiteUID := .Values.podSecurityContext.runAsUser | default 10001 -}}
+{{- $htmlSiteGID := .Values.podSecurityContext.runAsGroup | default $htmlSiteUID -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,6 +36,35 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
+        - name: prepare-html-sites
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+          image: {{ include "knotree-api.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/bin/chown
+          args:
+            - {{ printf "%d:%d" (int $htmlSiteUID) (int $htmlSiteGID) | quote }}
+            - {{ .Values.env.htmlSiteDataDir | quote }}
+          resources:
+            requests:
+              cpu: 1m
+              memory: 8Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          volumeMounts:
+            - name: html-sites
+              mountPath: {{ .Values.env.htmlSiteDataDir | quote }}
         - name: migrate
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
