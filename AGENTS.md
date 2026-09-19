@@ -5,7 +5,7 @@ mutation rules, and tool-only durable writes. `harness init` installs that
 skill.
 
 <!-- HARNESS:BEGIN -->
-<!-- harness-version: 0.27.0 -->
+<!-- harness-version: 0.29.0 -->
 <!-- harness-project-id: c58fe6dcea8a26c4dee8c4fbf5ebc23f -->
 ## Harness
 
