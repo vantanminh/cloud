@@ -57,10 +57,10 @@ helm upgrade --install "$RELEASE" "$ROOT/deploy/helm/knotree-api" \
   --values "$ROOT/deploy/helm/knotree-api/values-edge.yaml" \
   --set image.repository="${API_IMAGE}" \
   --set image.tag="${SHA}" \
-  --set image.pullPolicy=Always \
+  --set image.pullPolicy=IfNotPresent \
   --set web.image.repository="${WEB_IMAGE}" \
   --set web.image.tag="${SHA}" \
-  --set web.image.pullPolicy=Always \
+  --set web.image.pullPolicy=IfNotPresent \
   --set env.appServiceProvisioningEnabled=true \
   --set env.databaseProvisioningEnabled=true \
   --set env.databaseClusterProvider=kubernetes \

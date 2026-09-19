@@ -110,20 +110,12 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Validate persistent GHCR pull credential
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-        run: |
-          if [ -z "$GHCR_TOKEN" ]; then
-            echo "::error::Set repository secret GHCR_PULL_TOKEN to a long-lived token with read:packages access."
-            exit 1
-          fi
       - name: SSH deploy (pull CI images only)
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
@@ -135,7 +127,7 @@ jobs:
              git fetch origin
              git checkout -B main ${{ github.sha }}
              chmod +x deploy/k3s-pull.sh
-             GHCR_TOKEN=\"$GHCR_TOKEN\" GHCR_USERNAME='${{ github.repository_owner }}' \
+             GHCR_TOKEN=\"$GHCR_TOKEN\" GHCR_USERNAME='${{ github.actor }}' \
                KNOTREE_PROBE_DIR=/tmp/knotree-probes \
                ./deploy/k3s-pull.sh ${{ github.sha }} ${API_IMAGE} ${WEB_IMAGE}"
           mkdir -p probes
