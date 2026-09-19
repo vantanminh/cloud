@@ -6,6 +6,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod github;
+pub mod html_pages;
 pub mod kong;
 pub mod limits;
 pub mod mcp;
@@ -106,6 +107,22 @@ pub fn router(state: AppState) -> Router {
             patch(app_services::update_public_access),
         )
         .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/html",
+            get(html_pages::get_index_html).patch(app_services::update_html_page),
+        )
+        .route(
+            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/html-analytics",
+            get(html_pages::analytics_summary),
+        )
+        .route(
+            "/public/html-pages/{app_service_id}/analytics.js",
+            get(html_pages::analytics_script),
+        )
+        .route(
+            "/public/html-pages/{app_service_id}/events",
+            post(html_pages::collect_event),
+        )
+        .route(
             "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}",
             patch(app_services::update),
         )
@@ -167,6 +184,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             app_services::public_domain_router,
         ))
+        .layer(middleware::from_fn(html_pages::public_cors))
         .layer(TraceLayer::new_for_http())
         .layer(state.config.cors_layer())
         .with_state(state)

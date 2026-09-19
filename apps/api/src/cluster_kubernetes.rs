@@ -264,6 +264,7 @@ pub struct AppWorkloadSpec {
     pub image: String,
     pub app_port: u16,
     pub env: Vec<(String, String)>,
+    pub html_site_host_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -827,6 +828,24 @@ pub fn app_deployment_manifest(
     });
     if let Some(secret) = image_pull_secret.filter(|value| !value.is_empty()) {
         pod_spec["imagePullSecrets"] = json!([{ "name": secret }]);
+    }
+    if let Some(host_path) = spec.html_site_host_path.as_deref() {
+        pod_spec["securityContext"]["runAsUser"] = json!(101);
+        pod_spec["securityContext"]["runAsGroup"] = json!(101);
+        pod_spec["containers"][0]["volumeMounts"] = json!([
+            { "name": "html", "mountPath": "/usr/share/nginx/html", "readOnly": true },
+            { "name": "nginx-conf", "mountPath": "/etc/nginx/conf.d/default.conf", "subPath": "default.conf", "readOnly": true }
+        ]);
+        pod_spec["volumes"] = json!([
+            {
+                "name": "html",
+                "hostPath": { "path": format!("{host_path}/html"), "type": "DirectoryOrCreate" }
+            },
+            {
+                "name": "nginx-conf",
+                "hostPath": { "path": host_path, "type": "DirectoryOrCreate" }
+            }
+        ]);
     }
     json!({
         "apiVersion": "apps/v1",
@@ -1422,6 +1441,7 @@ mod tests {
                     "DATABASE_URL".to_owned(),
                     "postgres://postgres:5432/db".to_owned(),
                 )],
+                html_site_host_path: None,
             },
             "knotree-cloud",
             None,

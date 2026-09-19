@@ -51,6 +51,7 @@ use crate::{
         UpdateAppServiceDatabaseRequest, UpdateAppServicePublicAccessRequest,
         UpdateAppServiceRequest,
     },
+    html_pages::{self, IMAGE_SOURCE_HTML, IMAGE_SOURCE_HTML_GITHUB},
     projects,
     public_access::{self, PublicAccessState, public_hostname, should_proxy_public_host},
     redis_resources, security,
@@ -118,6 +119,9 @@ struct AppServiceRow {
     deployed_image_digest: Option<String>,
     auto_deploy_checked_at: Option<OffsetDateTime>,
     auto_deploy_error: Option<String>,
+    html_repo: Option<String>,
+    html_branch: Option<String>,
+    html_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -140,8 +144,12 @@ struct AppServiceLogsTarget {
 struct AutoDeployCandidate {
     id: Uuid,
     image: String,
+    image_source: String,
     container_name: Option<String>,
     github_connection_user_id: Option<Uuid>,
+    html_repo: Option<String>,
+    html_branch: Option<String>,
+    html_sha: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -179,7 +187,7 @@ pub struct AppServiceMetricsQuery {
     pub range: Option<String>,
 }
 
-const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, public_access_enabled, rate_limit_rpm, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error";
+const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, public_access_enabled, rate_limit_rpm, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error, html_repo, html_branch, html_sha";
 const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1149,10 +1157,13 @@ pub async fn update_auto_deploy(
         message: "The app service could not be found.",
     })?;
 
-    if input.enabled && existing.image_source != IMAGE_SOURCE_GITHUB {
+    if input.enabled
+        && existing.image_source != IMAGE_SOURCE_GITHUB
+        && existing.image_source != IMAGE_SOURCE_HTML_GITHUB
+    {
         return Err(AppError::BadRequest {
             code: "AUTO_DEPLOY_GITHUB_ONLY",
-            message: "Automatic image deploys are available for GitHub Container Registry images only.",
+            message: "Automatic deploys are available for GitHub images and HTML repositories.",
         });
     }
     if input.enabled && existing.status != STATUS_READY {
@@ -1511,12 +1522,54 @@ pub async fn create_for_user(
     }
 
     let name = validate_service_name(input.name.as_deref().unwrap_or("App service"))?;
-    let image = validate_image(&input.image)?;
+    let image_source_raw = input.image_source.trim().to_ascii_lowercase();
+    let is_html = html_pages::is_html_source(&image_source_raw);
+    let image = if is_html {
+        state.config.html_nginx_image.clone()
+    } else {
+        validate_image(input.image.as_deref().unwrap_or(""))?
+    };
     let image_source = validate_image_source(&input.image_source, &image)?;
-    let app_port = validate_app_port(input.app_port)?;
-    let auto_deploy_enabled =
-        image_source == IMAGE_SOURCE_GITHUB && input.auto_deploy.unwrap_or(true);
-    let github_connection_user_id = (image_source == IMAGE_SOURCE_GITHUB).then_some(user_id);
+    let app_port = if is_html {
+        html_pages::HTML_NGINX_PORT
+    } else {
+        validate_app_port(input.app_port)?
+    };
+    let auto_deploy_enabled = match image_source.as_str() {
+        IMAGE_SOURCE_GITHUB => input.auto_deploy.unwrap_or(true),
+        IMAGE_SOURCE_HTML_GITHUB => input.auto_deploy.unwrap_or(true),
+        _ => false,
+    };
+    let github_connection_user_id =
+        (image_source == IMAGE_SOURCE_GITHUB || image_source == IMAGE_SOURCE_HTML_GITHUB)
+            .then_some(user_id);
+    let public_subdomain = if is_html {
+        Some(html_pages::page_subdomain(
+            input.page_slug.as_deref().unwrap_or(""),
+        )?)
+    } else {
+        None
+    };
+    let html_repo = if image_source == IMAGE_SOURCE_HTML_GITHUB {
+        let (owner, repo) =
+            html_pages::parse_github_repo(input.github_repo.as_deref().unwrap_or(""))?;
+        Some(format!("{owner}/{repo}"))
+    } else {
+        None
+    };
+    let html_branch = input
+        .github_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    if image_source == IMAGE_SOURCE_HTML {
+        html_pages::files_from_pasted_html(
+            input.index_html.as_deref().unwrap_or(""),
+            &html_pages::collect_origin(&state.config),
+            Uuid::nil(),
+        )?;
+    }
     let service = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -1536,9 +1589,25 @@ pub async fn create_for_user(
                 message: "A project can have up to 6 app services.",
             });
         }
+        if let Some(subdomain) = public_subdomain.as_deref() {
+            let taken = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM project_app_services WHERE public_subdomain = $1)",
+            )
+            .bind(subdomain)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if taken {
+                let mut fields = BTreeMap::new();
+                fields.insert(
+                    "pageSlug".to_owned(),
+                    "That page- domain is already in use. Choose another suffix.".to_owned(),
+                );
+                return Err(AppError::validation(fields));
+            }
+        }
 
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, public_access_enabled, rate_limit_rpm, status, auto_deploy_enabled, github_connection_user_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING {APP_SERVICE_COLUMNS}"
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, public_access_enabled, rate_limit_rpm, status, auto_deploy_enabled, github_connection_user_id, html_repo, html_branch) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -1546,19 +1615,34 @@ pub async fn create_for_user(
         .bind(&image)
         .bind(&image_source)
         .bind(i32::from(app_port))
-        .bind(Option::<String>::None)
-        .bind(false)
+        .bind(&public_subdomain)
+        .bind(is_html)
         .bind(i32::try_from(state.config.default_rate_limit_rpm).unwrap_or(60))
         .bind(STATUS_PROVISIONING)
         .bind(auto_deploy_enabled)
         .bind(github_connection_user_id)
+        .bind(&html_repo)
+        .bind(&html_branch)
         .fetch_one(&mut *transaction)
         .await?;
         transaction.commit().await?;
         service
     };
 
-    let github_credentials = if image_source == IMAGE_SOURCE_GITHUB {
+    if image_source == IMAGE_SOURCE_HTML {
+        let files = html_pages::files_from_pasted_html(
+            input.index_html.as_deref().unwrap_or(""),
+            &html_pages::collect_origin(&state.config),
+            service.id,
+        )?;
+        html_pages::replace_files(&state.db, service.id, &files)
+            .await
+            .map_err(AppError::internal)?;
+    }
+
+    let github_credentials = if image_source == IMAGE_SOURCE_GITHUB
+        || image_source == IMAGE_SOURCE_HTML_GITHUB
+    {
         match github::docker_credentials(state, user_id).await? {
             Some(credentials) => Some(credentials),
             None => {
@@ -1622,6 +1706,105 @@ pub async fn create_for_user(
     Ok(response)
 }
 
+pub async fn update_html_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Json(input): Json<html_pages::UpdateHtmlPageRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+    let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2"
+    ))
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+    if existing.image_source != IMAGE_SOURCE_HTML {
+        return Err(AppError::BadRequest {
+            code: "HTML_PASTE_ONLY",
+            message: "Only pasted HTML pages can be edited in the dashboard.",
+        });
+    }
+    if existing.status == STATUS_PROVISIONING {
+        return Err(AppError::Conflict {
+            code: "APP_SERVICE_PROVISIONING",
+            message: "This HTML page is already being deployed.",
+        });
+    }
+    let files = html_pages::files_from_pasted_html(
+        &input.index_html,
+        &html_pages::collect_origin(&state.config),
+        existing.id,
+    )?;
+    html_pages::replace_files(&state.db, existing.id, &files)
+        .await
+        .map_err(AppError::internal)?;
+    html_pages::write_site_to_disk(&state.config.html_site_data_dir, existing.id, &files)
+        .await
+        .map_err(AppError::internal)?;
+
+    let deployment_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO app_service_deployments (id, app_service_id, status, current_step, logs) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(deployment_id)
+    .bind(existing.id)
+    .bind(STATUS_PROVISIONING)
+    .bind("Queued")
+    .bind("HTML update queued.")
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE project_app_services SET status = $1, error_message = NULL, updated_at = now() WHERE id = $2",
+    )
+    .bind(STATUS_PROVISIONING)
+    .bind(existing.id)
+    .execute(&state.db)
+    .await?;
+
+    let github_credentials = None;
+    let image = existing.image.clone();
+    let app_port = u16::try_from(existing.app_port).unwrap_or(html_pages::HTML_NGINX_PORT);
+    let service_id = existing.id;
+    let response = app_service_response(
+        &existing,
+        &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
+        database_resource_by_id(&state, project_id, existing.database_resource_id)
+            .await?
+            .as_ref(),
+        latest_deployment(&state.db, existing.id).await?,
+    )?;
+    let deployment_state = state.clone();
+    tokio::spawn(async move {
+        run_app_service_deployment(
+            deployment_state,
+            deployment_id,
+            service_id,
+            project_id,
+            image,
+            app_port,
+            github_credentials,
+            None,
+            None,
+            false,
+            false,
+        )
+        .await;
+    });
+    Ok(Json(response))
+}
+
 pub async fn update(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1640,9 +1823,7 @@ pub async fn update(
         });
     }
 
-    let app_port = validate_app_port(Some(input.app_port))?;
-
-    let (service, database_resource_id, previous_container_name) = {
+    let (service, database_resource_id, previous_container_name, app_port) = {
         let mut transaction = state.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(advisory_lock_key(project_id))
@@ -1660,6 +1841,17 @@ pub async fn update(
             code: "APP_SERVICE_NOT_FOUND",
             message: "Deploy an app service before changing its container port.",
         })?;
+
+        if html_pages::is_html_source(&existing.image_source) {
+            return Err(AppError::BadRequest {
+                code: "HTML_PAGE_PORT_LOCKED",
+                message: "HTML pages always listen on the static nginx port.",
+            });
+        }
+
+        let app_port = validate_app_port(input.app_port.or(Some(
+            u32::try_from(existing.app_port).unwrap_or(u32::from(DEFAULT_APP_PORT)),
+        )))?;
 
         if existing.status == STATUS_PROVISIONING {
             return Err(AppError::Conflict {
@@ -1696,6 +1888,7 @@ pub async fn update(
             service,
             existing.database_resource_id,
             existing.container_name,
+            app_port,
         )
     };
 
@@ -2000,6 +2193,9 @@ fn validate_image(value: &str) -> Result<String, AppError> {
 
 fn validate_image_source(source: &str, image: &str) -> Result<String, AppError> {
     let normalized = source.trim().to_ascii_lowercase();
+    if normalized == IMAGE_SOURCE_HTML || normalized == IMAGE_SOURCE_HTML_GITHUB {
+        return Ok(normalized);
+    }
     if normalized == IMAGE_SOURCE_GITHUB
         && !image
             .get(.."ghcr.io/".len())
@@ -2016,7 +2212,7 @@ fn validate_image_source(source: &str, image: &str) -> Result<String, AppError> 
         let mut fields = BTreeMap::new();
         fields.insert(
             "imageSource".to_owned(),
-            "Choose a public image or a private GitHub image.".to_owned(),
+            "Choose a public image, a private GitHub image, or an HTML page.".to_owned(),
         );
         return Err(AppError::validation(fields));
     }
@@ -2100,6 +2296,9 @@ fn app_service_response(
             .auto_deploy_checked_at
             .and_then(|value| value.format(&Rfc3339).ok()),
         auto_deploy_error: service.auto_deploy_error.clone(),
+        html_repo: service.html_repo.clone(),
+        html_branch: service.html_branch.clone(),
+        html_sha: service.html_sha.clone(),
         database_connection: service
             .database_resource_id
             .and_then(|resource_id| database.filter(|database| database.id == resource_id))
@@ -2223,6 +2422,8 @@ async fn run_app_service_deployment(
         logger
             .append("Start", "Deployment worker started.")
             .await?;
+        let html_sha = prepare_html_site(&state, service_id, github_credentials.as_ref(), Some(&logger))
+            .await?;
         let provisioned = if state.config.uses_kubernetes_workloads() {
             provision_kubernetes(
                 &state,
@@ -2250,7 +2451,7 @@ async fn run_app_service_deployment(
             .await?
         };
         sqlx::query(
-            "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = $7, error_message = NULL, auto_deploy_error = NULL, auto_deploy_checked_at = CASE WHEN $8 THEN now() ELSE auto_deploy_checked_at END, updated_at = now() WHERE id = $9",
+            "UPDATE project_app_services SET status = $1, host = $2, port = $3, app_port = $4, container_name = $5, database_resource_id = $6, deployed_image_digest = COALESCE($7, deployed_image_digest), html_sha = COALESCE($10, html_sha), error_message = NULL, auto_deploy_error = NULL, auto_deploy_checked_at = CASE WHEN $8 THEN now() ELSE auto_deploy_checked_at END, updated_at = now() WHERE id = $9",
         )
         .bind(STATUS_READY)
         .bind(&provisioned.host)
@@ -2261,6 +2462,7 @@ async fn run_app_service_deployment(
         .bind(&provisioned.image_digest)
         .bind(automatic)
         .bind(service_id)
+        .bind(&html_sha)
         .execute(&state.db)
         .await?;
         logger
@@ -2313,6 +2515,73 @@ async fn run_app_service_deployment(
 const AUTO_DEPLOY_CHECK_ERROR_MESSAGE: &str =
     "Automatic image update check failed. Verify the GitHub connection and image tag.";
 
+async fn prepare_html_site(
+    state: &AppState,
+    service_id: Uuid,
+    github_credentials: Option<&GithubDockerCredentials>,
+    logger: Option<&DeploymentLogger>,
+) -> Result<Option<String>> {
+    let row = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1"
+    ))
+    .bind(service_id)
+    .fetch_one(&state.db)
+    .await?;
+    if !html_pages::is_html_source(&row.image_source) {
+        return Ok(None);
+    }
+    log_deployment(logger, "HTML site", "Building the static HTML site.").await?;
+    let origin = html_pages::collect_origin(&state.config);
+    let files = if row.image_source == IMAGE_SOURCE_HTML_GITHUB {
+        let repo = row
+            .html_repo
+            .as_deref()
+            .context("HTML GitHub page is missing a repository")?;
+        let (owner, name) = html_pages::parse_github_repo(repo)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        let token = github_credentials
+            .map(|credentials| credentials.access_token.as_str())
+            .context("Connect GitHub before deploying an HTML repository")?;
+        let (sha, raw) = html_pages::fetch_github_site(
+            token,
+            &owner,
+            &name,
+            row.html_branch.as_deref(),
+        )
+        .await?;
+        log_deployment(
+            logger,
+            "HTML site",
+            &format!("Fetched {owner}/{name}@{sha:.7} and detected the GitHub Pages root."),
+        )
+        .await?;
+        let files = html_pages::materialize_github_files(raw, &origin, service_id)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        html_pages::replace_files(&state.db, service_id, &files).await?;
+        sqlx::query("UPDATE project_app_services SET html_sha = $1, updated_at = now() WHERE id = $2")
+            .bind(&sha)
+            .bind(service_id)
+            .execute(&state.db)
+            .await?;
+        html_pages::write_site_to_disk(&state.config.html_site_data_dir, service_id, &files)
+            .await?;
+        return Ok(Some(sha));
+    } else {
+        html_pages::load_files(&state.db, service_id).await?
+    };
+    if files.is_empty() {
+        bail!("the HTML page has no files to publish");
+    }
+    html_pages::write_site_to_disk(&state.config.html_site_data_dir, service_id, &files).await?;
+    log_deployment(
+        logger,
+        "HTML site",
+        "Wrote the static site and Cloudflare cache headers for HTML and assets.",
+    )
+    .await?;
+    Ok(row.html_sha)
+}
+
 pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(AUTO_DEPLOY_INTERVAL_SECONDS));
@@ -2329,14 +2598,15 @@ pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
 
 async fn poll_auto_deployments(state: &AppState) -> std::result::Result<(), sqlx::Error> {
     let candidates = sqlx::query_as::<_, AutoDeployCandidate>(
-        "SELECT id, image, container_name, github_connection_user_id
+        "SELECT id, image, image_source, container_name, github_connection_user_id, html_repo, html_branch, html_sha
          FROM project_app_services
          WHERE auto_deploy_enabled = TRUE
-           AND image_source = $1
-           AND status = $2
+           AND image_source IN ($1, $2)
+           AND status = $3
          ORDER BY auto_deploy_checked_at NULLS FIRST, id ASC",
     )
     .bind(IMAGE_SOURCE_GITHUB)
+    .bind(IMAGE_SOURCE_HTML_GITHUB)
     .bind(STATUS_READY)
     .fetch_all(&state.db)
     .await?;
@@ -2366,6 +2636,9 @@ async fn check_auto_deploy_candidate(
     state: &AppState,
     candidate: AutoDeployCandidate,
 ) -> Result<()> {
+    if candidate.image_source == IMAGE_SOURCE_HTML_GITHUB {
+        return check_html_repo_auto_deploy(state, candidate).await;
+    }
     let user_id = candidate
         .github_connection_user_id
         .context("the automatic deploy has no GitHub connection owner")?;
@@ -2396,6 +2669,66 @@ async fn check_auto_deploy_candidate(
 
     if let Some(queued) =
         queue_auto_deployment(state, candidate.id, Some(&baseline_digest), &pulled_digest).await?
+    {
+        let credentials = Some(credentials);
+        let state = state.clone();
+        tokio::spawn(async move {
+            run_app_service_deployment(
+                state,
+                queued.deployment_id,
+                queued.service_id,
+                queued.project_id,
+                queued.image,
+                queued.app_port,
+                credentials,
+                queued.database,
+                queued.database_resource_id,
+                false,
+                true,
+            )
+            .await;
+        });
+    }
+    Ok(())
+}
+
+async fn check_html_repo_auto_deploy(
+    state: &AppState,
+    candidate: AutoDeployCandidate,
+) -> Result<()> {
+    let user_id = candidate
+        .github_connection_user_id
+        .context("the automatic deploy has no GitHub connection owner")?;
+    let credentials = github::docker_credentials(state, user_id)
+        .await
+        .map_err(|error| anyhow::anyhow!("could not load GitHub credentials: {error:?}"))?
+        .context("the GitHub connection is no longer available")?;
+    let repo = candidate
+        .html_repo
+        .as_deref()
+        .context("HTML GitHub page is missing a repository")?;
+    let (owner, name) = html_pages::parse_github_repo(repo)
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let sha = html_pages::fetch_github_commit_sha(
+        &credentials.access_token,
+        &owner,
+        &name,
+        candidate.html_branch.as_deref(),
+    )
+    .await?;
+    if candidate.html_sha.as_deref() == Some(sha.as_str()) {
+        record_auto_deploy_check(state, candidate.id, &sha).await?;
+        sqlx::query(
+            "UPDATE project_app_services SET html_sha = $1, auto_deploy_checked_at = now(), auto_deploy_error = NULL, updated_at = now() WHERE id = $2",
+        )
+        .bind(&sha)
+        .bind(candidate.id)
+        .execute(&state.db)
+        .await?;
+        return Ok(());
+    }
+    if let Some(queued) =
+        queue_auto_deployment(state, candidate.id, candidate.html_sha.as_deref(), &sha).await?
     {
         let credentials = Some(credentials);
         let state = state.clone();
@@ -2472,13 +2805,18 @@ async fn queue_auto_deployment(
 
     if service.status != STATUS_READY
         || !service.auto_deploy_enabled
-        || service.image_source != IMAGE_SOURCE_GITHUB
+        || (service.image_source != IMAGE_SOURCE_GITHUB
+            && service.image_source != IMAGE_SOURCE_HTML_GITHUB)
     {
         transaction.commit().await?;
         return Ok(None);
     }
 
-    let current_digest = expected_digest.or(service.deployed_image_digest.as_deref());
+    let current_digest = if service.image_source == IMAGE_SOURCE_HTML_GITHUB {
+        expected_digest.or(service.html_sha.as_deref())
+    } else {
+        expected_digest.or(service.deployed_image_digest.as_deref())
+    };
     if current_digest == Some(pulled_digest) {
         sqlx::query(
             "UPDATE project_app_services
@@ -2913,7 +3251,13 @@ async fn provision_docker(
     }
 
     let image_digest = docker_image_digest(state, image, logger).await?;
-    let declared_volumes = docker_image_declared_volumes(state, image, logger).await?;
+    let html_root = html_pages::site_dir(&state.config.html_site_data_dir, service_id);
+    let is_html_site = html_root.join("html").join("index.html").exists();
+    let declared_volumes = if is_html_site {
+        Vec::new()
+    } else {
+        docker_image_declared_volumes(state, image, logger).await?
+    };
     if !declared_volumes.is_empty() {
         bail!(
             "Docker app images with declared volumes are not supported because their storage cannot be capped at 10 GiB"
@@ -2980,6 +3324,18 @@ async fn provision_docker(
     for variable in database_environment {
         docker_args.push("--env".to_owned());
         docker_args.push(variable);
+    }
+    if is_html_site {
+        docker_args.push("--volume".to_owned());
+        docker_args.push(format!(
+            "{}:/usr/share/nginx/html:ro",
+            html_root.join("html").display()
+        ));
+        docker_args.push("--volume".to_owned());
+        docker_args.push(format!(
+            "{}:/etc/nginx/conf.d/default.conf:ro",
+            html_root.join("default.conf").display()
+        ));
     }
     docker_args.push(image.to_owned());
     log_deployment(
@@ -3050,6 +3406,17 @@ async fn provision_kubernetes(
             image: image.to_owned(),
             app_port,
             env,
+            html_site_host_path: html_pages::site_dir(
+                &state.config.html_site_data_dir,
+                service_id,
+            )
+            .join("html")
+            .exists()
+            .then(|| {
+                html_pages::site_dir(&state.config.html_site_data_dir, service_id)
+                    .to_string_lossy()
+                    .into_owned()
+            }),
         },
     )
     .await?;
@@ -3679,8 +4046,7 @@ pub async fn mcp_deploy(
         image: arguments
             .get("image")
             .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_owned(),
+            .map(ToOwned::to_owned),
         image_source: arguments
             .get("imageSource")
             .and_then(|value| value.as_str())
@@ -3693,6 +4059,22 @@ pub async fn mcp_deploy(
         auto_deploy: arguments
             .get("autoDeploy")
             .and_then(serde_json::Value::as_bool),
+        page_slug: arguments
+            .get("pageSlug")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        index_html: arguments
+            .get("indexHtml")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        github_repo: arguments
+            .get("githubRepo")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        github_branch: arguments
+            .get("githubBranch")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
     };
     let service = create_for_user(state, user_id, workspace_slug, project_slug, input).await?;
     serde_json::to_value(service).map_err(AppError::internal)
@@ -3944,6 +4326,9 @@ mod tests {
             deployed_image_digest: None,
             auto_deploy_checked_at: None,
             auto_deploy_error: None,
+            html_repo: None,
+            html_branch: None,
+            html_sha: None,
         };
 
         let response = app_service_response(

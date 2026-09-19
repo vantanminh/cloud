@@ -138,6 +138,9 @@ pub struct AppServiceResponse {
     pub rate_limit_rpm: u32,
     pub container_name: Option<String>,
     pub error_message: Option<String>,
+    pub html_repo: Option<String>,
+    pub html_branch: Option<String>,
+    pub html_sha: Option<String>,
     pub auto_deploy_enabled: bool,
     pub deployed_image_digest: Option<String>,
     pub auto_deploy_checked_at: Option<String>,
@@ -152,16 +155,20 @@ pub struct AppServiceResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateAppServiceRequest {
     pub name: Option<String>,
-    pub image: String,
+    pub image: Option<String>,
     pub image_source: String,
     pub app_port: Option<u32>,
     pub auto_deploy: Option<bool>,
+    pub page_slug: Option<String>,
+    pub index_html: Option<String>,
+    pub github_repo: Option<String>,
+    pub github_branch: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAppServiceRequest {
-    pub app_port: u32,
+    pub app_port: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

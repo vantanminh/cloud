@@ -17,7 +17,7 @@ use crate::{auth, error::AppError, security, state::AppState};
 const GITHUB_AUTHORIZE_URL: &str = "https://github.com/login/oauth/authorize";
 const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_USER_URL: &str = "https://api.github.com/user";
-const GITHUB_OAUTH_SCOPE: &str = "read:packages";
+const GITHUB_OAUTH_SCOPE: &str = "read:packages repo";
 const OAUTH_STATE_TTL_MINUTES: i64 = 10;
 
 #[derive(Debug, Deserialize)]
