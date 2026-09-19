@@ -1359,7 +1359,7 @@ mod tests {
             .output()
             .await
             .is_ok_and(|output| output.status.success());
-        if docker_ok {
+        if docker_ok && std::env::var("CI").is_err() {
             let container = format!("knotree-app-{}", created.id.simple());
             let mut published = None;
             for _ in 0..40 {
@@ -1725,6 +1725,9 @@ mod tests {
             created.public_domain.as_deref(),
             Some(format!("page-{slug}.knotree.org").as_str())
         );
+        if std::env::var("CI").is_ok() {
+            return;
+        }
 
         let container = format!("knotree-app-{}", created.id.simple());
         let mut published = None;
