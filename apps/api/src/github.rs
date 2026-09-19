@@ -103,6 +103,7 @@ pub async fn start(
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", &state.config.github_oauth_redirect_uri)
         .append_pair("scope", GITHUB_OAUTH_SCOPE)
+        .append_pair("prompt", "consent")
         .append_pair("state", &oauth_state);
 
     Ok(Json(GithubAuthorizationResponse {
@@ -341,5 +342,11 @@ mod tests {
         );
         assert_eq!(safe_return_to(Some("https://evil.example")), "/");
         assert_eq!(safe_return_to(Some("//evil.example")), "/");
+    }
+
+    #[test]
+    fn html_pages_require_repo_scope_on_reconnect() {
+        assert!(GITHUB_OAUTH_SCOPE.split_whitespace().any(|scope| scope == "repo"));
+        assert!(GITHUB_OAUTH_SCOPE.contains("read:packages"));
     }
 }

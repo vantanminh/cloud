@@ -71,6 +71,36 @@ describe("AppServiceCreateDialog HTML pages", () => {
     })
   })
 
+  it("derives a unique page- suffix from the service name", async () => {
+    const user = userEvent.setup()
+    render(
+      <AppServiceCreateDialog
+        workspaceSlug="ws"
+        projectSlug="proj"
+        open
+        onOpenChange={vi.fn()}
+        onCreated={vi.fn()}
+      />
+    )
+    await user.selectOptions(screen.getByLabelText("Service type"), "html")
+    await user.clear(screen.getByLabelText("Service name"))
+    await user.type(screen.getByLabelText("Service name"), "My Docs")
+    await user.type(
+      screen.getByLabelText("index.html"),
+      "<html><body>hi</body></html>"
+    )
+    await user.click(screen.getByRole("button", { name: "Deploy service" }))
+    expect(mocks.createAppService).toHaveBeenCalledWith(
+      "ws",
+      "proj",
+      expect.objectContaining({
+        name: "My Docs",
+        imageSource: "html",
+        pageSlug: "my-docs",
+      })
+    )
+  })
+
   it("submits a GitHub HTML repository with auto-deploy", async () => {
     const user = userEvent.setup()
     mocks.getGithubConnectionStatus.mockResolvedValue({

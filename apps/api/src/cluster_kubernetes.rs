@@ -1427,6 +1427,38 @@ mod tests {
     }
 
     #[test]
+    fn html_page_workloads_mount_hostpath_site_and_nginx_config() {
+        let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let app = app_deployment_manifest(
+            &AppWorkloadSpec {
+                project_id: Uuid::nil(),
+                service_id,
+                image: "nginxinc/nginx-unprivileged:1.27-alpine".to_owned(),
+                app_port: 8080,
+                env: vec![],
+                html_site_host_path: Some("/var/lib/knotree/html-sites/11111111-2222-3333-4444-555555555555".to_owned()),
+            },
+            "knotree-cloud",
+            None,
+        );
+        let spec = &app["spec"]["template"]["spec"];
+        let mounts = &spec["containers"][0]["volumeMounts"];
+        assert_eq!(mounts[0]["mountPath"], "/usr/share/nginx/html");
+        assert_eq!(
+            mounts[1]["mountPath"],
+            "/etc/nginx/conf.d/default.conf"
+        );
+        assert_eq!(
+            spec["volumes"][0]["hostPath"]["path"],
+            "/var/lib/knotree/html-sites/11111111-2222-3333-4444-555555555555/html"
+        );
+        assert_eq!(
+            spec["volumes"][1]["hostPath"]["path"],
+            "/var/lib/knotree/html-sites/11111111-2222-3333-4444-555555555555"
+        );
+    }
+
+    #[test]
     fn app_and_redis_manifests_keep_virtual_app_cpu_and_tenant_caps() {
         let config = Config::test_fixture();
         let project_id = Uuid::nil();

@@ -366,7 +366,7 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "deploy_app_service",
-            "description": "Deploy an App service from a container image.",
+            "description": "Deploy an App service from a container image or host an HTML page (paste index.html or a GitHub Pages-style repo with a unique page- hostname).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -375,9 +375,14 @@ pub fn tool_definitions() -> Value {
                     "image": { "type": "string" },
                     "imageSource": { "type": "string" },
                     "name": { "type": "string" },
-                    "appPort": { "type": "integer" }
+                    "appPort": { "type": "integer" },
+                    "pageSlug": { "type": "string" },
+                    "indexHtml": { "type": "string" },
+                    "githubRepo": { "type": "string" },
+                    "githubBranch": { "type": "string" },
+                    "autoDeploy": { "type": "boolean" }
                 },
-                "required": ["workspaceSlug", "projectSlug", "image"]
+                "required": ["workspaceSlug", "projectSlug"]
             }
         },
         {

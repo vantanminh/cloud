@@ -211,7 +211,7 @@ export function AppServiceCreateDialog({
         nextErrors.appPort = "Use a container port between 1 and 65535."
       }
     } else {
-      const slug = pageSlug.trim().replace(/^page-/i, "")
+      const slug = htmlPageSlug(pageSlug || name)
       if (!/^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$/.test(slug)) {
         nextErrors.pageSlug =
           "Choose a unique suffix of lowercase letters, numbers, and hyphens."
@@ -229,7 +229,7 @@ export function AppServiceCreateDialog({
       return
     }
     if (needsGithub && !githubStatus?.connected) {
-      setSubmitError("Connect GitHub before deploying from a private repository.")
+      setSubmitError("Connect GitHub before deploying from a GitHub repository.")
       return
     }
 
@@ -243,7 +243,7 @@ export function AppServiceCreateDialog({
           ? {
               name: name.trim(),
               imageSource: htmlSource === "github" ? "html_github" : "html",
-              pageSlug: pageSlug.trim().replace(/^page-/i, ""),
+              pageSlug: htmlPageSlug(pageSlug || name),
               indexHtml: htmlSource === "paste" ? indexHtml : undefined,
               githubRepo: htmlSource === "github" ? githubRepo.trim() : undefined,
               githubBranch:
@@ -501,7 +501,7 @@ export function AppServiceCreateDialog({
                         />
                         <FieldDescription>
                           Hostname will be page-
-                          {pageSlug.trim().replace(/^page-/i, "") || "your-name"}
+                          {htmlPageSlug(pageSlug || name) || "your-name"}
                           .knotree.org and must be unique.
                         </FieldDescription>
                         {errors.pageSlug && (
@@ -586,7 +586,7 @@ export function AppServiceCreateDialog({
                         {githubStatusLoading
                           ? "Checking GitHub connection…"
                           : kind === "html"
-                            ? "Knotree uses this connection to clone the HTML repository."
+                            ? "Reconnect GitHub if you connected earlier for images only. HTML repos need the repo scope so Knotree can clone and auto-deploy on push."
                             : "Knotree uses this connection to pull private ghcr.io images."}
                       </span>
                     </div>
@@ -666,4 +666,13 @@ export function AppServiceCreateDialog({
       </Dialog.Portal>
     </Dialog.Root>
   )
+}
+
+function htmlPageSlug(value: string) {
+  const trimmed = value.trim().replace(/^page-/i, "")
+  return trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
 }

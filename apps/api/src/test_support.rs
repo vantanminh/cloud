@@ -18,6 +18,10 @@ pub struct SeededProject {
 }
 
 pub async fn test_app_state() -> Option<AppState> {
+    test_app_state_configured(|_| {}).await
+}
+
+pub async fn test_app_state_configured(configure: impl FnOnce(&mut Config)) -> Option<AppState> {
     let url = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.trim().is_empty() => url,
         _ if std::env::var("CI").is_ok() => {
@@ -48,6 +52,7 @@ pub async fn test_app_state() -> Option<AppState> {
     config.kong_admin_url = None;
     config.app_service_provisioning_enabled = true;
     config.database_provisioning_enabled = false;
+    configure(&mut config);
     Some(AppState::new(pool, Arc::new(config)))
 }
 
@@ -96,4 +101,35 @@ pub async fn seed_owner_project(state: &AppState) -> SeededProject {
         project_id,
         project_slug,
     }
+}
+
+pub async fn session_headers(state: &AppState, user_id: Uuid) -> axum::http::HeaderMap {
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use time::{Duration, OffsetDateTime};
+
+    let token = crate::security::random_token();
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(crate::security::token_hash(&token))
+        .bind(user_id)
+        .bind(OffsetDateTime::now_utc() + Duration::days(state.config.session_ttl_days))
+        .execute(&state.db)
+        .await
+        .expect("seed session");
+    let csrf = "test-csrf-token";
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        HeaderValue::from_str(&format!(
+            "{}={token}; {}={csrf}",
+            state.config.session_cookie_name(),
+            state.config.csrf_cookie_name()
+        ))
+        .expect("session cookie"),
+    );
+    headers.insert(
+        header::ORIGIN,
+        HeaderValue::from_static("http://localhost:5173"),
+    );
+    headers.insert("x-csrf-token", HeaderValue::from_static(csrf));
+    headers
 }

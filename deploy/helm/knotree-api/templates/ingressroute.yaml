@@ -29,12 +29,24 @@ spec:
           port: {{ .Values.web.service.port }}
 {{- end }}
 {{ if and .Values.env.appServicePublicDomain .Values.appsKong.enabled }}
+    - match: HostRegexp(`^page-.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
+      kind: Rule
+      priority: 40
+      services:
+        - name: {{ include "knotree-api.fullname" . }}-apps-kong
+          port: {{ .Values.appsKong.proxyPort }}
     - match: HostRegexp(`^.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
       kind: Rule
       services:
         - name: {{ include "knotree-api.fullname" . }}-apps-kong
           port: {{ .Values.appsKong.proxyPort }}
 {{ else if .Values.env.appServicePublicDomain }}
+    - match: HostRegexp(`^page-.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
+      kind: Rule
+      priority: 40
+      services:
+        - name: {{ include "knotree-api.fullname" . }}
+          port: {{ .Values.service.port }}
     - match: HostRegexp(`^.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`)
       kind: Rule
       services:

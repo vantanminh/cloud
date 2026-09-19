@@ -1546,9 +1546,13 @@ pub async fn create_for_user(
         (image_source == IMAGE_SOURCE_GITHUB || image_source == IMAGE_SOURCE_HTML_GITHUB)
             .then_some(user_id);
     let public_subdomain = if is_html {
-        Some(html_pages::page_subdomain(
-            input.page_slug.as_deref().unwrap_or(""),
-        )?)
+        let suffix = input
+            .page_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(name.as_str());
+        Some(html_pages::page_subdomain(suffix)?)
     } else {
         None
     };
@@ -1652,13 +1656,17 @@ pub async fn create_for_user(
                     "UPDATE project_app_services SET status = $1, error_message = $2, updated_at = now() WHERE id = $3",
                 )
                 .bind(STATUS_ERROR)
-                .bind("Connect GitHub before deploying a private image.")
+                .bind("Connect GitHub before deploying from GitHub.")
                 .bind(service.id)
                 .execute(&state.db)
                 .await?;
                 return Err(AppError::Conflict {
                     code: "GITHUB_CONNECTION_REQUIRED",
-                    message: "Connect GitHub before deploying a private GitHub image.",
+                    message: if image_source == IMAGE_SOURCE_HTML_GITHUB {
+                        "Reconnect GitHub so Knotree can read the HTML repository (repo scope)."
+                    } else {
+                        "Connect GitHub before deploying a private GitHub image."
+                    },
                 });
             }
         }
@@ -2544,7 +2552,7 @@ async fn prepare_html_site(
         let token = github_credentials
             .map(|credentials| credentials.access_token.as_str())
             .context("Connect GitHub before deploying an HTML repository")?;
-        let (sha, raw) = html_pages::fetch_github_site(
+        let (sha, resolved_branch, raw) = html_pages::fetch_github_site(
             token,
             &owner,
             &name,
@@ -2554,17 +2562,20 @@ async fn prepare_html_site(
         log_deployment(
             logger,
             "HTML site",
-            &format!("Fetched {owner}/{name}@{sha:.7} and detected the GitHub Pages root."),
+            &format!("Fetched {owner}/{name}@{sha:.7} ({resolved_branch}) and detected the GitHub Pages root."),
         )
         .await?;
         let files = html_pages::materialize_github_files(raw, &origin, service_id)
             .map_err(|error| anyhow::anyhow!("{error:?}"))?;
         html_pages::replace_files(&state.db, service_id, &files).await?;
-        sqlx::query("UPDATE project_app_services SET html_sha = $1, updated_at = now() WHERE id = $2")
-            .bind(&sha)
-            .bind(service_id)
-            .execute(&state.db)
-            .await?;
+        sqlx::query(
+            "UPDATE project_app_services SET html_sha = $1, html_branch = COALESCE(NULLIF(html_branch, ''), $2), updated_at = now() WHERE id = $3",
+        )
+        .bind(&sha)
+        .bind(&resolved_branch)
+        .bind(service_id)
+        .execute(&state.db)
+        .await?;
         html_pages::write_site_to_disk(&state.config.html_site_data_dir, service_id, &files)
             .await?;
         let callback = format!(
@@ -2738,9 +2749,8 @@ pub(crate) async fn queue_html_github_pushes(
            AND status = $2
            AND lower(html_repo) = lower($3)
            AND (
-             html_branch IS NULL
-             OR html_branch = ''
-             OR html_branch = $4
+             html_branch = $4
+             OR ((html_branch IS NULL OR html_branch = '') AND $4 <> '')
            )",
     )
     .bind(IMAGE_SOURCE_HTML_GITHUB)
@@ -2778,7 +2788,7 @@ async fn check_html_repo_auto_deploy(
         .context("HTML GitHub page is missing a repository")?;
     let (owner, name) = html_pages::parse_github_repo(repo)
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    let sha = html_pages::fetch_github_commit_sha(
+    let (sha, _branch) = html_pages::fetch_github_commit_sha(
         &credentials.access_token,
         &owner,
         &name,
@@ -3307,13 +3317,11 @@ async fn provision_docker(
     let network_name = cluster::ensure_project_network(&state.config, project_id).await?;
     log_deployment(logger, "Network", "Project network is ready.").await?;
 
-    if let Some(credentials) = github_credentials {
-        if !image
-            .get(.."ghcr.io/".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ghcr.io/"))
-        {
-            bail!("private app images must be hosted on ghcr.io");
-        }
+    let is_ghcr = image
+        .get(.."ghcr.io/".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ghcr.io/"));
+    if is_ghcr {
+        let credentials = github_credentials.context("Connect GitHub before pulling a private ghcr.io image")?;
         pull_github_image(state, credentials, image, logger).await?;
     } else {
         docker_pull(state, image, logger).await?;

@@ -188,9 +188,10 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             app_services::public_domain_router,
         ))
-        .layer(middleware::from_fn(html_pages::public_cors))
         .layer(TraceLayer::new_for_http())
         .layer(state.config.cors_layer())
+        // Outer so page-* origins can POST analytics without opening credentialed dashboard CORS.
+        .layer(middleware::from_fn(html_pages::public_cors))
         .with_state(state)
 }
 

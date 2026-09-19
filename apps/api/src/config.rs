@@ -318,6 +318,32 @@ impl Config {
     }
 }
 
+pub fn cors_origin_allowed(
+    origin: &str,
+    allowed_origins: &[String],
+    public_scheme: &str,
+    public_domain: Option<&str>,
+) -> bool {
+    if allowed_origins.iter().any(|allowed| allowed == origin) {
+        return true;
+    }
+    is_html_page_origin(origin, public_scheme, public_domain)
+}
+
+fn is_html_page_origin(origin: &str, scheme: &str, domain: Option<&str>) -> bool {
+    let Some(domain) = domain.filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let prefix = format!("{scheme}://page-");
+    let Some(host) = origin.strip_prefix(&prefix) else {
+        return false;
+    };
+    if host.contains('/') || host.contains(':') || host.contains('@') {
+        return false;
+    }
+    host.ends_with(&format!(".{domain}")) && host.len() > domain.len() + 1
+}
+
 fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.trim().is_empty())
 }
@@ -590,9 +616,38 @@ fn validate_storage_size(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        public_domain_setting, validate_public_domain, validate_public_scheme,
+        cors_origin_allowed, public_domain_setting, validate_public_domain, validate_public_scheme,
         validate_storage_size,
     };
+
+    #[test]
+    fn html_page_origins_are_allowed_for_injected_analytics_cors() {
+        let dashboard = vec!["https://cloud.knotree.com".to_owned()];
+        assert!(cors_origin_allowed(
+            "https://cloud.knotree.com",
+            &dashboard,
+            "https",
+            Some("knotree.org"),
+        ));
+        assert!(cors_origin_allowed(
+            "https://page-docs.knotree.org",
+            &dashboard,
+            "https",
+            Some("knotree.org"),
+        ));
+        assert!(!cors_origin_allowed(
+            "https://evil.example",
+            &dashboard,
+            "https",
+            Some("knotree.org"),
+        ));
+        assert!(!cors_origin_allowed(
+            "https://page-.knotree.org",
+            &dashboard,
+            "https",
+            Some("knotree.org"),
+        ));
+    }
 
     #[test]
     fn rejects_storage_sizes_above_the_resource_cap() {

@@ -118,6 +118,8 @@ env:
   redisClusterImage: redis:7-alpine
   appServiceImagePullSecret: ghcr-cred
   appServiceDefaultRateLimitRpm: "60"
+  htmlSiteDataDir: /var/lib/knotree/html-sites
+  htmlNginxImage: nginxinc/nginx-unprivileged:1.27-alpine
   rustLog: info,knotree_api=debug
 
 resources:

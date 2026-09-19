@@ -450,7 +450,9 @@ function DeploymentsPane({
                       (node.id === "postgres"
                         ? "The cluster has no schedulable capacity."
                         : "Deployment failed"))
-                    : "Deploy an image to start this service"}
+                    : isHtmlPage(appService)
+                      ? "Publish the HTML site to start this page"
+                      : "Deploy an image to start this service"}
               </div>
             </div>
           </div>
@@ -2691,8 +2693,12 @@ function AutoDeployEditor({
       onAppServiceUpdated?.(resource)
       onToast(
         nextEnabled
-          ? "Automatic GitHub image deploys enabled."
-          : "Automatic GitHub image deploys disabled."
+          ? appService.imageSource === "html_github"
+            ? "Automatic GitHub HTML deploys enabled."
+            : "Automatic GitHub image deploys enabled."
+          : appService.imageSource === "html_github"
+            ? "Automatic GitHub HTML deploys disabled."
+            : "Automatic GitHub image deploys disabled."
       )
     } catch (caught) {
       setEnabled(appService.autoDeployEnabled ?? false)
@@ -2710,7 +2716,11 @@ function AutoDeployEditor({
     <div className="resource-workspace-auto-deploy">
       <div className="resource-workspace-auto-deploy-row">
         <div>
-          <strong>Deploy new image digests</strong>
+          <strong>
+            {appService.imageSource === "html_github"
+              ? "Deploy new commits"
+              : "Deploy new image digests"}
+          </strong>
           <p className="resource-workspace-muted">
             {isGithubImage
               ? appService.imageSource === "html_github"
@@ -2722,7 +2732,11 @@ function AutoDeployEditor({
         <label className="resource-workspace-auto-deploy-toggle">
           <input
             type="checkbox"
-            aria-label="Auto deploy new GitHub images"
+            aria-label={
+              appService.imageSource === "html_github"
+                ? "Auto deploy new GitHub HTML commits"
+                : "Auto deploy new GitHub images"
+            }
             checked={enabled}
             disabled={!isGithubImage || isBusy}
             onChange={(event) => void handleChange(event)}

@@ -98,18 +98,8 @@ pub fn is_html_source(source: &str) -> bool {
 }
 
 pub fn page_subdomain(suffix: &str) -> Result<String, AppError> {
-    let mut value = suffix.trim().to_ascii_lowercase();
-    if let Some(stripped) = value.strip_prefix("page-") {
-        value = stripped.to_owned();
-    }
-    if value.is_empty()
-        || value.len() > 48
-        || value.starts_with('-')
-        || value.ends_with('-')
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-    {
+    let value = slugify_page_suffix(suffix);
+    if value.is_empty() {
         let mut fields = BTreeMap::new();
         fields.insert(
             "pageSlug".to_owned(),
@@ -119,6 +109,29 @@ pub fn page_subdomain(suffix: &str) -> Result<String, AppError> {
         return Err(AppError::validation(fields));
     }
     Ok(format!("page-{value}"))
+}
+
+pub fn slugify_page_suffix(value: &str) -> String {
+    let trimmed = value.trim();
+    let without_prefix = trimmed
+        .strip_prefix("page-")
+        .or_else(|| trimmed.strip_prefix("PAGE-"))
+        .unwrap_or(trimmed);
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in without_prefix.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            out.push(lower);
+            pending_dash = false;
+        } else if !out.is_empty() {
+            pending_dash = true;
+        }
+    }
+    out.chars().take(48).collect()
 }
 
 pub fn site_dir(data_dir: &str, service_id: Uuid) -> PathBuf {
@@ -139,7 +152,7 @@ pub fn nginx_conf() -> &'static str {
     }
 
     location ~* \.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|mp4|webm)$ {
-        add_header Cache-Control "public, max-age=604800, stale-while-revalidate=86400" always;
+        add_header Cache-Control "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400" always;
         add_header CDN-Cache-Control "public, max-age=604800" always;
         add_header CloudFlare-CDN-Cache-Control "max-age=604800" always;
         add_header Cache-Tag "knotree-html-asset" always;
@@ -147,7 +160,7 @@ pub fn nginx_conf() -> &'static str {
     }
 
     location / {
-        add_header Cache-Control "public, max-age=60, must-revalidate" always;
+        add_header Cache-Control "public, max-age=60, s-maxage=60, must-revalidate" always;
         add_header CDN-Cache-Control "public, max-age=60" always;
         add_header CloudFlare-CDN-Cache-Control "max-age=60" always;
         add_header Cache-Tag "knotree-html-page" always;
@@ -181,6 +194,36 @@ pub fn inject_analytics(html: &str, collect_origin: &str, site_id: Uuid) -> Stri
         return out;
     }
     format!("{html}\n{snippet}\n")
+}
+
+pub fn strip_injected_analytics(html: &str) -> String {
+    let mut remaining = html;
+    let mut out = String::with_capacity(html.len());
+    loop {
+        let lower = remaining.to_ascii_lowercase();
+        let Some(start) = lower.find("<script") else {
+            out.push_str(remaining);
+            break;
+        };
+        out.push_str(&remaining[..start]);
+        let after = &remaining[start..];
+        let after_lower = after.to_ascii_lowercase();
+        let Some(end_rel) = after_lower.find("</script>") else {
+            out.push_str(after);
+            break;
+        };
+        let end = end_rel + "</script>".len();
+        let tag = &after[..end];
+        remaining = &after[end..];
+        if tag.contains("html-pages/") && tag.contains("/analytics.js") {
+            if remaining.starts_with('\n') {
+                remaining = &remaining[1..];
+            }
+            continue;
+        }
+        out.push_str(tag);
+    }
+    out
 }
 
 pub fn analytics_javascript(collect_origin: &str, site_id: Uuid) -> String {
@@ -492,7 +535,12 @@ pub async fn write_site_to_disk(
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(dest, &file.content).await?;
+        tokio::fs::write(&dest, &file.content).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644)).await?;
+        }
     }
     tokio::fs::write(root.join("default.conf"), nginx_conf()).await?;
     Ok(())
@@ -522,16 +570,38 @@ pub fn collect_origin(config: &crate::config::Config) -> String {
     config.mcp_public_base_url.trim_end_matches('/').to_owned()
 }
 
+fn github_api_origin() -> String {
+    if let Ok(guard) = GITHUB_API_OVERRIDE.lock() {
+        if let Some(origin) = guard.as_ref() {
+            return origin.clone();
+        }
+    }
+    std::env::var("GITHUB_API_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "https://api.github.com".to_owned())
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+static GITHUB_API_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_github_api_origin_override(origin: Option<String>) {
+    if let Ok(mut guard) = GITHUB_API_OVERRIDE.lock() {
+        *guard = origin;
+    }
+}
+
 pub async fn fetch_github_commit_sha(
     token: &str,
     owner: &str,
     repo: &str,
     branch: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, String)> {
     let client = reqwest::Client::builder()
         .user_agent("knotree-cloud")
         .build()?;
-    let repo_url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let repo_url = format!("{}/repos/{owner}/{repo}", github_api_origin());
     let repo_response = client
         .get(&repo_url)
         .bearer_auth(token)
@@ -558,7 +628,10 @@ pub async fn fetch_github_commit_sha(
         .filter(|value| !value.is_empty())
         .unwrap_or(default_branch.as_str())
         .to_owned();
-    let commit_url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{ref_name}");
+    let commit_url = format!(
+        "{}/repos/{owner}/{repo}/commits/{ref_name}",
+        github_api_origin()
+    );
     let commit_response = client
         .get(&commit_url)
         .bearer_auth(token)
@@ -572,11 +645,12 @@ pub async fn fetch_github_commit_sha(
         );
     }
     let commit_json = commit_response.json::<serde_json::Value>().await?;
-    commit_json
+    let sha = commit_json
         .get("sha")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
-        .context("GitHub did not return a commit SHA")
+        .context("GitHub did not return a commit SHA")?;
+    Ok((sha, ref_name))
 }
 
 pub async fn fetch_github_site(
@@ -584,12 +658,15 @@ pub async fn fetch_github_site(
     owner: &str,
     repo: &str,
     branch: Option<&str>,
-) -> Result<(String, Vec<(String, Vec<u8>)>)> {
-    let sha = fetch_github_commit_sha(token, owner, repo, branch).await?;
+) -> Result<(String, String, Vec<(String, Vec<u8>)>)> {
+    let (sha, resolved_branch) = fetch_github_commit_sha(token, owner, repo, branch).await?;
     let client = reqwest::Client::builder()
         .user_agent("knotree-cloud")
         .build()?;
-    let zip_url = format!("https://api.github.com/repos/{owner}/{repo}/zipball/{sha}");
+    let zip_url = format!(
+        "{}/repos/{owner}/{repo}/zipball/{sha}",
+        github_api_origin()
+    );
     let zip_response = client
         .get(&zip_url)
         .bearer_auth(token)
@@ -603,14 +680,15 @@ pub async fn fetch_github_site(
         );
     }
     let bytes = zip_response.bytes().await?;
-    Ok((sha, unzip_github_pages(&bytes)?))
+    Ok((sha, resolved_branch, unzip_github_pages(&bytes)?))
+}
+
+pub fn is_public_html_path(path: &str) -> bool {
+    path.contains("/api/v1/public/html-pages/")
 }
 
 pub async fn public_cors(request: Request<Body>, next: Next) -> Response {
-    let is_public_html = request
-        .uri()
-        .path()
-        .contains("/api/v1/public/html-pages/");
+    let is_public_html = is_public_html_path(request.uri().path());
     let origin = request
         .headers()
         .get(header::ORIGIN)
@@ -638,6 +716,7 @@ fn apply_public_cors(headers: &mut HeaderMap, origin: &HeaderValue) {
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         HeaderValue::from_static("content-type"),
     );
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
 }
 
 pub async fn analytics_script(
@@ -767,7 +846,7 @@ pub async fn get_index_html(
     .fetch_optional(&state.db)
     .await?
     .unwrap_or_default();
-    let index_html = String::from_utf8(content).unwrap_or_default();
+    let index_html = strip_injected_analytics(&String::from_utf8(content).unwrap_or_default());
     Ok(Json(serde_json::json!({ "indexHtml": index_html })))
 }
 
@@ -928,7 +1007,7 @@ pub async fn register_github_push_webhook(
         .user_agent("knotree-cloud")
         .build()?;
     let hooks = client
-        .get(format!("https://api.github.com/repos/{owner}/{repo}/hooks"))
+        .get(format!("{}/repos/{owner}/{repo}/hooks", github_api_origin()))
         .bearer_auth(token)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
@@ -945,7 +1024,7 @@ pub async fn register_github_push_webhook(
         }
     }
     let response = client
-        .post(format!("https://api.github.com/repos/{owner}/{repo}/hooks"))
+        .post(format!("{}/repos/{owner}/{repo}/hooks", github_api_origin()))
         .bearer_auth(token)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .json(&serde_json::json!({
@@ -1022,8 +1101,32 @@ mod tests {
     fn prefixes_unique_page_domains() {
         assert_eq!(page_subdomain("docs").unwrap(), "page-docs");
         assert_eq!(page_subdomain("page-docs").unwrap(), "page-docs");
-        assert!(page_subdomain("Docs_Site").is_err());
+        assert_eq!(page_subdomain("Docs Site").unwrap(), "page-docs-site");
         assert!(page_subdomain("").is_err());
+        assert!(page_subdomain("***").is_err());
+    }
+
+    #[test]
+    fn unzip_github_zipball_keeps_pages_files_and_drops_repo_prefix() {
+        use std::io::{Cursor, Write};
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("acme-site-deadbeef/index.html", options)
+                .unwrap();
+            zip.write_all(b"<html><body>root</body></html>").unwrap();
+            zip.start_file("acme-site-deadbeef/assets/app.css", options)
+                .unwrap();
+            zip.write_all(b"body{color:navy}").unwrap();
+            zip.finish().unwrap();
+        }
+        let files = unzip_github_pages(&cursor.into_inner()).unwrap();
+        let paths = files.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>();
+        assert!(paths.contains(&"index.html"));
+        assert!(paths.contains(&"assets/app.css"));
+        assert!(!paths.iter().any(|path| path.starts_with("acme-site-")));
     }
 
     #[test]
@@ -1033,6 +1136,35 @@ mod tests {
         let out = inject_analytics(html, "https://api.example", id);
         assert!(out.contains("</script>\n</head>"));
         assert!(out.contains("/analytics.js"));
+    }
+
+    #[test]
+    fn editor_strips_injected_analytics_so_saves_do_not_stack_scripts() {
+        let html = "<html><head><title>Hi</title></head><body>ok</body></html>";
+        let id = Uuid::nil();
+        let injected = inject_analytics(html, "https://api.example", id);
+        assert_eq!(strip_injected_analytics(&injected), html);
+    }
+
+    #[test]
+    fn github_pages_docs_root_keeps_css_js_and_injects_analytics() {
+        let files = vec![
+            ("README.md".to_owned(), b"# docs".to_vec()),
+            (
+                "docs/index.html".to_owned(),
+                b"<html><head></head><body>hi</body></html>".to_vec(),
+            ),
+            ("docs/style.css".to_owned(), b"body{}".to_vec()),
+            ("docs/js/app.js".to_owned(), b"console.log(1)".to_vec()),
+        ];
+        let out = materialize_github_files(files, "https://api.example", Uuid::nil()).unwrap();
+        let paths = out.iter().map(|file| file.path.as_str()).collect::<Vec<_>>();
+        assert!(paths.contains(&"index.html"));
+        assert!(paths.contains(&"style.css"));
+        assert!(paths.contains(&"js/app.js"));
+        assert!(!paths.iter().any(|path| path.starts_with("docs/")));
+        let index = out.iter().find(|file| file.path == "index.html").unwrap();
+        assert!(String::from_utf8_lossy(&index.content).contains("/analytics.js"));
     }
 
     #[test]
@@ -1063,7 +1195,8 @@ mod tests {
         let conf = nginx_conf();
         assert!(conf.contains("CloudFlare-CDN-Cache-Control"));
         assert!(conf.contains("Cache-Tag \"knotree-html-asset\""));
-        assert!(conf.contains("max-age=604800"));
+        assert!(conf.contains("s-maxage=604800"));
+        assert!(conf.contains("s-maxage=60"));
     }
 
     #[test]
@@ -1075,5 +1208,577 @@ mod tests {
         let header = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
         assert!(verify_github_signature(secret, body, Some(&header)));
         assert!(!verify_github_signature(secret, body, Some("sha256=deadbeef")));
+    }
+
+    #[test]
+    fn public_html_analytics_paths_are_cors_exempt() {
+        assert!(is_public_html_path(
+            "/api/v1/public/html-pages/11111111-2222-3333-4444-555555555555/events"
+        ));
+        assert!(is_public_html_path(
+            "/api/v1/public/html-pages/11111111-2222-3333-4444-555555555555/analytics.js"
+        ));
+        assert!(!is_public_html_path("/api/v1/auth/me"));
+    }
+
+    #[tokio::test]
+    async fn pasted_html_page_injects_analytics_and_records_dashboard_events() {
+        let Some(state) = crate::test_support::test_app_state_configured(|config| {
+            config.database_cluster_provider = "docker".to_owned();
+        })
+        .await else {
+            return;
+        };
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let slug = format!("t{}", &seed.user_id.simple().to_string()[..10]);
+        let created = crate::app_services::create_for_user(
+            &state,
+            seed.user_id,
+            &seed.workspace_slug,
+            &seed.project_slug,
+            crate::models::CreateAppServiceRequest {
+                name: Some("Docs".to_owned()),
+                image: None,
+                image_source: IMAGE_SOURCE_HTML.to_owned(),
+                app_port: None,
+                auto_deploy: None,
+                page_slug: Some(slug.clone()),
+                index_html: Some(
+                    "<html><head><title>Hi</title></head><body>hello</body></html>".to_owned(),
+                ),
+                github_repo: None,
+                github_branch: None,
+            },
+        )
+        .await
+        .expect("create html page");
+        assert_eq!(created.image_source, IMAGE_SOURCE_HTML);
+        assert!(created.public_access_enabled);
+        assert_eq!(
+            created.public_domain.as_deref(),
+            Some(format!("page-{slug}.knotree.org").as_str())
+        );
+
+        let headers = crate::test_support::session_headers(&state, seed.user_id).await;
+        let Json(index) = get_index_html(
+            State(state.clone()),
+            headers.clone(),
+            AxumPath((
+                seed.workspace_slug.clone(),
+                seed.project_slug.clone(),
+                created.id,
+            )),
+        )
+        .await
+        .expect("load index");
+        let html = index["indexHtml"].as_str().unwrap();
+        assert!(html.contains("hello"));
+        assert!(
+            !html.contains("/analytics.js"),
+            "editor HTML should not include the injected collector"
+        );
+
+        let script = analytics_script(State(state.clone()), AxumPath(created.id))
+            .await
+            .expect("analytics script");
+        assert_eq!(script.status(), StatusCode::OK);
+
+        collect_event(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.id),
+            Json(HtmlAnalyticsEventRequest {
+                event_type: Some("pageview".to_owned()),
+                path: Some("/".to_owned()),
+                referrer: None,
+                language: Some("en".to_owned()),
+                timezone: None,
+                screen_width: None,
+                screen_height: None,
+                viewport_width: None,
+                viewport_height: None,
+                session_id: Some("s1".to_owned()),
+                duration_ms: Some(1200),
+                extra: None,
+            }),
+        )
+        .await
+        .expect("collect event");
+
+        let Json(summary) = analytics_summary(
+            State(state.clone()),
+            headers,
+            AxumPath((seed.workspace_slug, seed.project_slug, created.id)),
+        )
+        .await
+        .expect("analytics summary");
+        assert_eq!(summary.pageviews, 1);
+        assert_eq!(summary.sessions, 1);
+
+        let docker_ok = tokio::process::Command::new("docker")
+            .args(["info"])
+            .output()
+            .await
+            .is_ok_and(|output| output.status.success());
+        if docker_ok {
+            let container = format!("knotree-app-{}", created.id.simple());
+            let mut published = None;
+            for _ in 0..40 {
+                let output = tokio::process::Command::new("docker")
+                    .args(["port", &container, "8080/tcp"])
+                    .output()
+                    .await
+                    .expect("docker port");
+                if output.status.success() {
+                    let mapping = String::from_utf8_lossy(&output.stdout);
+                    published = mapping
+                        .split(':')
+                        .next_back()
+                        .and_then(|value| value.trim().parse::<u16>().ok());
+                    if published.is_some() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let port = published.expect("HTML page nginx container should publish port 8080");
+            let mut body = String::new();
+            for _ in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if let Ok(response) =
+                    reqwest::get(format!("http://127.0.0.1:{port}/")).await
+                {
+                    if response.status().is_success() {
+                        body = response.text().await.unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+            let runtime = crate::cluster::collect_app_service_runtime_metrics(
+                &state.config,
+                &container,
+            )
+            .await
+            .expect("HTML nginx metrics");
+            let _ = tokio::process::Command::new("docker")
+                .args(["rm", "-f", &container])
+                .status()
+                .await;
+            assert!(body.contains("hello"), "nginx body was {body}");
+            assert!(
+                body.contains("/analytics.js"),
+                "nginx should serve the injected analytics script"
+            );
+            assert!(
+                runtime.memory_used_bytes.is_some() || runtime.cpu_percent.is_some(),
+                "HTML pages should expose the same container metrics as app services"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nginx_serves_github_style_html_with_injected_analytics_and_cdn_headers() {
+        let docker_ok = tokio::process::Command::new("docker")
+            .args(["info"])
+            .output()
+            .await
+            .is_ok_and(|output| output.status.success());
+        if !docker_ok {
+            return;
+        }
+        let service_id = Uuid::new_v4();
+        let data_dir = std::env::temp_dir().join(format!("kt-html-{service_id}"));
+        let files = materialize_github_files(
+            vec![
+                (
+                    "docs/index.html".to_owned(),
+                    b"<html><head><title>Hi</title></head><body>hello</body></html>".to_vec(),
+                ),
+                ("docs/style.css".to_owned(), b"body{color:red}".to_vec()),
+                ("docs/js/app.js".to_owned(), b"console.log(1)".to_vec()),
+            ],
+            "https://collect.example",
+            service_id,
+        )
+        .unwrap();
+        write_site_to_disk(data_dir.to_str().unwrap(), service_id, &files)
+            .await
+            .expect("write site");
+        let site = site_dir(data_dir.to_str().unwrap(), service_id);
+        let name = format!("kt-html-nginx-{service_id}");
+        let status = tokio::process::Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "-d",
+                "--name",
+                &name,
+                "-p",
+                "127.0.0.1::8080",
+                "-v",
+                &format!("{}:/usr/share/nginx/html:ro", site.join("html").display()),
+                "-v",
+                &format!(
+                    "{}:/etc/nginx/conf.d/default.conf:ro",
+                    site.join("default.conf").display()
+                ),
+                HTML_NGINX_IMAGE,
+            ])
+            .status()
+            .await
+            .expect("docker run");
+        if !status.success() {
+            let _ = tokio::fs::remove_dir_all(&data_dir).await;
+            return;
+        }
+        let mapped = tokio::process::Command::new("docker")
+            .args(["port", &name, "8080/tcp"])
+            .output()
+            .await
+            .expect("docker port");
+        let mapping = String::from_utf8_lossy(&mapped.stdout);
+        let port = mapping
+            .split(':')
+            .next_back()
+            .and_then(|value| value.trim().parse::<u16>().ok());
+        let Some(port) = port else {
+            let _ = tokio::process::Command::new("docker")
+                .args(["rm", "-f", &name])
+                .status()
+                .await;
+            let _ = tokio::fs::remove_dir_all(&data_dir).await;
+            panic!("docker did not publish nginx port: {mapping}");
+        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let mut html = String::new();
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Ok(response) = client
+                .get(format!("http://127.0.0.1:{port}/"))
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    html = response.text().await.unwrap_or_default();
+                    break;
+                }
+            }
+        }
+        let css = client
+            .get(format!("http://127.0.0.1:{port}/style.css"))
+            .send()
+            .await
+            .expect("css");
+        let page_headers = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .expect("page headers")
+            .headers()
+            .clone();
+        let css_headers = css.headers().clone();
+        let _ = tokio::process::Command::new("docker")
+            .args(["rm", "-f", &name])
+            .status()
+            .await;
+        let _ = tokio::fs::remove_dir_all(&data_dir).await;
+        assert!(html.contains("hello"));
+        assert!(html.contains("/analytics.js"));
+        assert!(html.contains(&service_id.to_string()));
+        let page_cc = page_headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let css_cc = css_headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            page_cc.contains("s-maxage=60"),
+            "HTML Cache-Control was {page_cc}"
+        );
+        assert!(
+            css_cc.contains("s-maxage=604800"),
+            "CSS Cache-Control was {css_cc}"
+        );
+        assert!(css_headers.get("cdn-cache-control").is_some());
+    }
+
+    #[tokio::test]
+    async fn github_html_repo_deploys_pages_layout_through_create_flow() {
+        let Some(state) = crate::test_support::test_app_state_configured(|config| {
+            config.database_cluster_provider = "docker".to_owned();
+        })
+        .await
+        else {
+            return;
+        };
+        let docker_ok = tokio::process::Command::new("docker")
+            .args(["info"])
+            .output()
+            .await
+            .is_ok_and(|output| output.status.success());
+        if !docker_ok {
+            return;
+        }
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("acme-site-sha/docs/index.html", options)
+                .unwrap();
+            zip.write_all(b"<html><body>from-git</body></html>")
+                .unwrap();
+            zip.start_file("acme-site-sha/docs/style.css", options)
+                .unwrap();
+            zip.write_all(b"body{color:navy}").unwrap();
+            zip.finish().unwrap();
+        }
+        let repo = std::sync::Arc::new(std::sync::Mutex::new((
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            cursor.into_inner(),
+        )));
+        let app = axum::Router::new()
+            .route(
+                "/repos/{owner}/{repo}",
+                axum::routing::get(|| async {
+                    Json(serde_json::json!({ "default_branch": "main" }))
+                }),
+            )
+            .route(
+                "/repos/{owner}/{repo}/commits/{git_ref}",
+                axum::routing::get({
+                    let repo = repo.clone();
+                    move || {
+                        let repo = repo.clone();
+                        async move {
+                            let sha = repo.lock().unwrap().0.clone();
+                            Json(serde_json::json!({ "sha": sha }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/repos/{owner}/{repo}/zipball/{sha}",
+                axum::routing::get({
+                    let repo = repo.clone();
+                    move || {
+                        let repo = repo.clone();
+                        async move { repo.lock().unwrap().1.clone() }
+                    }
+                }),
+            )
+            .route(
+                "/repos/{owner}/{repo}/hooks",
+                axum::routing::get(|| async { Json(serde_json::json!([])) }).post(|| async {
+                    StatusCode::CREATED
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        set_github_api_origin_override(Some(origin));
+
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let token = crate::security::encrypt_secret(
+            "test-token",
+            &state.config.database_credentials_encryption_key,
+        )
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO github_connections (user_id, github_user_id, github_login, access_token_ciphertext) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(seed.user_id)
+        .bind("1")
+        .bind("acme")
+        .bind(token)
+        .execute(&state.db)
+        .await
+        .expect("github connection");
+
+        let slug = format!("g{}", &seed.user_id.simple().to_string()[..10]);
+        let created = crate::app_services::create_for_user(
+            &state,
+            seed.user_id,
+            &seed.workspace_slug,
+            &seed.project_slug,
+            crate::models::CreateAppServiceRequest {
+                name: Some("Git site".to_owned()),
+                image: None,
+                image_source: IMAGE_SOURCE_HTML_GITHUB.to_owned(),
+                app_port: None,
+                auto_deploy: Some(true),
+                page_slug: Some(slug.clone()),
+                index_html: None,
+                github_repo: Some("acme/site".to_owned()),
+                github_branch: None,
+            },
+        )
+        .await
+        .expect("create github html page");
+        assert_eq!(created.image_source, IMAGE_SOURCE_HTML_GITHUB);
+        assert_eq!(
+            created.public_domain.as_deref(),
+            Some(format!("page-{slug}.knotree.org").as_str())
+        );
+
+        let container = format!("knotree-app-{}", created.id.simple());
+        let mut published = None;
+        for _ in 0..40 {
+            let output = tokio::process::Command::new("docker")
+                .args(["port", &container, "8080/tcp"])
+                .output()
+                .await
+                .expect("docker port");
+            if output.status.success() {
+                let mapping = String::from_utf8_lossy(&output.stdout);
+                published = mapping
+                    .split(':')
+                    .next_back()
+                    .and_then(|value| value.trim().parse::<u16>().ok());
+                if published.is_some() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let port = if let Some(port) = published {
+            port
+        } else {
+            use sqlx::Row;
+            let row = sqlx::query(
+                "SELECT status, error_message, html_sha FROM project_app_services WHERE id = $1",
+            )
+            .bind(created.id)
+            .fetch_one(&state.db)
+            .await
+            .expect("service row");
+            let status: String = row.get("status");
+            let error: Option<String> = row.get("error_message");
+            let sha: Option<String> = row.get("html_sha");
+            panic!("GitHub HTML nginx should publish 8080 (status={status}, error={error:?}, sha={sha:?})");
+        };
+        let client = reqwest::Client::new();
+        let mut html = String::new();
+        let mut css = String::new();
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/")).send().await {
+                if response.status().is_success() {
+                    html = response.text().await.unwrap_or_default();
+                    if let Ok(css_response) = client
+                        .get(format!("http://127.0.0.1:{port}/style.css"))
+                        .send()
+                        .await
+                    {
+                        css = css_response.text().await.unwrap_or_default();
+                    }
+                    break;
+                }
+            }
+        }
+        assert!(html.contains("from-git"), "github html was {html}");
+        assert!(html.contains("/analytics.js"));
+        assert!(css.contains("navy"), "github css was {css}");
+
+        for _ in 0..40 {
+            let status: String = sqlx::query_scalar(
+                "SELECT status FROM project_app_services WHERE id = $1",
+            )
+            .bind(created.id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+            if status == "ready" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+
+        let mut next_zip = Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(&mut next_zip);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("acme-site-sha/docs/index.html", options)
+                .unwrap();
+            zip.write_all(b"<html><body>from-git-v2</body></html>")
+                .unwrap();
+            zip.start_file("acme-site-sha/docs/style.css", options)
+                .unwrap();
+            zip.write_all(b"body{color:navy}").unwrap();
+            zip.finish().unwrap();
+        }
+        *repo.lock().unwrap() = (
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+            next_zip.into_inner(),
+        );
+        let payload = br#"{"ref":"refs/heads/main","repository":{"full_name":"acme/site"}}"#;
+        let secret = github_webhook_secret(&state.config.database_credentials_encryption_key);
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(payload);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let mut hook_headers = HeaderMap::new();
+        hook_headers.insert("x-github-event", HeaderValue::from_static("push"));
+        hook_headers.insert(
+            "x-hub-signature-256",
+            HeaderValue::from_str(&signature).unwrap(),
+        );
+        github_push_webhook(State(state.clone()), hook_headers, Bytes::from_static(payload))
+            .await
+            .expect("github push webhook");
+        let mut redeployed = String::new();
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let output = tokio::process::Command::new("docker")
+                .args(["port", &container, "8080/tcp"])
+                .output()
+                .await
+                .expect("docker port");
+            if !output.status.success() {
+                continue;
+            }
+            let mapping = String::from_utf8_lossy(&output.stdout);
+            let Some(next_port) = mapping
+                .split(':')
+                .next_back()
+                .and_then(|value| value.trim().parse::<u16>().ok())
+            else {
+                continue;
+            };
+            if let Ok(response) = client
+                .get(format!("http://127.0.0.1:{next_port}/"))
+                .send()
+                .await
+            {
+                if let Ok(body) = response.text().await {
+                    if body.contains("from-git-v2") {
+                        redeployed = body;
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = tokio::process::Command::new("docker")
+            .args(["rm", "-f", &container])
+            .status()
+            .await;
+        set_github_api_origin_override(None);
+        assert!(
+            redeployed.contains("from-git-v2"),
+            "push webhook should redeploy the new GitHub commit, got {redeployed}"
+        );
     }
 }

@@ -159,6 +159,10 @@ spec:
               value: {{ .Values.env.appServiceImagePullSecret | quote }}
             - name: APP_SERVICE_DEFAULT_RATE_LIMIT_RPM
               value: {{ .Values.env.appServiceDefaultRateLimitRpm | quote }}
+            - name: HTML_SITE_DATA_DIR
+              value: {{ .Values.env.htmlSiteDataDir | quote }}
+            - name: HTML_NGINX_IMAGE
+              value: {{ .Values.env.htmlNginxImage | quote }}
             - name: KNOTREE_DOCS_DIR
               value: /usr/share/knotree/docs
             - name: POD_NAMESPACE
@@ -203,3 +207,15 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: html-sites
+              mountPath: {{ .Values.env.htmlSiteDataDir | quote }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: html-sites
+          hostPath:
+            path: {{ .Values.env.htmlSiteDataDir | quote }}
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
