@@ -1,5 +1,5 @@
 /**
- * Cache GET/HEAD for page-* HTML hosts at Cloudflare so static pages
+ * Cache GET requests for page-* HTML hosts at Cloudflare so static pages
  * do not hit origin on every request. Other app-service hosts pass through.
  */
 
@@ -23,7 +23,7 @@ export default {
     const url = new URL(request.url)
     if (
       !isHtmlPageHost(url.hostname) ||
-      (request.method !== "GET" && request.method !== "HEAD")
+      request.method !== "GET"
     ) {
       return fetch(request)
     }
