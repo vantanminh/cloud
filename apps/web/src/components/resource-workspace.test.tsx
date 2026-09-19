@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   getDatabaseStats: vi.fn(),
   getDatabaseTableData: vi.fn(),
   getAppServiceLogs: vi.fn(),
+  getHtmlPageAnalytics: vi.fn(),
+  getHtmlPageIndex: vi.fn(),
+  updateHtmlPage: vi.fn(),
   listDatabaseTables: vi.fn(),
   listPostgresResources: vi.fn(),
   retryPostgresResource: vi.fn(),
@@ -909,6 +912,75 @@ describe("ResourceWorkspace settings pane", () => {
     })
     expect(onToast).toHaveBeenCalledWith(
       "Public hostname app-0123456789abcdef.knotree.org"
+    )
+  })
+
+  it("shows injected HTML analytics on the dashboard", async () => {
+    const user = userEvent.setup()
+    mocks.getHtmlPageAnalytics.mockResolvedValue({
+      pageviews: 12,
+      sessions: 4,
+      avgDurationMs: 1500,
+      topPaths: [{ name: "/", count: 12 }],
+      topReferrers: [{ name: "(direct)", count: 12 }],
+      browsers: [{ name: "Chrome", count: 12 }],
+      eventTypes: [{ name: "pageview", count: 12 }],
+      recent: [
+        {
+          occurredAt: "2026-09-19T00:00:00Z",
+          eventType: "pageview",
+          path: "/",
+          referrer: null,
+          sessionId: "abc",
+        },
+      ],
+    })
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "html-page",
+          title: "Docs",
+          type: "HTML page",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            id: "html-id",
+            name: "Docs",
+            resourceType: "app",
+            status: "ready",
+            image: "nginxinc/nginx-unprivileged:1.27-alpine",
+            imageSource: "html",
+            appPort: 8080,
+            host: "localhost",
+            port: 8080,
+            serviceUrl: "https://page-docs.knotree.org",
+            publicDomain: "page-docs.knotree.org",
+            containerName: "knotree-app-html",
+          },
+        }}
+        environment="production"
+        workspaceSlug="mimo-i-tech"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={vi.fn()}
+        onOpenLogs={vi.fn()}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    expect(
+      within(dialog).queryByRole("tab", { name: "Database" })
+    ).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole("tab", { name: "Analytics" }))
+    expect(await within(dialog).findByRole("heading", { name: "Page analytics" })).toBeInTheDocument()
+    expect(within(dialog).getByText("Pageviews")).toBeInTheDocument()
+    expect(within(dialog).getByText("Chrome")).toBeInTheDocument()
+    expect(mocks.getHtmlPageAnalytics).toHaveBeenCalledWith(
+      "mimo-i-tech",
+      "test-2",
+      "html-id"
     )
   })
 })

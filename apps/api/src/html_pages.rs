@@ -7,12 +7,14 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axum::{
     Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path as AxumPath, State},
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -20,7 +22,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::{
-    auth, error::AppError, github, projects, security, state::AppState,
+    auth, error::AppError, projects, state::AppState,
 };
 
 pub const IMAGE_SOURCE_HTML: &str = "html";
@@ -137,16 +139,18 @@ pub fn nginx_conf() -> &'static str {
     }
 
     location ~* \.(?:css|js|mjs|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|mp4|webm)$ {
-        add_header Cache-Control "public, max-age=604800, stale-while-revalidate=86400";
-        add_header CDN-Cache-Control "public, max-age=604800";
-        add_header CloudFlare-CDN-Cache-Control "max-age=604800";
+        add_header Cache-Control "public, max-age=604800, stale-while-revalidate=86400" always;
+        add_header CDN-Cache-Control "public, max-age=604800" always;
+        add_header CloudFlare-CDN-Cache-Control "max-age=604800" always;
+        add_header Cache-Tag "knotree-html-asset" always;
         try_files $uri =404;
     }
 
     location / {
-        add_header Cache-Control "public, max-age=60, must-revalidate";
-        add_header CDN-Cache-Control "public, max-age=60";
-        add_header CloudFlare-CDN-Cache-Control "max-age=60";
+        add_header Cache-Control "public, max-age=60, must-revalidate" always;
+        add_header CDN-Cache-Control "public, max-age=60" always;
+        add_header CloudFlare-CDN-Cache-Control "max-age=60" always;
+        add_header Cache-Tag "knotree-html-page" always;
         try_files $uri $uri/ /index.html;
     }
 }
@@ -892,6 +896,124 @@ async fn count_rows(
         .collect())
 }
 
+pub fn github_webhook_secret(encryption_key: &[u8; 32]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(encryption_key);
+    hasher.update(b"html-github-webhook");
+    hex::encode(hasher.finalize())
+}
+
+pub fn verify_github_signature(secret: &str, body: &[u8], signature_header: Option<&str>) -> bool {
+    let Some(header) = signature_header.and_then(|value| value.strip_prefix("sha256=")) else {
+        return false;
+    };
+    let Ok(expected) = hex::decode(header) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(body);
+    mac.verify_slice(&expected).is_ok()
+}
+
+pub async fn register_github_push_webhook(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    callback_url: &str,
+    secret: &str,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .user_agent("knotree-cloud")
+        .build()?;
+    let hooks = client
+        .get(format!("https://api.github.com/repos/{owner}/{repo}/hooks"))
+        .bearer_auth(token)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await?;
+    if hooks.status().is_success() {
+        let values = hooks.json::<Vec<serde_json::Value>>().await.unwrap_or_default();
+        let already = values.iter().any(|hook| {
+            hook.pointer("/config/url")
+                .and_then(|value| value.as_str())
+                .is_some_and(|url| url == callback_url)
+        });
+        if already {
+            return Ok(());
+        }
+    }
+    let response = client
+        .post(format!("https://api.github.com/repos/{owner}/{repo}/hooks"))
+        .bearer_auth(token)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .json(&serde_json::json!({
+            "name": "web",
+            "active": true,
+            "events": ["push"],
+            "config": {
+                "url": callback_url,
+                "content_type": "json",
+                "secret": secret,
+                "insecure_ssl": "0"
+            }
+        }))
+        .send()
+        .await?;
+    if response.status() == StatusCode::UNPROCESSABLE_ENTITY || response.status().is_success() {
+        return Ok(());
+    }
+    bail!(
+        "GitHub webhook registration returned HTTP {}",
+        response.status()
+    )
+}
+
+pub async fn github_push_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let event = headers
+        .get("x-github-event")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if event == "ping" {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if event != "push" {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let signature = headers
+        .get("x-hub-signature-256")
+        .and_then(|value| value.to_str().ok());
+    let secret = github_webhook_secret(&state.config.database_credentials_encryption_key);
+    if !verify_github_signature(&secret, &body, signature) {
+        return Err(AppError::Unauthorized {
+            code: "GITHUB_WEBHOOK_INVALID",
+            message: "The GitHub webhook signature is invalid.",
+        });
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|_| AppError::BadRequest {
+        code: "GITHUB_WEBHOOK_INVALID",
+        message: "The GitHub webhook body could not be parsed.",
+    })?;
+    let full_name = payload
+        .pointer("/repository/full_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let git_ref = payload
+        .get("ref")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let branch = git_ref.strip_prefix("refs/heads/").unwrap_or("");
+    crate::app_services::queue_html_github_pushes(&state, full_name, branch)
+        .await
+        .map_err(AppError::internal)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,5 +1056,24 @@ mod tests {
             ("acme".to_owned(), "site".to_owned())
         );
         assert!(parse_github_repo("not a repo").is_err());
+    }
+
+    #[test]
+    fn nginx_conf_sets_cloudflare_cache_headers() {
+        let conf = nginx_conf();
+        assert!(conf.contains("CloudFlare-CDN-Cache-Control"));
+        assert!(conf.contains("Cache-Tag \"knotree-html-asset\""));
+        assert!(conf.contains("max-age=604800"));
+    }
+
+    #[test]
+    fn verifies_github_webhook_signatures() {
+        let secret = "test-secret";
+        let body = br#"{"ref":"refs/heads/main"}"#;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let header = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        assert!(verify_github_signature(secret, body, Some(&header)));
+        assert!(!verify_github_signature(secret, body, Some("sha256=deadbeef")));
     }
 }

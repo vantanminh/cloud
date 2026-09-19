@@ -115,6 +115,10 @@ pub fn router(state: AppState) -> Router {
             get(html_pages::analytics_summary),
         )
         .route(
+            "/public/html-pages/github-push",
+            post(html_pages::github_push_webhook),
+        )
+        .route(
             "/public/html-pages/{app_service_id}/analytics.js",
             get(html_pages::analytics_script),
         )

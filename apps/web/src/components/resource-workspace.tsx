@@ -28,6 +28,7 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { AppServiceRuntimeLogs } from "@/components/app-service-runtime-logs"
+import { HtmlAnalyticsPane, HtmlSourceEditor } from "@/components/html-page-workspace"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -61,6 +62,7 @@ import type {
   PostgresResource,
   RedisResource,
 } from "@/lib/types"
+import { isHtmlPage } from "@/lib/types"
 
 import "./resource-workspace.css"
 
@@ -80,6 +82,7 @@ type ResourceWorkspaceTab =
   | "backups"
   | "variables"
   | "metrics"
+  | "analytics"
   | "console"
   | "settings"
 
@@ -92,6 +95,7 @@ const resourceTabs: Array<{
   { id: "backups", label: "Backups" },
   { id: "variables", label: "Variables" },
   { id: "metrics", label: "Metrics" },
+  { id: "analytics", label: "Analytics" },
   { id: "console", label: "Console" },
   { id: "settings", label: "Settings" },
 ]
@@ -159,6 +163,18 @@ export function ResourceWorkspace({
     }
   }, [onClose])
 
+  const visibleTabs = resourceTabs.filter((tab) => {
+    const html =
+      node.resource?.resourceType === "app" && isHtmlPage(node.resource)
+    if (tab.id === "analytics") {
+      return html
+    }
+    if (html && (tab.id === "database" || tab.id === "backups")) {
+      return false
+    }
+    return true
+  })
+
   function handleTabKeyDown(
     event: React.KeyboardEvent<HTMLButtonElement>,
     tab: ResourceWorkspaceTab
@@ -172,14 +188,14 @@ export function ResourceWorkspace({
       return
     }
     event.preventDefault()
-    const currentIndex = resourceTabs.findIndex((item) => item.id === tab)
+    const currentIndex = visibleTabs.findIndex((item) => item.id === tab)
     const direction = event.key === "ArrowRight" ? 1 : -1
     const nextIndex =
-      (currentIndex + direction + resourceTabs.length) % resourceTabs.length
+      (currentIndex + direction + visibleTabs.length) % visibleTabs.length
     document
-      .getElementById(`resource-tab-${resourceTabs[nextIndex].id}`)
+      .getElementById(`resource-tab-${visibleTabs[nextIndex].id}`)
       ?.focus()
-    setActiveTab(resourceTabs[nextIndex].id)
+    setActiveTab(visibleTabs[nextIndex].id)
   }
 
   const connectionString =
@@ -235,7 +251,7 @@ export function ResourceWorkspace({
           role="tablist"
           aria-label="Resource sections"
         >
-          {resourceTabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               id={`resource-tab-${tab.id}`}
@@ -289,6 +305,14 @@ export function ResourceWorkspace({
               onToast={onToast}
             />
           )}
+          {activeTab === "analytics" &&
+            node.resource?.resourceType === "app" && (
+              <HtmlAnalyticsPane
+                appService={node.resource}
+                workspaceSlug={workspaceSlug}
+                projectSlug={projectSlug}
+              />
+            )}
           {activeTab === "console" && (
             <ConsolePane
               node={node}
@@ -411,7 +435,9 @@ function DeploymentsPane({
                 {postgresResource
                   ? `PostgreSQL · ${postgresResource.databaseName}`
                   : appService
-                    ? `${appService.imageSource === "github" ? "Private GitHub" : "Public"} · ${appService.image}`
+                    ? isHtmlPage(appService)
+                      ? `HTML page · ${appService.publicDomain ?? appService.htmlRepo ?? "static site"}`
+                      : `${appService.imageSource === "github" ? "Private GitHub" : "Public"} · ${appService.image}`
                     : node.title}
               </strong>
               <div className="resource-workspace-muted">
@@ -2641,7 +2667,9 @@ function AutoDeployEditor({
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
 }) {
-  const isGithubImage = appService.imageSource === "github"
+  const isGithubImage =
+    appService.imageSource === "github" ||
+    appService.imageSource === "html_github"
   const [enabled, setEnabled] = useState(appService.autoDeployEnabled ?? false)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -2685,8 +2713,10 @@ function AutoDeployEditor({
           <strong>Deploy new image digests</strong>
           <p className="resource-workspace-muted">
             {isGithubImage
-              ? "Knotree checks this GHCR tag every minute and redeploys only when the image changes."
-              : "Automatic image deploys are available for GitHub Container Registry images."}
+              ? appService.imageSource === "html_github"
+                ? "Knotree checks the GitHub HTML repo every minute and redeploys when a new commit is pushed."
+                : "Knotree checks this GHCR tag every minute and redeploys only when the image changes."
+              : "Automatic deploys are available for GitHub images and HTML repositories."}
           </p>
         </div>
         <label className="resource-workspace-auto-deploy-toggle">
@@ -2703,7 +2733,13 @@ function AutoDeployEditor({
       <dl>
         <div>
           <dt>Registry</dt>
-          <dd>{isGithubImage ? "GitHub Container Registry" : "Docker registry"}</dd>
+          <dd>
+            {appService.imageSource === "html_github"
+              ? "GitHub HTML repository"
+              : isGithubImage
+                ? "GitHub Container Registry"
+                : "Docker registry"}
+          </dd>
         </div>
         <div>
           <dt>Deployed digest</dt>
@@ -3098,13 +3134,17 @@ function SettingsPane({
         ["Volume", "10 GB (writes stop at the limit)"],
       ],
     },
-    ...(appService
+    ...(appService &&
+    (appService.imageSource === "github" ||
+      appService.imageSource === "html_github")
       ? [
           {
             id: "auto-deploy",
             title: "Auto updates",
             description:
-              "Watch the GitHub Container Registry tag and queue a deployment when its image digest changes.",
+              appService.imageSource === "html_github"
+                ? "Watch the connected GitHub HTML repository and deploy when a new commit is pushed."
+                : "Watch the GitHub Container Registry tag and queue a deployment when its image digest changes.",
             rows: [
               ["Image", appService.image],
               [
@@ -3191,6 +3231,15 @@ function SettingsPane({
         <div>
           {appService && (
             <>
+              {isHtmlPage(appService) && (
+                <HtmlSourceEditor
+                  appService={appService}
+                  workspaceSlug={workspaceSlug}
+                  projectSlug={projectSlug}
+                  onToast={onToast}
+                  onAppServiceUpdated={onAppServiceUpdated}
+                />
+              )}
               <PublicAccessEditor
                 appService={appService}
                 workspaceSlug={workspaceSlug}
@@ -3198,13 +3247,15 @@ function SettingsPane({
                 onToast={onToast}
                 onAppServiceUpdated={onAppServiceUpdated}
               />
-              <DatabaseAttachmentEditor
-                appService={appService}
-                workspaceSlug={workspaceSlug}
-                projectSlug={projectSlug}
-                onToast={onToast}
-                onAppServiceUpdated={onAppServiceUpdated}
-              />
+              {!isHtmlPage(appService) && (
+                <DatabaseAttachmentEditor
+                  appService={appService}
+                  workspaceSlug={workspaceSlug}
+                  projectSlug={projectSlug}
+                  onToast={onToast}
+                  onAppServiceUpdated={onAppServiceUpdated}
+                />
+              )}
             </>
           )}
           {visibleSections.length ? (
@@ -3237,7 +3288,7 @@ function SettingsPane({
                         </div>
                       ))}
                     </dl>
-                    {section.id === "networking" && appService ? (
+                    {section.id === "networking" && appService && !isHtmlPage(appService) ? (
                       <AppPortEditor
                         key={`${appService.id}:${appService.appPort}`}
                         appService={appService}

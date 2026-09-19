@@ -10,6 +10,7 @@ pub struct KongAppRoute {
     pub public_host: String,
     pub upstream_url: String,
     pub rate_limit_rpm: u32,
+    pub cache_html: bool,
 }
 
 pub fn kong_rate_limiting_plugin(policy: RateLimitPolicy) -> Value {
@@ -21,6 +22,37 @@ pub fn kong_rate_limiting_plugin(policy: RateLimitPolicy) -> Value {
             "policy": "local",
             "fault_tolerant": true,
             "hide_client_headers": false,
+        },
+    })
+}
+
+pub fn kong_html_cache_plugin() -> Value {
+    json!({
+        "name": "proxy-cache",
+        "config": {
+            "response_code": [200],
+            "request_method": ["GET", "HEAD"],
+            "content_type": [
+                "text/html",
+                "text/html; charset=utf-8",
+                "text/css",
+                "text/css; charset=utf-8",
+                "text/javascript",
+                "text/javascript; charset=utf-8",
+                "application/javascript",
+                "application/javascript; charset=utf-8",
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/svg+xml",
+                "image/webp",
+                "image/x-icon",
+                "font/woff2"
+            ],
+            "cache_ttl": 300,
+            "strategy": "memory",
+            "cache_control": true,
+            "vary_headers": ["accept", "accept-encoding"],
         },
     })
 }
@@ -60,6 +92,9 @@ pub fn declarative_config(
             })?;
         let name = format!("knotree-app-{}", route.service_id.simple());
         let mut plugins = vec![kong_rate_limiting_plugin(policy)];
+        if route.cache_html {
+            plugins.push(kong_html_cache_plugin());
+        }
         if let (Some(endpoint), Some(token)) = (traffic_log_endpoint, traffic_log_token) {
             if !endpoint.trim().is_empty() && !token.trim().is_empty() {
                 plugins.push(kong_http_log_plugin(endpoint, token, route.service_id));
@@ -93,6 +128,7 @@ pub fn route_for_enabled_service(
     public_host: Option<String>,
     upstream_url: &str,
     rate_limit_rpm: u32,
+    cache_html: bool,
 ) -> Option<KongAppRoute> {
     let public_host = public_host.filter(|host| !host.is_empty())?;
     Some(KongAppRoute {
@@ -100,6 +136,7 @@ pub fn route_for_enabled_service(
         public_host,
         upstream_url: upstream_url.to_owned(),
         rate_limit_rpm,
+        cache_html,
     })
 }
 
@@ -144,12 +181,14 @@ mod tests {
                 public_host: "app-one.knotree.org".to_owned(),
                 upstream_url: "http://knotree-app-one:8080".to_owned(),
                 rate_limit_rpm: 30,
+                cache_html: false,
             },
             KongAppRoute {
                 service_id: second,
                 public_host: "app-two.knotree.org".to_owned(),
                 upstream_url: "http://knotree-app-two:8080".to_owned(),
                 rate_limit_rpm: 200,
+                cache_html: false,
             },
         ], None, None)
         .unwrap();
@@ -174,6 +213,7 @@ mod tests {
                 public_host: "app-one.knotree.org".to_owned(),
                 upstream_url: "http://knotree-app-one:8080".to_owned(),
                 rate_limit_rpm: 30,
+                cache_html: false,
             }],
             Some("http://knotree-api:8080/internal/public-traffic"),
             Some("traffic-secret"),
@@ -203,7 +243,8 @@ mod tests {
                 Uuid::nil(),
                 None,
                 "http://knotree-app:8080",
-                60
+                60,
+                false,
             )
             .is_none()
         );
@@ -212,7 +253,8 @@ mod tests {
                 Uuid::nil(),
                 Some(String::new()),
                 "http://knotree-app:8080",
-                60
+                60,
+                false,
             )
             .is_none()
         );
@@ -221,9 +263,32 @@ mod tests {
                 Uuid::nil(),
                 Some("app-ready.knotree.org".to_owned()),
                 "http://knotree-app:8080",
-                90
+                90,
+                false,
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn html_pages_enable_kong_proxy_cache_for_cloudflare_origin_offload() {
+        let plugin = kong_html_cache_plugin();
+        assert_eq!(plugin["name"], "proxy-cache");
+        assert_eq!(plugin["config"]["cache_control"], true);
+        assert_eq!(plugin["config"]["strategy"], "memory");
+        let config = declarative_config(
+            &[KongAppRoute {
+                service_id: Uuid::nil(),
+                public_host: "page-docs.knotree.org".to_owned(),
+                upstream_url: "http://knotree-html:8080".to_owned(),
+                rate_limit_rpm: 60,
+                cache_html: true,
+            }],
+            None,
+            None,
+        )
+        .unwrap();
+        let plugins = config["services"][0]["plugins"].as_array().unwrap();
+        assert_eq!(plugins[1]["name"], "proxy-cache");
     }
 }

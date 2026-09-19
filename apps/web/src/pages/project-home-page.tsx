@@ -267,9 +267,18 @@ function TopologyDashboard({
         title: appServices.length === 1 ? project.name : service.name,
         subtitle:
           appServices.length === 1
-            ? `${service.name} · ${service.image}`
-            : service.image,
-        type: "App service",
+            ? `${service.name} · ${
+                service.imageSource === "html" || service.imageSource === "html_github"
+                  ? service.publicDomain ?? "HTML page"
+                  : service.image
+              }`
+            : service.imageSource === "html" || service.imageSource === "html_github"
+              ? service.publicDomain ?? "HTML page"
+              : service.image,
+        type:
+          service.imageSource === "html" || service.imageSource === "html_github"
+            ? "HTML page"
+            : "App service",
         volume: service.containerName ?? `${service.name}-volume`,
         status: resourceStatusLabel(service.status),
         resource: service,
@@ -968,7 +977,7 @@ function TopologyDashboard({
                     />
                     <ProjectAddOption
                       mark="S"
-                      label="App service"
+                      label="App service / HTML page"
                       disabled={appServices.length >= 6}
                       onClick={handleAppServiceAdd}
                     />

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import { Dialog } from "@base-ui/react/dialog"
-import { BoxIcon, GitBranchIcon } from "lucide-react"
+import { BoxIcon, FileCodeIcon, GitBranchIcon } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
@@ -13,6 +13,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import {
@@ -37,7 +38,9 @@ type AppServiceCreateDialogProps = {
   onCreated: (resource: AppService) => void
 }
 
+type ServiceKind = "docker" | "html"
 type ImageSource = "public" | "github"
+type HtmlSource = "paste" | "github"
 
 export function AppServiceCreateDialog({
   workspaceSlug,
@@ -47,9 +50,15 @@ export function AppServiceCreateDialog({
   onOpenChange,
   onCreated,
 }: AppServiceCreateDialogProps) {
+  const [kind, setKind] = useState<ServiceKind>("docker")
   const [name, setName] = useState("App service")
   const [image, setImage] = useState("")
   const [imageSource, setImageSource] = useState<ImageSource>("public")
+  const [htmlSource, setHtmlSource] = useState<HtmlSource>("paste")
+  const [indexHtml, setIndexHtml] = useState("")
+  const [githubRepo, setGithubRepo] = useState("")
+  const [githubBranch, setGithubBranch] = useState("")
+  const [pageSlug, setPageSlug] = useState("")
   const [appPort, setAppPort] = useState("3000")
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -69,17 +78,21 @@ export function AppServiceCreateDialog({
   const deploymentId = deployment?.id
   const deploymentIsActive = deployment?.status === "provisioning"
   const submittedResourceId = submittedResource?.id
+  const needsGithub =
+    (kind === "docker" && imageSource === "github") ||
+    (kind === "html" && htmlSource === "github")
 
   useEffect(() => {
     onCreatedRef.current = onCreated
   }, [onCreated])
 
   useEffect(() => {
-    if (!open || imageSource !== "github") {
+    if (!open || !needsGithub) {
       return undefined
     }
 
     let active = true
+    setGithubStatusLoading(true)
     void getGithubConnectionStatus()
       .then((status) => {
         if (active) {
@@ -100,7 +113,7 @@ export function AppServiceCreateDialog({
     return () => {
       active = false
     }
-  }, [imageSource, open])
+  }, [needsGithub, open])
 
   useEffect(() => {
     if (!open || !submittedResourceId || !deploymentId || !deploymentIsActive) {
@@ -189,32 +202,63 @@ export function AppServiceCreateDialog({
     if (name.trim().length === 0 || name.trim().length > 80) {
       nextErrors.name = "Enter a service name between 1 and 80 characters."
     }
-    if (image.trim().length === 0 || image.trim().length > 255) {
-      nextErrors.image = "Paste a Docker image reference."
-    }
-    const parsedPort = Number(appPort)
-    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
-      nextErrors.appPort = "Use a container port between 1 and 65535."
+    if (kind === "docker") {
+      if (image.trim().length === 0 || image.trim().length > 255) {
+        nextErrors.image = "Paste a Docker image reference."
+      }
+      const parsedPort = Number(appPort)
+      if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        nextErrors.appPort = "Use a container port between 1 and 65535."
+      }
+    } else {
+      const slug = pageSlug.trim().replace(/^page-/i, "")
+      if (!/^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$/.test(slug)) {
+        nextErrors.pageSlug =
+          "Choose a unique suffix of lowercase letters, numbers, and hyphens."
+      }
+      if (htmlSource === "paste" && indexHtml.trim().length === 0) {
+        nextErrors.indexHtml = "Paste the contents of index.html."
+      }
+      if (htmlSource === "github" && githubRepo.trim().length === 0) {
+        nextErrors.githubRepo = "Enter a GitHub owner/repo or repository URL."
+      }
     }
     setErrors(nextErrors)
     setSubmitError(null)
     if (Object.keys(nextErrors).length > 0) {
       return
     }
-    if (imageSource === "github" && !githubStatus?.connected) {
-      setSubmitError("Connect GitHub before deploying a private image.")
+    if (needsGithub && !githubStatus?.connected) {
+      setSubmitError("Connect GitHub before deploying from a private repository.")
       return
     }
 
     setIsSubmitting(true)
     setStreamError(null)
     try {
-      const resource = await createAppService(workspaceSlug, projectSlug, {
-        name: name.trim(),
-        image: image.trim(),
-        imageSource,
-        appPort: parsedPort,
-      })
+      const resource = await createAppService(
+        workspaceSlug,
+        projectSlug,
+        kind === "html"
+          ? {
+              name: name.trim(),
+              imageSource: htmlSource === "github" ? "html_github" : "html",
+              pageSlug: pageSlug.trim().replace(/^page-/i, ""),
+              indexHtml: htmlSource === "paste" ? indexHtml : undefined,
+              githubRepo: htmlSource === "github" ? githubRepo.trim() : undefined,
+              githubBranch:
+                htmlSource === "github" && githubBranch.trim()
+                  ? githubBranch.trim()
+                  : undefined,
+              autoDeploy: htmlSource === "github",
+            }
+          : {
+              name: name.trim(),
+              image: image.trim(),
+              imageSource,
+              appPort: Number(appPort),
+            }
+      )
       if (!resource.deployment) {
         onCreated(resource)
         onOpenChange(false)
@@ -257,7 +301,9 @@ export function AppServiceCreateDialog({
               <Dialog.Description className="project-dialog-description">
                 {submittedResource
                   ? "The deployment is running in the background. Follow each Docker step and live log below."
-                  : `Paste a Docker image and Knotree will run it as an isolated service for this project. New services start without a database; assign one later from Settings. (${appServiceCount}/6 services)`}
+                  : kind === "html"
+                    ? `Host a static HTML page from a pasted index.html or a GitHub Pages-style repo. Public hostnames start with page- and stay unique. (${appServiceCount}/6 services)`
+                    : `Paste a Docker image and Knotree will run it as an isolated service for this project. New services start without a database; assign one later from Settings. (${appServiceCount}/6 services)`}
               </Dialog.Description>
             </div>
             <button
@@ -272,10 +318,15 @@ export function AppServiceCreateDialog({
 
           {!submittedResource && (
             <div className="project-dialog-note">
-              <BoxIcon aria-hidden="true" />
+              {kind === "html" ? (
+                <FileCodeIcon aria-hidden="true" />
+              ) : (
+                <BoxIcon aria-hidden="true" />
+              )}
               <span>
-                Public images do not need a login. Private images are currently
-                supported through GitHub Container Registry only.
+                {kind === "html"
+                  ? "Knotree injects analytics, serves CSS/JS/subfolders like GitHub Pages, and sets Cloudflare cache headers on static assets."
+                  : "Public images do not need a login. Private images are currently supported through GitHub Container Registry only."}
               </span>
             </div>
           )}
@@ -294,6 +345,34 @@ export function AppServiceCreateDialog({
                 noValidate
               >
                 <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="appServiceKind">
+                      Service type
+                    </FieldLabel>
+                    <select
+                      id="appServiceKind"
+                      name="appServiceKind"
+                      className="project-dialog-select"
+                      value={kind}
+                      onChange={(event) => {
+                        const nextKind = event.target.value as ServiceKind
+                        setKind(nextKind)
+                        setGithubStatusLoading(
+                          nextKind === "html"
+                            ? htmlSource === "github"
+                            : imageSource === "github"
+                        )
+                        if (nextKind === "html") {
+                          setName((current) =>
+                            current === "App service" ? "HTML page" : current
+                          )
+                        }
+                      }}
+                    >
+                      <option value="docker">Docker app service</option>
+                      <option value="html">HTML page</option>
+                    </select>
+                  </Field>
                   <Field data-invalid={Boolean(errors.name)}>
                     <FieldLabel htmlFor="appServiceName">
                       Service name
@@ -308,76 +387,194 @@ export function AppServiceCreateDialog({
                     />
                     {errors.name && <FieldError>{errors.name}</FieldError>}
                   </Field>
-                  <Field data-invalid={Boolean(errors.image)}>
-                    <FieldLabel htmlFor="appServiceImage">
-                      Docker image
-                    </FieldLabel>
-                    <Input
-                      id="appServiceImage"
-                      name="appServiceImage"
-                      value={image}
-                      placeholder="nginx:alpine or ghcr.io/org/app:latest"
-                      autoComplete="off"
-                      spellCheck={false}
-                      aria-invalid={Boolean(errors.image)}
-                      onChange={(event) => setImage(event.target.value)}
-                    />
-                    <FieldDescription>
-                      Include the tag when you need a specific version.
-                    </FieldDescription>
-                    {errors.image && <FieldError>{errors.image}</FieldError>}
-                  </Field>
-                  <Field data-invalid={Boolean(errors.imageSource)}>
-                    <FieldLabel htmlFor="appServiceImageSource">
-                      Image access
-                    </FieldLabel>
-                    <select
-                      id="appServiceImageSource"
-                      name="appServiceImageSource"
-                      className="project-dialog-select"
-                      value={imageSource}
-                      aria-invalid={Boolean(errors.imageSource)}
-                      onChange={(event) => {
-                        const nextSource = event.target.value as ImageSource
-                        setGithubStatusLoading(nextSource === "github")
-                        if (nextSource === "public") {
-                          setGithubStatus(null)
-                        }
-                        setImageSource(nextSource)
-                      }}
-                    >
-                      <option value="public">Public Docker image</option>
-                      <option value="github">Private GitHub image</option>
-                    </select>
-                    {errors.imageSource && (
-                      <FieldError>{errors.imageSource}</FieldError>
-                    )}
-                  </Field>
-                  <Field data-invalid={Boolean(errors.appPort)}>
-                    <FieldLabel htmlFor="appServicePort">
-                      Container port
-                    </FieldLabel>
-                    <Input
-                      id="appServicePort"
-                      name="appServicePort"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={appPort}
-                      aria-invalid={Boolean(errors.appPort)}
-                      onChange={(event) => setAppPort(event.target.value)}
-                    />
-                    <FieldDescription>
-                      The port your image listens on. Knotree assigns the public
-                      port automatically.
-                    </FieldDescription>
-                    {errors.appPort && (
-                      <FieldError>{errors.appPort}</FieldError>
-                    )}
-                  </Field>
+                  {kind === "docker" ? (
+                    <>
+                      <Field data-invalid={Boolean(errors.image)}>
+                        <FieldLabel htmlFor="appServiceImage">
+                          Docker image
+                        </FieldLabel>
+                        <Input
+                          id="appServiceImage"
+                          name="appServiceImage"
+                          value={image}
+                          placeholder="nginx:alpine or ghcr.io/org/app:latest"
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-invalid={Boolean(errors.image)}
+                          onChange={(event) => setImage(event.target.value)}
+                        />
+                        <FieldDescription>
+                          Include the tag when you need a specific version.
+                        </FieldDescription>
+                        {errors.image && <FieldError>{errors.image}</FieldError>}
+                      </Field>
+                      <Field data-invalid={Boolean(errors.imageSource)}>
+                        <FieldLabel htmlFor="appServiceImageSource">
+                          Image access
+                        </FieldLabel>
+                        <select
+                          id="appServiceImageSource"
+                          name="appServiceImageSource"
+                          className="project-dialog-select"
+                          value={imageSource}
+                          aria-invalid={Boolean(errors.imageSource)}
+                          onChange={(event) => {
+                            const nextSource = event.target.value as ImageSource
+                            setGithubStatusLoading(nextSource === "github")
+                            if (nextSource === "public") {
+                              setGithubStatus(null)
+                            }
+                            setImageSource(nextSource)
+                          }}
+                        >
+                          <option value="public">Public Docker image</option>
+                          <option value="github">Private GitHub image</option>
+                        </select>
+                        {errors.imageSource && (
+                          <FieldError>{errors.imageSource}</FieldError>
+                        )}
+                      </Field>
+                      <Field data-invalid={Boolean(errors.appPort)}>
+                        <FieldLabel htmlFor="appServicePort">
+                          Container port
+                        </FieldLabel>
+                        <Input
+                          id="appServicePort"
+                          name="appServicePort"
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={appPort}
+                          aria-invalid={Boolean(errors.appPort)}
+                          onChange={(event) => setAppPort(event.target.value)}
+                        />
+                        <FieldDescription>
+                          The port your image listens on. Knotree assigns the
+                          public port automatically.
+                        </FieldDescription>
+                        {errors.appPort && (
+                          <FieldError>{errors.appPort}</FieldError>
+                        )}
+                      </Field>
+                    </>
+                  ) : (
+                    <>
+                      <Field data-invalid={Boolean(errors.htmlSource)}>
+                        <FieldLabel htmlFor="htmlSource">
+                          HTML source
+                        </FieldLabel>
+                        <select
+                          id="htmlSource"
+                          name="htmlSource"
+                          className="project-dialog-select"
+                          value={htmlSource}
+                          onChange={(event) => {
+                            const nextSource = event.target.value as HtmlSource
+                            setGithubStatusLoading(nextSource === "github")
+                            if (nextSource === "paste") {
+                              setGithubStatus(null)
+                            }
+                            setHtmlSource(nextSource)
+                          }}
+                        >
+                          <option value="paste">Paste index.html</option>
+                          <option value="github">GitHub HTML repository</option>
+                        </select>
+                        <FieldDescription>
+                          Repositories are published like GitHub Pages: index.html
+                          is the root, and CSS, JS, and folders are included.
+                        </FieldDescription>
+                      </Field>
+                      <Field data-invalid={Boolean(errors.pageSlug)}>
+                        <FieldLabel htmlFor="htmlPageSlug">
+                          Public domain
+                        </FieldLabel>
+                        <Input
+                          id="htmlPageSlug"
+                          name="htmlPageSlug"
+                          value={pageSlug}
+                          placeholder="docs"
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-invalid={Boolean(errors.pageSlug)}
+                          onChange={(event) => setPageSlug(event.target.value)}
+                        />
+                        <FieldDescription>
+                          Hostname will be page-
+                          {pageSlug.trim().replace(/^page-/i, "") || "your-name"}
+                          .knotree.org and must be unique.
+                        </FieldDescription>
+                        {errors.pageSlug && (
+                          <FieldError>{errors.pageSlug}</FieldError>
+                        )}
+                      </Field>
+                      {htmlSource === "paste" ? (
+                        <Field data-invalid={Boolean(errors.indexHtml)}>
+                          <FieldLabel htmlFor="htmlIndex">
+                            index.html
+                          </FieldLabel>
+                          <Textarea
+                            id="htmlIndex"
+                            name="htmlIndex"
+                            value={indexHtml}
+                            rows={12}
+                            spellCheck={false}
+                            aria-invalid={Boolean(errors.indexHtml)}
+                            placeholder="<!doctype html>..."
+                            onChange={(event) => setIndexHtml(event.target.value)}
+                          />
+                          {errors.indexHtml && (
+                            <FieldError>{errors.indexHtml}</FieldError>
+                          )}
+                        </Field>
+                      ) : (
+                        <>
+                          <Field data-invalid={Boolean(errors.githubRepo)}>
+                            <FieldLabel htmlFor="htmlGithubRepo">
+                              GitHub repository
+                            </FieldLabel>
+                            <Input
+                              id="htmlGithubRepo"
+                              name="htmlGithubRepo"
+                              value={githubRepo}
+                              placeholder="acme/docs-site"
+                              autoComplete="off"
+                              spellCheck={false}
+                              aria-invalid={Boolean(errors.githubRepo)}
+                              onChange={(event) =>
+                                setGithubRepo(event.target.value)
+                              }
+                            />
+                            {errors.githubRepo && (
+                              <FieldError>{errors.githubRepo}</FieldError>
+                            )}
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="htmlGithubBranch">
+                              Branch (optional)
+                            </FieldLabel>
+                            <Input
+                              id="htmlGithubBranch"
+                              name="htmlGithubBranch"
+                              value={githubBranch}
+                              placeholder="main"
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(event) =>
+                                setGithubBranch(event.target.value)
+                              }
+                            />
+                            <FieldDescription>
+                              New pushes to this branch are deployed automatically.
+                            </FieldDescription>
+                          </Field>
+                        </>
+                      )}
+                    </>
+                  )}
                 </FieldGroup>
 
-                {imageSource === "github" && (
+                {needsGithub && (
                   <div className="project-github-connect" role="status">
                     <div>
                       <strong>
@@ -388,7 +585,9 @@ export function AppServiceCreateDialog({
                       <span>
                         {githubStatusLoading
                           ? "Checking GitHub connection…"
-                          : "Knotree uses this connection to pull private ghcr.io images."}
+                          : kind === "html"
+                            ? "Knotree uses this connection to clone the HTML repository."
+                            : "Knotree uses this connection to pull private ghcr.io images."}
                       </span>
                     </div>
                     <Button

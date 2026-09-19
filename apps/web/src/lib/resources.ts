@@ -11,6 +11,7 @@ import type {
   AppServiceMetrics,
   AppServiceLogs,
   GithubConnectionStatus,
+  HtmlAnalyticsSummary,
   PostgresResource,
   RedisResource,
 } from "@/lib/types"
@@ -21,10 +22,14 @@ export type CreatePostgresResourceInput = {
 
 export type CreateAppServiceInput = {
   name: string
-  image: string
-  imageSource: "public" | "github"
-  appPort: number
+  image?: string
+  imageSource: "public" | "github" | "html" | "html_github"
+  appPort?: number
   autoDeploy?: boolean
+  pageSlug?: string
+  indexHtml?: string
+  githubRepo?: string
+  githubBranch?: string
 }
 
 export type UpdateAppServiceInput = {
@@ -234,6 +239,38 @@ export function updateAppServiceAutoDeploy(
       method: "PATCH",
       body: input,
     }
+  )
+}
+
+export function getHtmlPageIndex(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string
+) {
+  return apiRequest<{ indexHtml: string }>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html`
+  )
+}
+
+export function updateHtmlPage(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string,
+  input: { indexHtml: string }
+) {
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html`,
+    { method: "PATCH", body: input }
+  )
+}
+
+export function getHtmlPageAnalytics(
+  workspaceSlug: string,
+  projectSlug: string,
+  appServiceId: string
+) {
+  return apiRequest<HtmlAnalyticsSummary>(
+    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html-analytics`
   )
 }
 

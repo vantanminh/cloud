@@ -2405,6 +2405,18 @@
   background: var(--project-accent-soft) !important;
 }
 
+.html-analytics-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.html-analytics-recent {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 6px;
+}
+
 .project-home[data-theme="dark"] .resource-workspace-metrics-control {
   background: var(--project-surface) !important;
   background-color: var(--project-surface) !important;

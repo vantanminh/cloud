@@ -1289,6 +1289,8 @@ dependencies = [
  "deunicode",
  "dotenvy",
  "futures-util",
+ "hex",
+ "hmac",
  "k8s-openapi",
  "kube",
  "rand 0.8.8",

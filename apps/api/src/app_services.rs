@@ -1334,7 +1334,7 @@ pub(crate) async fn sync_kong_routes(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     };
     let rows = sqlx::query_as::<_, KongSyncRow>(
-        "SELECT id, public_subdomain, public_access_enabled, rate_limit_rpm, host, port, container_name, status
+        "SELECT id, public_subdomain, public_access_enabled, rate_limit_rpm, host, port, container_name, status, image_source
          FROM project_app_services
          WHERE public_access_enabled = true AND public_subdomain IS NOT NULL AND status = 'ready'",
     )
@@ -1368,6 +1368,7 @@ fn kong_routes_from_rows(
             hostname,
             &upstream,
             u32::try_from(row.rate_limit_rpm).unwrap_or(DEFAULT_APP_RATE_LIMIT_RPM),
+            html_pages::is_html_source(&row.image_source),
         ) {
             routes.push(route);
         }
@@ -1385,6 +1386,7 @@ struct KongSyncRow {
     port: Option<i32>,
     container_name: Option<String>,
     status: String,
+    image_source: String,
 }
 
 pub async fn metrics(
@@ -2565,6 +2567,34 @@ async fn prepare_html_site(
             .await?;
         html_pages::write_site_to_disk(&state.config.html_site_data_dir, service_id, &files)
             .await?;
+        let callback = format!(
+            "{}/api/v1/public/html-pages/github-push",
+            html_pages::collect_origin(&state.config)
+        );
+        let secret =
+            html_pages::github_webhook_secret(&state.config.database_credentials_encryption_key);
+        if let Err(error) = html_pages::register_github_push_webhook(
+            token,
+            &owner,
+            &name,
+            &callback,
+            &secret,
+        )
+        .await
+        {
+            tracing::warn!(
+                repo = %format!("{owner}/{name}"),
+                error = %error,
+                "could not register GitHub HTML page push webhook; polling remains enabled"
+            );
+        } else {
+            log_deployment(
+                logger,
+                "HTML site",
+                "Registered a GitHub push webhook so new commits deploy automatically.",
+            )
+            .await?;
+        }
         return Ok(Some(sha));
     } else {
         html_pages::load_files(&state.db, service_id).await?
@@ -2688,6 +2718,45 @@ async fn check_auto_deploy_candidate(
             )
             .await;
         });
+    }
+    Ok(())
+}
+
+pub(crate) async fn queue_html_github_pushes(
+    state: &AppState,
+    full_name: &str,
+    branch: &str,
+) -> Result<()> {
+    if full_name.is_empty() {
+        return Ok(());
+    }
+    let candidates = sqlx::query_as::<_, AutoDeployCandidate>(
+        "SELECT id, image, image_source, container_name, github_connection_user_id, html_repo, html_branch, html_sha
+         FROM project_app_services
+         WHERE auto_deploy_enabled = TRUE
+           AND image_source = $1
+           AND status = $2
+           AND lower(html_repo) = lower($3)
+           AND (
+             html_branch IS NULL
+             OR html_branch = ''
+             OR html_branch = $4
+           )",
+    )
+    .bind(IMAGE_SOURCE_HTML_GITHUB)
+    .bind(STATUS_READY)
+    .bind(full_name)
+    .bind(branch)
+    .fetch_all(&state.db)
+    .await?;
+    for candidate in candidates {
+        if let Err(error) = check_html_repo_auto_deploy(state, candidate.clone()).await {
+            tracing::warn!(
+                app_service_id = %candidate.id,
+                error = %error,
+                "HTML GitHub push auto-deploy failed"
+            );
+        }
     }
     Ok(())
 }
@@ -4504,6 +4573,7 @@ mod tests {
                     port: Some(8080),
                     container_name: Some("knotree-app-ready".to_owned()),
                     status: STATUS_READY.to_owned(),
+                    image_source: IMAGE_SOURCE_PUBLIC.to_owned(),
                 },
                 KongSyncRow {
                     id: pending_id,
@@ -4514,6 +4584,7 @@ mod tests {
                     port: Some(8080),
                     container_name: Some("knotree-app-pending".to_owned()),
                     status: STATUS_PROVISIONING.to_owned(),
+                    image_source: IMAGE_SOURCE_PUBLIC.to_owned(),
                 },
             ],
             Some("knotree.org"),

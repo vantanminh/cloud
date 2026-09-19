@@ -70,8 +70,11 @@ export type AppService = {
   resourceType: "app"
   status: AppServiceStatus
   image: string
-  imageSource: "public" | "github"
+  imageSource: "public" | "github" | "html" | "html_github"
   appPort: number
+  htmlRepo?: string | null
+  htmlBranch?: string | null
+  htmlSha?: string | null
   host: string | null
   port: number | null
   serviceUrl: string | null
@@ -197,6 +200,27 @@ export type DatabaseQueryResult = {
   affectedRows: number
   durationMs: number
   truncated: boolean
+}
+
+export type HtmlAnalyticsSummary = {
+  pageviews: number
+  sessions: number
+  avgDurationMs: number
+  topPaths: Array<{ name: string; count: number }>
+  topReferrers: Array<{ name: string; count: number }>
+  browsers: Array<{ name: string; count: number }>
+  eventTypes: Array<{ name: string; count: number }>
+  recent: Array<{
+    occurredAt: string
+    eventType: string
+    path: string
+    referrer: string | null
+    sessionId: string | null
+  }>
+}
+
+export function isHtmlPage(service: Pick<AppService, "imageSource">) {
+  return service.imageSource === "html" || service.imageSource === "html_github"
 }
 
 export type AuthResponse = {
