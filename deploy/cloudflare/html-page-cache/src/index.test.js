@@ -20,6 +20,30 @@ test("does not treat error responses as cacheable HTML", () => {
   )
 })
 
+test("does not cache partial responses or responses with Vary: *", () => {
+  const cacheControl = "public, max-age=60, s-maxage=60"
+  assert.equal(
+    isCacheableOriginResponse(
+      new Response("partial", {
+        status: 206,
+        headers: { "Cache-Control": cacheControl },
+      })
+    ),
+    false
+  )
+  assert.equal(
+    isCacheableOriginResponse(
+      new Response("ok", {
+        headers: {
+          "Cache-Control": cacheControl,
+          Vary: "Accept-Language, *",
+        },
+      })
+    ),
+    false
+  )
+})
+
 test("respects origin Cache-Control for Cloudflare cache eligibility", () => {
   assert.equal(
     isCacheableOriginResponse(

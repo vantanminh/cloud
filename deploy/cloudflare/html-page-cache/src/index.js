@@ -8,11 +8,15 @@ export function isHtmlPageHost(hostname) {
 }
 
 export function isCacheableOriginResponse(response) {
-  if (!response.ok) {
+  if (!response.ok || response.status === 206) {
     return false
   }
   const cacheControl = response.headers.get("Cache-Control") || ""
   if (/no-store|private|no-cache/i.test(cacheControl)) {
+    return false
+  }
+  const vary = response.headers.get("Vary") || ""
+  if (vary.split(",").some((value) => value.trim() === "*")) {
     return false
   }
   return /s-maxage=\d+|max-age=\d+/i.test(cacheControl)
