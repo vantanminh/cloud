@@ -6,7 +6,8 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use knotree_api::{
-    app_services, cluster_kubernetes, config::Config, database, resources, router, state::AppState,
+    app_services, cluster_kubernetes, config::Config, database, html_pages, resources, router,
+    state::AppState,
 };
 
 #[tokio::main]
@@ -31,6 +32,19 @@ async fn main() -> Result<()> {
 
     let bind_addr = config.bind_addr;
     let state = AppState::new(db, config.clone());
+    match html_pages::repair_existing_analytics_files(&state).await {
+        Ok(repaired_files) if repaired_files > 0 => {
+            tracing::info!(
+                repaired_files,
+                "repaired stored hosted HTML analytics collectors"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            error = %error,
+            "could not scan stored hosted HTML analytics collectors for repair"
+        ),
+    }
     let metrics_sampler = database::spawn_metrics_sampler(state.clone());
     let storage_guard = database::spawn_storage_guard(state.clone());
     let postgres_provisioning_reconciler = resources::spawn_provisioning_reconciler(state.clone());

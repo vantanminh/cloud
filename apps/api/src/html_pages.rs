@@ -174,9 +174,7 @@ pub fn inject_analytics(html: &str, site_id: Uuid) -> String {
     let snippet = format!(
         r#"<script defer src="/api/v1/public/html-pages/{site_id}/analytics.js" data-kt-site="{site_id}"></script>"#
     );
-    if html.contains("html-pages/") && html.contains("/analytics.js") {
-        return html.to_owned();
-    }
+    let html = strip_injected_analytics(html);
     if let Some(index) = html.to_ascii_lowercase().rfind("</head>") {
         let mut out = String::with_capacity(html.len() + snippet.len() + 1);
         out.push_str(&html[..index]);
@@ -215,7 +213,8 @@ pub fn strip_injected_analytics(html: &str) -> String {
         let end = end_rel + "</script>".len();
         let tag = &after[..end];
         remaining = &after[end..];
-        if tag.contains("html-pages/") && tag.contains("/analytics.js") {
+        let tag_lower = tag.to_ascii_lowercase();
+        if tag_lower.contains("html-pages/") && tag_lower.contains("/analytics.js") {
             if remaining.starts_with('\n') {
                 remaining = &remaining[1..];
             }
@@ -230,16 +229,19 @@ pub fn analytics_javascript(site_id: Uuid) -> String {
     format!(
         r#"(function(){{
 var SITE="{site_id}";
-var sid=localStorage.getItem("kt.sid");
-if(!sid){{sid=Math.random().toString(36).slice(2)+Date.now().toString(36);localStorage.setItem("kt.sid",sid);}}
+var sid=null;
+try{{sid=localStorage.getItem("kt.sid");}}catch(e){{}}
+if(!sid){{sid=Math.random().toString(36).slice(2)+Date.now().toString(36);try{{localStorage.setItem("kt.sid",sid);}}catch(e){{}}}}
 var start=Date.now();
 function payload(type, extra){{
+  var timezone=null;
+  try{{timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||null;}}catch(e){{}}
   return {{
     eventType:type,
     path:location.pathname+location.search,
     referrer:document.referrer||null,
     language:navigator.language||null,
-    timezone:(Intl.DateTimeFormat().resolvedOptions().timeZone)||null,
+    timezone:timezone,
     screenWidth:screen.width,screenHeight:screen.height,
     viewportWidth:window.innerWidth,viewportHeight:window.innerHeight,
     sessionId:sid,
@@ -250,11 +252,11 @@ function payload(type, extra){{
 function send(type, extra){{
   try{{
     var body=JSON.stringify(payload(type, extra));
+    var endpoint=location.origin+"/api/v1/public/html-pages/"+SITE+"/events";
     if(navigator.sendBeacon){{
-      navigator.sendBeacon(location.origin+"/api/v1/public/html-pages/"+SITE+"/events", new Blob([body],{{type:"application/json"}}));
-    }} else {{
-      fetch(location.origin+"/api/v1/public/html-pages/"+SITE+"/events",{{method:"POST",headers:{{"content-type":"application/json"}},body:body,keepalive:true,mode:"cors"}});
+      try{{if(navigator.sendBeacon(endpoint,new Blob([body],{{type:"application/json"}}))) return;}}catch(e){{}}
     }}
+    if(window.fetch) fetch(endpoint,{{method:"POST",headers:{{"content-type":"application/json"}},body:body,keepalive:true,mode:"same-origin"}}).catch(function(){{}});
   }}catch(e){{}}
 }}
 send("pageview", {{title:document.title, href:location.href}});
@@ -561,6 +563,120 @@ pub async fn load_files(
             content_type: row.get("content_type"),
         })
         .collect())
+}
+
+pub async fn repair_existing_analytics_files(state: &AppState) -> Result<usize> {
+    let service_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM project_app_services WHERE image_source IN ($1, $2) ORDER BY id",
+    )
+    .bind(IMAGE_SOURCE_HTML)
+    .bind(IMAGE_SOURCE_HTML_GITHUB)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut repaired_files = 0;
+    for service_id in service_ids {
+        match repair_service_analytics_files(state, service_id).await {
+            Ok(count) => repaired_files += count,
+            Err(error) => tracing::warn!(
+                service_id = %service_id,
+                error = %error,
+                "could not repair the hosted HTML analytics collector"
+            ),
+        }
+    }
+
+    Ok(repaired_files)
+}
+
+async fn repair_service_analytics_files(state: &AppState, service_id: Uuid) -> Result<usize> {
+    let files = sqlx::query(
+        "SELECT path, content FROM html_page_files WHERE app_service_id = $1 AND (path ILIKE '%.html' OR path ILIKE '%.htm')",
+    )
+    .bind(service_id)
+    .fetch_all(&state.db)
+    .await?;
+    let html_root = site_dir(&state.config.html_site_data_dir, service_id).join("html");
+    let mut updated_db_files = Vec::new();
+    let mut repaired_files = 0;
+
+    for row in files {
+        let file_path: String = row.get("path");
+        let stored_content: Vec<u8> = row.get("content");
+        let Ok(html) = String::from_utf8(stored_content.clone()) else {
+            continue;
+        };
+        let content = inject_analytics(&html, service_id).into_bytes();
+        let Some(path) = sanitize_relative_path(&file_path) else {
+            tracing::warn!(
+                service_id = %service_id,
+                "skipped hosted HTML analytics repair for an invalid stored path"
+            );
+            continue;
+        };
+
+        let site_path = html_root.join(&path);
+        let mut repaired_file = false;
+        if tokio::fs::try_exists(&site_path).await? {
+            if tokio::fs::read(&site_path).await? != content {
+                write_file_atomically(&site_path, &content).await?;
+                repaired_file = true;
+            }
+        }
+        if content != stored_content {
+            updated_db_files.push((file_path, content));
+            repaired_file = true;
+        }
+        if repaired_file {
+            repaired_files += 1;
+        }
+    }
+
+    if !updated_db_files.is_empty() {
+        let mut transaction = state.db.begin().await?;
+        for (path, content) in &updated_db_files {
+            sqlx::query(
+                "UPDATE html_page_files SET content = $1 WHERE app_service_id = $2 AND path = $3",
+            )
+            .bind(content)
+            .bind(service_id)
+            .bind(path)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+    }
+
+    Ok(repaired_files)
+}
+
+async fn write_file_atomically(path: &Path, content: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("hosted HTML file has no parent directory")?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("hosted HTML file has an invalid name")?;
+    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4().simple()));
+
+    let result: Result<()> = async {
+        tokio::fs::write(&temporary_path, content).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(0o644))
+                .await?;
+        }
+        tokio::fs::rename(&temporary_path, path).await?;
+        Ok(())
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(temporary_path).await;
+    }
+    result
 }
 
 pub fn collect_origin(config: &crate::config::Config) -> String {
