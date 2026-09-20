@@ -257,7 +257,7 @@ describe("AuthPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("creates a project and opens its topology home", async () => {
+  it("creates a project, manages its resources, and opens topology", async () => {
     const user = userEvent.setup()
     const clipboardWrite = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {
@@ -301,16 +301,17 @@ describe("AuthPage", () => {
     )
 
     expect(
-      await screen.findByRole("heading", { name: "Knotree Study" })
+      await screen.findByRole("heading", { name: "Resources" })
     ).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Knotree Study" }).tagName).toBe(
-      "H2"
-    )
-
     expect(
-      await screen.findByText("Create your first database")
+      screen.getByText("Knotree Study", {
+        selector: ".project-project-context",
+      })
     ).toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Add" }))
+    expect(
+      await screen.findByRole("heading", { name: "No resources yet" })
+    ).toBeInTheDocument()
+    await user.click(screen.getAllByRole("button", { name: "Add resource" })[0])
     await user.click(screen.getByRole("button", { name: /^Postgres$/ }))
     const databaseName = await screen.findByLabelText("Database name")
     await user.clear(databaseName)
@@ -347,7 +348,7 @@ describe("AuthPage", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 
     await user.click(
-      await screen.findByRole("button", { name: "Postgres resource, online" })
+      await screen.findByRole("button", { name: "Open Postgres" })
     )
     const reopenedResourceDialog = await screen.findByRole("dialog")
     await user.click(
@@ -362,7 +363,7 @@ describe("AuthPage", () => {
       })
     )
 
-    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("button", { name: "Add resource" }))
     await user.click(screen.getByRole("button", { name: /^Redis$/ }))
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
@@ -373,11 +374,20 @@ describe("AuthPage", () => {
       "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/redis",
       expect.objectContaining({ method: "POST" })
     )
+    const redisWorkspace = await screen.findByRole("dialog", { name: "Redis" })
     expect(
-      await screen.findByRole("button", { name: /Redis resource, online/i })
+      within(redisWorkspace).getByRole("heading", { name: "Redis" })
+    ).toBeInTheDocument()
+    await user.click(
+      within(redisWorkspace).getByRole("button", {
+        name: "Close resource workspace",
+      })
+    )
+    expect(
+      await screen.findByRole("button", { name: "Open Redis" })
     ).toBeInTheDocument()
 
-    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("button", { name: "Add resource" }))
     await user.click(
       screen.getByRole("button", { name: "App service / HTML page" })
     )
@@ -417,7 +427,9 @@ describe("AuthPage", () => {
     expect(screen.getByRole("heading", { name: /^Logs$/ })).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Topology" }))
     expect(
-      screen.getByRole("heading", { name: "Knotree Study" })
+      screen.getByRole("region", {
+        name: "production infrastructure topology for Knotree Study",
+      })
     ).toBeInTheDocument()
 
     await user.click(

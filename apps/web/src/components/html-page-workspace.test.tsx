@@ -64,9 +64,14 @@ describe("HtmlSourceEditor", () => {
     await user.click(screen.getByRole("button", { name: "Save and deploy" }))
 
     await waitFor(() => {
-      expect(mocks.updateHtmlPage).toHaveBeenCalledWith("ws", "proj", "html-id", {
-        indexHtml: "<html><body>updated-v2</body></html>",
-      })
+      expect(mocks.updateHtmlPage).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "proj",
+        "html-id",
+        {
+          indexHtml: "<html><body>updated-v2</body></html>",
+        }
+      )
     })
     expect(onToast).toHaveBeenCalledWith("HTML page redeploy started.")
     expect(onAppServiceUpdated).toHaveBeenCalled()

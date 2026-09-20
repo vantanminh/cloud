@@ -60,7 +60,10 @@ describe("AppServiceCreateDialog HTML pages", () => {
     )
     await user.click(screen.getByRole("button", { name: "Deploy service" }))
 
-    expect(mocks.createAppService).toHaveBeenCalledWith("ws", "proj", {
+    expect(mocks.createAppService).toHaveBeenCalledWith(
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
+      "proj",
+      {
       name: "Docs",
       imageSource: "html",
       pageSlug: "docs",
@@ -91,7 +94,7 @@ describe("AppServiceCreateDialog HTML pages", () => {
     )
     await user.click(screen.getByRole("button", { name: "Deploy service" }))
     expect(mocks.createAppService).toHaveBeenCalledWith(
-      "ws",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "proj",
       expect.objectContaining({
         name: "My Docs",
@@ -123,7 +126,10 @@ describe("AppServiceCreateDialog HTML pages", () => {
     await user.type(screen.getByLabelText("Public domain"), "docs")
     await user.type(screen.getByLabelText("GitHub repository"), "acme/site")
     await user.click(screen.getByRole("button", { name: "Deploy service" }))
-    expect(mocks.createAppService).toHaveBeenCalledWith("ws", "proj", {
+    expect(mocks.createAppService).toHaveBeenCalledWith(
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
+      "proj",
+      {
       name: "Docs",
       imageSource: "html_github",
       pageSlug: "docs",
