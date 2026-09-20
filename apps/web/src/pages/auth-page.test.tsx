@@ -326,7 +326,9 @@ describe("AuthPage", () => {
     expect(
       within(resourceDialog).getByRole("tab", { name: "Deployments" })
     ).toHaveAttribute("aria-selected", "true")
-    expect(screen.getAllByText("knotree_db_project").length).toBeGreaterThan(0)
+    expect(
+      within(resourceDialog).getByText("PostgreSQL · knotree_db_project")
+    ).toBeInTheDocument()
     await user.click(
       within(resourceDialog).getByRole("tab", { name: "Database" })
     )
