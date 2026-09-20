@@ -55,9 +55,8 @@ describe("GitHubIntegrationPage", () => {
               emailVerified: true,
             },
             workspace: {
-              id: "workspace-id",
+              id: "de305d54-75b4-431b-adb2-eb6b9e546014",
               name: "Acme Studio",
-              slug: "acme-studio",
             },
           })
         }

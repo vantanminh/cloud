@@ -901,11 +901,11 @@ pub async fn collect_event(
 pub async fn analytics_summary(
     State(state): State<AppState>,
     headers: HeaderMap,
-    AxumPath((workspace_slug, project_slug, app_service_id)): AxumPath<(String, String, Uuid)>,
+    AxumPath((workspace_id, project_slug, app_service_id)): AxumPath<(String, String, Uuid)>,
 ) -> Result<Json<HtmlAnalyticsSummary>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let source = sqlx::query_scalar::<_, String>(
         "SELECT image_source FROM project_app_services WHERE id = $1 AND project_id = $2",
     )
@@ -929,11 +929,11 @@ pub async fn analytics_summary(
 pub async fn get_index_html(
     State(state): State<AppState>,
     headers: HeaderMap,
-    AxumPath((workspace_slug, project_slug, app_service_id)): AxumPath<(String, String, Uuid)>,
+    AxumPath((workspace_id, project_slug, app_service_id)): AxumPath<(String, String, Uuid)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let row = sqlx::query(
         "SELECT image_source FROM project_app_services WHERE id = $1 AND project_id = $2",
     )
@@ -1384,7 +1384,7 @@ mod tests {
         let created = crate::app_services::create_for_user(
             &state,
             seed.user_id,
-            &seed.workspace_slug,
+            &seed.workspace_route_id,
             &seed.project_slug,
             crate::models::CreateAppServiceRequest {
                 name: Some("Docs".to_owned()),
@@ -1414,7 +1414,7 @@ mod tests {
             State(state.clone()),
             headers.clone(),
             AxumPath((
-                seed.workspace_slug.clone(),
+                seed.workspace_route_id.clone(),
                 seed.project_slug.clone(),
                 created.id,
             )),
@@ -1459,7 +1459,7 @@ mod tests {
             State(state.clone()),
             headers.clone(),
             AxumPath((
-                seed.workspace_slug.clone(),
+                seed.workspace_route_id.clone(),
                 seed.project_slug.clone(),
                 created.id,
             )),
@@ -1520,7 +1520,7 @@ mod tests {
                 State(state.clone()),
                 headers,
                 AxumPath((
-                    seed.workspace_slug.clone(),
+                    seed.workspace_route_id.clone(),
                     seed.project_slug.clone(),
                     created.id,
                 )),
@@ -1566,7 +1566,7 @@ mod tests {
             let Json(index_after) = get_index_html(
                 State(state.clone()),
                 crate::test_support::session_headers(&state, seed.user_id).await,
-                AxumPath((seed.workspace_slug, seed.project_slug, created.id)),
+                AxumPath((seed.workspace_route_id, seed.project_slug, created.id)),
             )
             .await
             .expect("load edited index");
@@ -1818,7 +1818,7 @@ mod tests {
         let created = crate::app_services::create_for_user(
             &state,
             seed.user_id,
-            &seed.workspace_slug,
+            &seed.workspace_route_id,
             &seed.project_slug,
             crate::models::CreateAppServiceRequest {
                 name: Some("Git site".to_owned()),

@@ -79,7 +79,7 @@ export function GitHubIntegrationPage() {
         ? "GitHub could not be connected. Check the authorization and try again."
         : null
   const workspaceHref = session?.workspace
-    ? `/workspace/${session.workspace.slug}`
+    ? `/workspace/${session.workspace.id}`
     : "/new/workspace"
 
   async function connectGithub() {

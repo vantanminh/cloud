@@ -18,7 +18,7 @@ import { createRedisResource } from "@/lib/resources"
 import type { RedisResource } from "@/lib/types"
 
 type RedisCreateDialogProps = {
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -26,7 +26,7 @@ type RedisCreateDialogProps = {
 }
 
 export function RedisCreateDialog({
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   open,
   onOpenChange,
@@ -51,7 +51,7 @@ export function RedisCreateDialog({
 
     setIsSubmitting(true)
     try {
-      const resource = await createRedisResource(workspaceSlug, projectSlug, {
+      const resource = await createRedisResource(workspaceId, projectSlug, {
         name: name.trim(),
       })
       onCreated(resource)

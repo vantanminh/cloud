@@ -42,7 +42,7 @@ describe("AppServiceCreateDialog HTML pages", () => {
     const onCreated = vi.fn()
     render(
       <AppServiceCreateDialog
-        workspaceSlug="ws"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="proj"
         open
         onOpenChange={vi.fn()}
@@ -75,7 +75,7 @@ describe("AppServiceCreateDialog HTML pages", () => {
     const user = userEvent.setup()
     render(
       <AppServiceCreateDialog
-        workspaceSlug="ws"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="proj"
         open
         onOpenChange={vi.fn()}
@@ -109,7 +109,7 @@ describe("AppServiceCreateDialog HTML pages", () => {
     })
     render(
       <AppServiceCreateDialog
-        workspaceSlug="ws"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="proj"
         open
         onOpenChange={vi.fn()}

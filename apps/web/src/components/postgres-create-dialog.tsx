@@ -18,7 +18,7 @@ import { createPostgresResource } from "@/lib/resources"
 import type { PostgresResource } from "@/lib/types"
 
 type PostgresCreateDialogProps = {
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -26,7 +26,7 @@ type PostgresCreateDialogProps = {
 }
 
 export function PostgresCreateDialog({
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   open,
   onOpenChange,
@@ -52,7 +52,7 @@ export function PostgresCreateDialog({
     setIsSubmitting(true)
     try {
       const resource = await createPostgresResource(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         { name: name.trim() }
       )

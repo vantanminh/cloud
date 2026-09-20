@@ -3,27 +3,27 @@ import type { Project } from "@/lib/types"
 
 export type CreateProjectInput = {
   name: string
-  slug: string
+  slug?: string
 }
 
-export function listProjects(workspaceSlug: string) {
+export function listProjects(workspaceId: string) {
   return apiRequest<Project[]>(
-    `/workspaces/${encodeURIComponent(workspaceSlug)}/projects`
+    `/workspaces/${encodeURIComponent(workspaceId)}/projects`
   )
 }
 
 export function createProject(
-  workspaceSlug: string,
+  workspaceId: string,
   input: CreateProjectInput
 ) {
   return apiRequest<Project>(
-    `/workspaces/${encodeURIComponent(workspaceSlug)}/projects`,
+    `/workspaces/${encodeURIComponent(workspaceId)}/projects`,
     { method: "POST", body: input }
   )
 }
 
-export function getProject(workspaceSlug: string, projectSlug: string) {
+export function getProject(workspaceId: string, projectSlug: string) {
   return apiRequest<Project>(
-    `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}`
+    `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}`
   )
 }

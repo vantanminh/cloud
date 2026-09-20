@@ -13,13 +13,13 @@ import { isHtmlPage } from "@/lib/types"
 
 export function HtmlSourceEditor({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
@@ -32,7 +32,7 @@ export function HtmlSourceEditor({
   useEffect(() => {
     let active = true
     setLoading(true)
-    void getHtmlPageIndex(workspaceSlug, projectSlug, appService.id)
+    void getHtmlPageIndex(workspaceId, projectSlug, appService.id)
       .then((payload) => {
         if (active) {
           setIndexHtml(payload.indexHtml)
@@ -56,7 +56,7 @@ export function HtmlSourceEditor({
     return () => {
       active = false
     }
-  }, [appService.id, projectSlug, workspaceSlug])
+  }, [appService.id, projectSlug, workspaceId])
 
   if (appService.imageSource !== "html") {
     return (
@@ -90,7 +90,7 @@ export function HtmlSourceEditor({
     setError(null)
     try {
       const resource = await updateHtmlPage(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id,
         { indexHtml }
@@ -146,11 +146,11 @@ export function HtmlSourceEditor({
 
 export function HtmlAnalyticsPane({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
 }) {
   const [summary, setSummary] = useState<HtmlAnalyticsSummary | null>(null)
@@ -163,7 +163,7 @@ export function HtmlAnalyticsPane({
     }
     let active = true
     setLoading(true)
-    void getHtmlPageAnalytics(workspaceSlug, projectSlug, appService.id)
+    void getHtmlPageAnalytics(workspaceId, projectSlug, appService.id)
       .then((next) => {
         if (active) {
           setSummary(next)
@@ -187,7 +187,7 @@ export function HtmlAnalyticsPane({
     return () => {
       active = false
     }
-  }, [appService, projectSlug, workspaceSlug])
+  }, [appService, projectSlug, workspaceId])
 
   if (!isHtmlPage(appService)) {
     return (

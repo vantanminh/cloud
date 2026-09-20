@@ -12,7 +12,7 @@ static MIGRATIONS: OnceCell<()> = OnceCell::const_new();
 pub struct SeededProject {
     pub user_id: Uuid,
     pub workspace_id: Uuid,
-    pub workspace_slug: String,
+    pub workspace_route_id: String,
     pub project_id: Uuid,
     pub project_slug: String,
 }
@@ -61,7 +61,7 @@ pub async fn seed_owner_project(state: &AppState) -> SeededProject {
     let workspace_id = Uuid::new_v4();
     let project_id = Uuid::new_v4();
     let suffix = user_id.simple().to_string();
-    let workspace_slug = format!("ws-{suffix}");
+    let workspace_route_id = workspace_id.to_string();
     let project_slug = format!("proj-{suffix}");
     sqlx::query("INSERT INTO users (id, full_name, email, password_hash) VALUES ($1, $2, $3, $4)")
         .bind(user_id)
@@ -71,10 +71,9 @@ pub async fn seed_owner_project(state: &AppState) -> SeededProject {
         .execute(&state.db)
         .await
         .expect("seed user");
-    sqlx::query("INSERT INTO workspaces (id, name, slug) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, $2)")
         .bind(workspace_id)
         .bind("Test Workspace")
-        .bind(&workspace_slug)
         .execute(&state.db)
         .await
         .expect("seed workspace");
@@ -97,7 +96,7 @@ pub async fn seed_owner_project(state: &AppState) -> SeededProject {
     SeededProject {
         user_id,
         workspace_id,
-        workspace_slug,
+        workspace_route_id,
         project_id,
         project_slug,
     }

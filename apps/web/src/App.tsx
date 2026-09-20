@@ -30,10 +30,10 @@ export default function App() {
           element={<GitHubIntegrationPage />}
         />
         <Route
-          path="/workspace/:workspaceSlug/project/:projectSlug"
+          path="/workspace/:workspaceId/project/:projectSlug"
           element={<ProjectRoute />}
         />
-        <Route path="/workspace/:slug" element={<WorkspaceRoute />} />
+        <Route path="/workspace/:workspaceId" element={<WorkspaceRoute />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -86,11 +86,11 @@ function SettingsRoute() {
 
 function WorkspaceRoute() {
   const { session } = useAuth()
-  const { slug } = useParams()
+  const { workspaceId } = useParams()
   if (!session?.workspace) {
     return <Navigate to="/new/workspace" replace />
   }
-  if (session.workspace.slug !== slug) {
+  if (session.workspace.id !== workspaceId) {
     return <Navigate to={destinationFor(session.workspace)} replace />
   }
   return <WorkspacePage />
@@ -98,16 +98,24 @@ function WorkspaceRoute() {
 
 function ProjectRoute() {
   const { session } = useAuth()
-  const { workspaceSlug, projectSlug } = useParams()
+  const { workspaceId, projectSlug } = useParams()
   if (!session?.workspace) {
     return <Navigate to="/new/workspace" replace />
   }
-  if (session.workspace.slug !== workspaceSlug) {
+  if (session.workspace.id !== workspaceId) {
+    if (projectSlug) {
+      return (
+        <Navigate
+          to={`/workspace/${session.workspace.id}/project/${projectSlug}`}
+          replace
+        />
+      )
+    }
     return <Navigate to={destinationFor(session.workspace)} replace />
   }
-  return <ProjectHomePage key={`${workspaceSlug}/${projectSlug}`} />
+  return <ProjectHomePage key={`${workspaceId}/${projectSlug}`} />
 }
 
-function destinationFor(workspace: { slug: string } | null) {
-  return workspace ? `/workspace/${workspace.slug}` : "/new/workspace"
+function destinationFor(workspace: { id: string } | null) {
+  return workspace ? `/workspace/${workspace.id}` : "/new/workspace"
 }

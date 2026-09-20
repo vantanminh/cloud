@@ -21,24 +21,15 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-  InputGroupText,
-} from "@/components/ui/input-group"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { listProjects } from "@/lib/projects"
-import { slugifyWorkspaceName } from "@/lib/slug"
 import type { Project, Workspace } from "@/lib/types"
 
 export function NewWorkspacePage() {
   const navigate = useNavigate()
   const { createWorkspace, session } = useAuth()
   const [name, setName] = useState("")
-  const [slug, setSlug] = useState("")
-  const [slugTouched, setSlugTouched] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -47,14 +38,7 @@ export function NewWorkspacePage() {
   )
 
   if (session?.workspace && !createdWorkspace) {
-    return <Navigate to={`/workspace/${session.workspace.slug}`} replace />
-  }
-
-  function handleNameChange(value: string) {
-    setName(value)
-    if (!slugTouched) {
-      setSlug(slugifyWorkspaceName(value))
-    }
+    return <Navigate to={`/workspace/${session.workspace.id}`} replace />
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -62,9 +46,6 @@ export function NewWorkspacePage() {
     const nextErrors: Record<string, string> = {}
     if (name.trim().length === 0 || name.trim().length > 80) {
       nextErrors.name = "Enter a name between 1 and 80 characters."
-    }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 48) {
-      nextErrors.slug = "Use a lowercase workspace URL slug."
     }
     setErrors(nextErrors)
     setSubmitError(null)
@@ -74,7 +55,7 @@ export function NewWorkspacePage() {
 
     setIsSubmitting(true)
     try {
-      const workspace = await createWorkspace({ name: name.trim(), slug })
+      const workspace = await createWorkspace({ name: name.trim() })
       setCreatedWorkspace(workspace)
     } catch (error) {
       if (error instanceof ApiError) {
@@ -92,7 +73,7 @@ export function NewWorkspacePage() {
     return (
       <WorkspaceCreated
         workspace={createdWorkspace}
-        onContinue={() => navigate(`/workspace/${createdWorkspace.slug}`)}
+        onContinue={() => navigate(`/workspace/${createdWorkspace.id}`)}
       />
     )
   }
@@ -134,32 +115,9 @@ export function NewWorkspacePage() {
                 placeholder="Acme Studio"
                 autoComplete="organization"
                 aria-invalid={Boolean(errors.name)}
-                onChange={(event) => handleNameChange(event.target.value)}
+                onChange={(event) => setName(event.target.value)}
               />
               {errors.name && <FieldError>{errors.name}</FieldError>}
-            </Field>
-            <Field data-invalid={Boolean(errors.slug)}>
-              <FieldLabel htmlFor="workspaceSlug">Workspace URL</FieldLabel>
-              <InputGroup>
-                <InputGroupAddon align="inline-start">
-                  <InputGroupText className="max-w-56 truncate text-xs sm:max-w-none">
-                    cloud.knotree.com/workspace/
-                  </InputGroupText>
-                </InputGroupAddon>
-                <InputGroupInput
-                  id="workspaceSlug"
-                  name="workspaceSlug"
-                  value={slug}
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={Boolean(errors.slug)}
-                  onChange={(event) => {
-                    setSlugTouched(true)
-                    setSlug(event.target.value.toLowerCase())
-                  }}
-                />
-              </InputGroup>
-              {errors.slug && <FieldError>{errors.slug}</FieldError>}
             </Field>
           </FieldGroup>
 
@@ -175,7 +133,7 @@ export function NewWorkspacePage() {
         </form>
 
         <p className="text-center text-sm text-muted-foreground">
-          You can update these details later.
+          Projects and services can be added any time.
         </p>
       </div>
     </WorkspaceFrame>
@@ -184,21 +142,21 @@ export function NewWorkspacePage() {
 
 export function WorkspacePage() {
   const { session, signOut } = useAuth()
-  const { slug } = useParams()
+  const { workspaceId: routeWorkspaceId } = useParams()
   const navigate = useNavigate()
   const workspace = session?.workspace
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [projectsError, setProjectsError] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const workspaceSlug = workspace?.slug
+  const workspaceId = workspace?.id
 
   useEffect(() => {
-    if (!workspaceSlug) {
+    if (!workspaceId) {
       return undefined
     }
 
     let active = true
-    void listProjects(workspaceSlug)
+    void listProjects(workspaceId)
       .then((nextProjects) => {
         if (active) {
           setProjects(nextProjects)
@@ -219,7 +177,7 @@ export function WorkspacePage() {
     return () => {
       active = false
     }
-  }, [workspaceSlug])
+  }, [workspaceId])
 
   async function handleSignOut() {
     try {
@@ -229,18 +187,18 @@ export function WorkspacePage() {
     }
   }
 
-  if (!session || !workspace || workspace.slug !== slug) {
+  if (!session || !workspace || workspace.id !== routeWorkspaceId) {
     return null
   }
 
-  const currentWorkspaceSlug = workspace.slug
+  const currentWorkspaceId = workspace.id
 
   function handleProjectCreated(project: Project) {
     setProjects((currentProjects) =>
       currentProjects ? [...currentProjects, project] : [project]
     )
     setIsCreateOpen(false)
-    navigate(`/workspace/${currentWorkspaceSlug}/project/${project.slug}`)
+    navigate(`/workspace/${currentWorkspaceId}/project/${project.slug}`)
   }
 
   return (
@@ -352,7 +310,7 @@ export function WorkspacePage() {
               {projects.map((project) => (
                 <Link
                   key={project.id}
-                  to={`/workspace/${workspace.slug}/project/${project.slug}`}
+                  to={`/workspace/${workspace.id}/project/${project.slug}`}
                   className="workspace-project-item"
                 >
                   <span className="workspace-project-icon" aria-hidden="true">
@@ -378,7 +336,7 @@ export function WorkspacePage() {
       </section>
       <ProjectCreateDialog
         key={isCreateOpen ? "project-dialog-open" : "project-dialog-closed"}
-        workspaceSlug={currentWorkspaceSlug}
+        workspaceId={currentWorkspaceId}
         open={isCreateOpen}
         onOpenChange={setIsCreateOpen}
         onCreated={handleProjectCreated}

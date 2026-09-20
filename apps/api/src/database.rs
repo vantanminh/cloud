@@ -219,13 +219,13 @@ struct TargetDatabase {
 pub async fn list_tables(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
     Query(query): Query<TableListQuery>,
 ) -> Result<Json<Vec<DatabaseTableResponse>>, AppError> {
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -271,13 +271,13 @@ pub async fn list_tables(
 pub async fn table_data(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
     Query(query): Query<TableDataQuery>,
 ) -> Result<Json<DatabaseTableDataResponse>, AppError> {
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -345,14 +345,14 @@ pub async fn table_data(
 pub async fn create_table(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
     Json(input): Json<CreateTableRequest>,
 ) -> Result<Json<CreatedTableResponse>, AppError> {
     crate::security::require_csrf(&headers, &state.config)?;
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -435,12 +435,12 @@ pub async fn create_table(
 pub async fn stats(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
 ) -> Result<Json<DatabaseStatsResponse>, AppError> {
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -477,14 +477,14 @@ pub async fn stats(
 pub async fn metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
     Query(query): Query<DatabaseMetricsQuery>,
 ) -> Result<Json<DatabaseMetricsResponse>, AppError> {
     let range = parse_metric_range(query.range.as_deref())?;
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -896,12 +896,12 @@ async fn load_metric_history(
 pub async fn config(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
 ) -> Result<Json<Vec<DatabaseConfigResponse>>, AppError> {
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -941,14 +941,14 @@ pub async fn config(
 pub async fn execute_query(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
     Json(input): Json<ExecuteQueryRequest>,
 ) -> Result<Json<DatabaseQueryResponse>, AppError> {
     crate::security::require_csrf(&headers, &state.config)?;
     let target = target_database(
         &state,
         &headers,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         resource_id,
     )
@@ -1043,13 +1043,13 @@ pub async fn execute_query(
 async fn target_database(
     state: &AppState,
     headers: &HeaderMap,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     resource_id: Uuid,
 ) -> Result<TargetDatabase, AppError> {
     let user = auth::authenticate(state, headers).await?;
     let project_id =
-        projects::accessible_project_id(state, user.id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user.id, workspace_id, project_slug).await?;
     let resource = sqlx::query_as::<_, DatabaseResourceRow>(
         "SELECT id, database_name, role_name, host, port, password_ciphertext,
                 status, cluster_provider, cluster_name, cluster_host, cluster_port

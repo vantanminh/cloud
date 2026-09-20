@@ -30,7 +30,7 @@ import type {
 } from "@/lib/types"
 
 type AppServiceCreateDialogProps = {
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   appServiceCount?: number
   open: boolean
@@ -43,7 +43,7 @@ type ImageSource = "public" | "github"
 type HtmlSource = "paste" | "github"
 
 export function AppServiceCreateDialog({
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   appServiceCount = 0,
   open,
@@ -125,7 +125,7 @@ export function AppServiceCreateDialog({
     }
 
     const source = new EventSource(
-      appServiceDeploymentEventsUrl(workspaceSlug, projectSlug, deploymentId),
+      appServiceDeploymentEventsUrl(workspaceId, projectSlug, deploymentId),
       { withCredentials: true }
     )
     const handleDeployment = (event: Event) => {
@@ -137,7 +137,7 @@ export function AppServiceCreateDialog({
         setStreamError(null)
         if (nextDeployment.status !== "provisioning") {
           source.close()
-          void listAppServices(workspaceSlug, projectSlug)
+          void listAppServices(workspaceId, projectSlug)
             .then((resources) => {
               const nextResource = resources.find(
                 (resource) => resource.id === submittedResourceId
@@ -175,7 +175,7 @@ export function AppServiceCreateDialog({
     open,
     projectSlug,
     submittedResourceId,
-    workspaceSlug,
+    workspaceId,
   ])
 
   async function connectGithub() {
@@ -237,7 +237,7 @@ export function AppServiceCreateDialog({
     setStreamError(null)
     try {
       const resource = await createAppService(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         kind === "html"
           ? {

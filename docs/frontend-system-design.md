@@ -27,21 +27,23 @@ session should feel quick, calm, and trustworthy:
 - Registration with full name, email, and password.
 - Automatic authenticated session after registration or login.
 - No email verification gate in development mode.
-- First-workspace creation with generated, editable URL slug.
+- First-workspace creation with a name; workspace URLs use the generated UUID.
 - Success confirmation before entering the workspace.
 - Existing-workspace destination after a later login.
 - Session loading, field validation, API errors, sign out, and protected routes.
-- Project creation with an editable project URL slug.
+- Project creation with a suggested name-derived URL and optional custom slug.
 - Workspace project index with empty, loading, error, and populated states.
-- Project topology home with a real PostgreSQL creation flow, resource cards,
-  resource workspace sheet, add menu, zoom/history controls, environment
-  context, responsive navigation, theme toggles, logs placeholder, and
-  transient feedback.
+- Project dashboard with a searchable resource list, separate Resources,
+  Topology, Metrics, Logs, and Integrations views, and a resource workspace for
+  editing or inspecting the selected service or data store.
 - Docker App service deployment from a pasted image reference. Public images
   deploy without login; private `ghcr.io` images require a GitHub connection.
 - Up to six Docker App services per project. New services start without a
   database; the selected service's Settings menu assigns or removes a
   project PostgreSQL connection over the private network.
+- Project provisioning supports one PostgreSQL resource and one Redis
+  resource. Hosted HTML pages use the App service workflow and include an HTML
+  editor and analytics view.
 - Resource workspace sections for Deployments, Database, Backups, Variables,
   Metrics, Console, and Settings. The Database section reads and mutates the
   selected project's dedicated PostgreSQL instance through typed API calls;
@@ -55,15 +57,15 @@ session should feel quick, calm, and trustworthy:
 - Other OAuth or social login providers.
 - Multiple workspaces per user.
 - Workspace switching, invitations, billing data, or settings mutations.
-- Redis provisioning, deployment logs, backups, and persistent topology editing.
+- Database backups and shell access to App service containers.
 
-The topology home owns one real PostgreSQL resource and up to six Docker App
-services per project in this slice. Database tables, rows, schema creation, SQL
+Each project supports one real PostgreSQL resource, one Redis resource, and up
+to six Docker App services. Database tables, rows, schema creation, SQL
 results, live stats, runtime metrics, and safe configuration settings come from
-the dedicated PostgreSQL instance. Each App service card is backed by the API
-and shows its Docker image, source, container status, and returned service URL.
-Redis and unsupported operational sections remain explicitly unavailable until
-their APIs and product contracts exist.
+the dedicated PostgreSQL instance. App service and hosted HTML cards are backed
+by the API and show their source, status, and returned service URL. Unsupported
+operational sections remain explicitly unavailable until their APIs and product
+contracts exist.
 
 When a user assigns a database from an App service Settings menu, the
 deployment card shows the project-private Postgres link. The Variables section
@@ -113,12 +115,12 @@ keyboard and screen-reader affordances.
 
 | Route                                            | Access        | Screen                                        | Redirect rule                                                                                                               |
 | ------------------------------------------------ | ------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `/`                                              | Any           | Session destination                           | Anonymous → `/login`; authenticated without workspace → `/new/workspace`; authenticated with workspace → `/workspace/:slug` |
+| `/`                                              | Any           | Session destination                           | Anonymous → `/login`; authenticated without workspace → `/new/workspace`; authenticated with workspace → `/workspace/:workspaceId` |
 | `/login`                                         | Public only   | Sign-in form                                  | Authenticated users are sent to their workspace destination                                                                 |
 | `/register`                                      | Public only   | Registration form                             | Authenticated users are sent to their workspace destination                                                                 |
-| `/new/workspace`                                 | Authenticated | First-workspace form or creation confirmation | An account that already has a workspace is sent to `/workspace/:slug`                                                       |
-| `/workspace/:slug`                               | Authenticated | Workspace project index                       | No workspace → `/new/workspace`; a non-matching slug → the account's own workspace                                          |
-| `/workspace/:workspaceSlug/project/:projectSlug` | Authenticated | Project topology home                         | Workspace mismatch → the account's own workspace; missing project → unavailable state                                       |
+| `/new/workspace`                                 | Authenticated | First-workspace form or creation confirmation | An account that already has a workspace is sent to `/workspace/:workspaceId`                                                       |
+| `/workspace/:workspaceId`                               | Authenticated | Workspace project index                       | No workspace → `/new/workspace`; a non-matching UUID → the account's own workspace                                         |
+| `/workspace/:workspaceId/project/:projectSlug` | Authenticated | Project dashboard                             | Workspace mismatch → the account's own workspace; missing project → unavailable state                                       |
 | Any other route                                  | Any           | None                                          | Redirect to `/`                                                                                                             |
 
 The route guards live in `apps/web/src/App.tsx`. The workspace page also
@@ -133,8 +135,9 @@ Navigation is intentionally small at the workspace boundary:
 - Auth screens link only to the alternate auth mode.
 - Workspace project index exposes the signed-in email, project list, `New
 project`, and `Sign out`.
-- Project home provides the topology rail, workspace/environment context, and a
-  clear route back to the workspace project index.
+- Project home provides Resources, Topology, Metrics, Logs, and Integrations
+  navigation, workspace/environment context, and a clear route back to the
+  workspace project index.
 - The workspace success state provides the first forward transition into the
   workspace.
 
@@ -152,11 +155,11 @@ Open / or /register
   → POST /auth/register
   → authenticated session cookie
   → /new/workspace
-  → workspace name + generated slug
+  → workspace name
   → POST /workspaces
   → "Workspace created" confirmation
   → Continue to workspace
-  → /workspace/:slug
+  → /workspace/:workspaceId
 ```
 
 Registration signs the user in immediately. Because the account has no
@@ -169,7 +172,7 @@ workspace, the returned `workspace` value is `null` and the router selects
 Open / or /login
   → POST /auth/login
   → session response includes workspace
-  → /workspace/:slug
+  → /workspace/:workspaceId
 ```
 
 ### Returning user without a workspace
@@ -200,38 +203,40 @@ Click Sign out
   → replace history with /login
 ```
 
-### Create a project and open topology home
+### Create a project and open its dashboard
 
 ```text
-/workspace/:slug
-  → GET /workspaces/:slug/projects
+/workspace/:workspaceId
+  → GET /workspaces/:workspaceId/projects
   → empty project state or project list
   → New project
-  → project name + generated slug
-  → POST /workspaces/:slug/projects
-  → navigate to /workspace/:slug/project/:projectSlug
-  → GET /workspaces/:slug/projects/:projectSlug
+  → project name + suggested URL; optionally customize the slug
+  → POST /workspaces/:workspaceId/projects
+  → navigate to /workspace/:workspaceId/project/:projectSlug
+  → GET /workspaces/:workspaceId/projects/:projectSlug
   → topology dashboard
   → Add → Postgres
   → database display name
-  → POST /workspaces/:slug/projects/:projectSlug/resources
+  → POST /workspaces/:workspaceId/projects/:projectSlug/resources
   → queued dedicated PostgreSQL instance + own volume + login role
   → poll the resource until connectivity is confirmed
   → ready Postgres card + resource workspace (or a safe capacity error)
   → Add → App service
   → service name + Docker image + public/private image source + container port
   → GitHub connection when the source is private
-  → POST /workspaces/:slug/projects/:projectSlug/app-services
+  → POST /workspaces/:workspaceId/projects/:projectSlug/app-services
   → Docker pull + isolated container + project-private network
   → no database variables until the user assigns a database in Settings
   → ready App service card + returned service URL
 ```
 
-Project creation is scoped to the current workspace. The API owns slug
-normalization and uniqueness; the client mirrors the normalization for fast
-feedback. PostgreSQL creation is scoped to the project and is idempotent: a
-retry resumes a `provisioning`/`error` resource, while a ready resource is
-returned without creating a second database.
+Workspace identity and authorization use the workspace UUID. Project creation
+is scoped to that workspace. The API derives a normalized slug from the project
+name when no custom slug is sent and enforces per-workspace uniqueness; the
+client shows a suggested URL and validates a custom slug before submission.
+PostgreSQL creation is scoped to the project and is idempotent: a retry resumes
+a `provisioning`/`error` resource, while a ready resource is returned without
+creating a second database.
 
 ## 5. Screen specifications
 
@@ -323,18 +328,16 @@ Supporting text: `A workspace is where your ideas come together.`
 
 Fields:
 
-| Field          | Behavior                                                                                                               |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Workspace name | Required, 1–80 characters; changing it auto-generates a slug until the user edits the slug manually                    |
-| Workspace URL  | Lowercase editable slug; shows the prefix `cloud.knotree.com/workspace/`; must be kebab-case and at most 48 characters |
+| Field          | Behavior                   |
+| -------------- | -------------------------- |
+| Workspace name | Required, 1–80 characters. |
 
 CTA: `Create workspace`  
-Helper text: `You can update these details later.`
+Helper text: `Projects and services can be added any time.`
 
-The slug generation is deterministic: transliterate accents, lowercase,
-replace runs of non-alphanumeric characters with separators, and limit the
-result to 48 characters. The client performs immediate validation; the API
-remains authoritative for uniqueness and reserved route names.
+The API generates a UUID for workspace identity. The UUID is returned by
+workspace creation and session endpoints and forms the workspace route; users
+do not choose a workspace URL slug.
 
 ### 5.5 Creation confirmation
 
@@ -350,7 +353,7 @@ the user can recognize that the workspace was created before entering it.
 
 ### 5.6 Workspace project index
 
-Route: `/workspace/:slug`
+Route: `/workspace/:workspaceId`
 
 This is the authenticated project index and the entry point for project work.
 
@@ -361,33 +364,46 @@ This is the authenticated project index and the entry point for project work.
 - Empty state uses the heading `Create your first project`, explains that a
   project owns topology/resources, and keeps `Create project` as the dominant
   action.
-- Populated state lists projects with name, slug, count, and links to their
-  topology homes.
+- Populated state lists projects with name, URL slug, and links to their homes.
 - Loading uses a centered spinner; project-list failures use a page-level
   alert while leaving the create action available.
 
 The workspace route must only render the workspace returned for the current
-session. A mismatching URL slug is corrected by the route guard.
+session. A mismatching UUID is corrected by the route guard. Legacy workspace
+slug URLs redirect to the current workspace UUID; legacy project URLs retain
+the project slug during that redirect.
 
-### 5.7 Project topology home
+### 5.7 Project dashboard
 
 Component: `ProjectHomePage` and `TopologyDashboard`
-Route: `/workspace/:workspaceSlug/project/:projectSlug`
+Route: `/workspace/:workspaceId/project/:projectSlug`
 
-The topology home follows the visual language in
-`design/infra-topology-dashboard.html`: a quiet light canvas by default, a
-64px topbar, a 64px desktop rail, and a dotted topology work area. A dark
-theme uses the same layout and replaces the page-local surface tokens.
+The dashboard opens to `Resources` so a project with several services and data
+stores remains manageable. The `Topology` view keeps the interactive
+infrastructure canvas. A dark theme uses the same layout and replaces the
+page-local surface tokens.
 
 #### Desktop composition
 
-- Topbar: Knotree mark, workspace switcher, environment switcher, activity,
-  notifications, theme toggle, billing-plan badge, and Agent affordance.
-- Side rail: Topology (active), Metrics, Logs, Resources, Settings, and the
-  account/sign-out control.
-- Canvas: blue `Add` button, the project service card, an optional real
-  PostgreSQL card, a dashed connector when the database exists, and
-  zoom/history/layers controls.
+- Topbar: Knotree mark, workspace and project context, environment, `Add
+  resource`, theme toggle, and sign-out.
+- Side rail: Resources (active by default), Topology, Metrics, Logs, and
+  Integrations. Integrations opens the GitHub integration settings.
+- The `Resources` view has search plus `All resources`, `App services`, and
+  `Data stores` filters. Its table lists app services, hosted HTML pages,
+  PostgreSQL, and Redis with name, type, status, and an action to open the
+  selected resource. Empty and no-match states explain the next action.
+- `Add resource` opens Postgres, Redis, and App service / HTML page creation.
+  App service creation caps a project at six services; resource creation and
+  status come from the real API responses.
+- The `Topology` view has the project service card, optional real PostgreSQL
+  and Redis cards, dashed connectors, and zoom/theme controls. Dragged positions
+  and view preferences are persisted per project.
+- The `Metrics` view lists resources that expose runtime metrics. Selecting one
+  opens its Metrics workspace tab, which renders real API samples and explicit
+  loading, error, or unsupported-provider states.
+- The `Logs` view shows deployment logs when available and a truthful empty
+  state until runtime log ingestion exists.
 - Resource cards expose name, status, and database name. Clicking a card opens
   the `ResourceWorkspace` sheet. The sheet has `Deployments`, `Database`,
   `Backups`, `Variables`, `Metrics`, `Console`, and `Settings` tabs.
@@ -422,9 +438,9 @@ theme uses the same layout and replaces the page-local surface tokens.
   displays the real image/status and opens a service workspace with deployment
   metadata, URL, variables, and settings. A failed deployment is shown as an
   error state and can be retried through Add.
-- `Backups`, write-oriented `Settings` controls, and Redis use explicit empty
-  or unavailable states until their APIs exist. The App service Console tab
-  does not expose a shell; container logs remain a follow-up capability.
+- `Backups`, write-oriented `Settings` controls, and unsupported resource
+  actions use explicit empty or unavailable states. The App service Console
+  tab does not expose a shell; container logs remain a follow-up capability.
 
 #### Context and transient state
 
@@ -628,10 +644,10 @@ StrictMode
 | `AuthPage`                                                   | Login/register form and local validation                                         | Mode is explicit: `login` or `register`                                        |
 | `NewWorkspacePage`                                           | First workspace form and success state                                           | Must not become a general workspace CRUD screen without a new contract         |
 | `WorkspacePage`                                              | Project index, empty state, project list, and sign out                           | Keep workspace-level project selection here                                    |
-| `ProjectCreateDialog`                                        | Create and validate a project name and slug                                      | Use for project creation; API remains authoritative                            |
+| `ProjectCreateDialog`                                        | Create a project with a suggested URL and optional custom slug                  | Keep the name-derived URL as the default; API remains authoritative             |
 | `PostgresCreateDialog`                                       | Request one real PostgreSQL resource and show pending/error states               | Never collect or persist database passwords in the browser                     |
 | `ProjectHomePage`                                            | Load one project and render unavailable/loading states                           | Keep route data fetching typed and scoped to the current workspace             |
-| `TopologyDashboard`                                          | Topbar, rail, topology canvas, controls, menus, themes, and feedback             | Keep unsupported resource actions explicit until their provisioning APIs exist |
+| `TopologyDashboard`                                          | Topbar, view navigation, resource list, topology, metrics, logs, menus, and themes | Keep unsupported resource actions explicit until their provisioning APIs exist |
 | `ResourceWorkspace`                                          | Accessible resource sheet, live database management views, and safe copy        | Keep operational data truthful; never fabricate tables, metrics, or logs       |
 | `LogsWorkspace`                                              | Project-scoped log toolbar and unavailable/empty state                           | Add streaming/query APIs before rendering runtime events                       |
 | `Button`, `Field`, `Input`, `InputGroup`, `Alert`, `Spinner` | shadcn/Base UI primitives                                                        | Prefer composition and variants over bespoke controls                          |
@@ -775,12 +791,12 @@ so a production build cannot silently point at localhost.
 | `GET`  | `/auth/me`                                                   | Session cookie              | Restore session on boot                            |
 | `POST` | `/auth/logout`                                               | Session + CSRF              | Revoke session and clear cookies                   |
 | `POST` | `/workspaces`                                                | Session + CSRF              | Create the account's first workspace               |
-| `GET`  | `/workspaces/:slug`                                          | Session                     | Reserved for future workspace data loading         |
-| `GET`  | `/workspaces/:workspaceSlug/projects`                        | Session + membership        | List projects in the current workspace             |
-| `POST` | `/workspaces/:workspaceSlug/projects`                        | Session + membership + CSRF | Create a project                                   |
-| `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug`           | Session + membership        | Load one project for topology home                 |
-| `GET`  | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership        | Load persisted PostgreSQL resources                |
-| `POST` | `/workspaces/:workspaceSlug/projects/:projectSlug/resources` | Session + membership + CSRF | Provision or retry the project PostgreSQL resource |
+| `GET`  | `/workspaces/:workspaceId`                                          | Session + membership        | Load workspace identity by UUID                   |
+| `GET`  | `/workspaces/:workspaceId/projects`                        | Session + membership        | List projects in the current workspace             |
+| `POST` | `/workspaces/:workspaceId/projects`                        | Session + membership + CSRF | Create a project                                   |
+| `GET`  | `/workspaces/:workspaceId/projects/:projectSlug`           | Session + membership        | Load one project for the dashboard                 |
+| `GET`  | `/workspaces/:workspaceId/projects/:projectSlug/resources` | Session + membership        | Load persisted PostgreSQL resources                |
+| `POST` | `/workspaces/:workspaceId/projects/:projectSlug/resources` | Session + membership + CSRF | Provision or retry the project PostgreSQL resource |
 | `GET`  | `.../resources/:resourceId/database/tables`                 | Session + membership        | List live project tables                           |
 | `POST` | `.../resources/:resourceId/database/tables`                 | Session + membership + CSRF | Create a validated project table                  |
 | `GET`  | `.../resources/:resourceId/database/table-data`             | Session + membership        | Read paginated rows and column metadata            |
@@ -837,8 +853,7 @@ fields plus `systemMetricsAvailable: false` and a user-safe
   },
   "workspace": {
     "id": "uuid",
-    "name": "Acme Studio",
-    "slug": "acme-studio"
+    "name": "Acme Studio"
   }
 }
 ```
@@ -855,10 +870,11 @@ Project list and detail endpoints return the compact project shape:
 }
 ```
 
-`POST /workspaces/:workspaceSlug/projects` accepts `{ "name": "...", "slug":
-"..." }`. The slug is normalized server-side and is unique within the
-workspace. A duplicate returns `PROJECT_SLUG_TAKEN`; an inaccessible workspace
-or project returns the corresponding not-found envelope.
+`POST /workspaces/:workspaceId/projects` accepts `{ "name": "..." }` and may
+include an optional custom `slug`. When omitted, the server derives a slug
+from the project name. Slugs are normalized and unique within the workspace. A
+duplicate returns `PROJECT_SLUG_TAKEN`; an inaccessible workspace or project
+returns the corresponding not-found envelope.
 
 The resource list returns zero or one PostgreSQL resource for the project:
 
@@ -878,7 +894,7 @@ The resource list returns zero or one PostgreSQL resource for the project:
 }
 ```
 
-`POST /workspaces/:workspaceSlug/projects/:projectSlug/resources` accepts
+`POST /workspaces/:workspaceId/projects/:projectSlug/resources` accepts
 `{ "resourceType": "postgres", "name": "Postgres" }`. The database and role
 are created inside a dedicated Docker or Kubernetes provider instance selected
 by the API configuration. A repeated request is idempotent for the project and
@@ -906,7 +922,7 @@ API errors to local states and never invents database data.
 
 The UI maps `fields` by field name and uses `message` for the page-level alert.
 Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
-`SLUG_TAKEN`, `WORKSPACE_EXISTS`, `AUTHENTICATION_REQUIRED`, and
+`WORKSPACE_EXISTS`, `AUTHENTICATION_REQUIRED`, and
 `EMAIL_NOT_VERIFIED`, `PROJECT_SLUG_TAKEN`, `PROJECT_NOT_FOUND`, and
 `WORKSPACE_NOT_FOUND`, `DATABASE_PROVISIONING_DISABLED`, and
 `DATABASE_PROVISIONING_FAILED`.
@@ -923,12 +939,10 @@ Important current codes include `EMAIL_IN_USE`, `INVALID_CREDENTIALS`,
 | Register     | Password outside 8–128 characters           | Field error: `Use 8 to 128 characters.`                                       |
 | Register     | Existing email                              | API field error/page alert for `EMAIL_IN_USE`                                 |
 | Workspace    | Empty/too-long name                         | Field error for name                                                          |
-| Workspace    | Invalid slug                                | Field error for lowercase URL slug                                            |
-| Workspace    | Slug already used                           | API field error/page alert for `SLUG_TAKEN`                                   |
 | Workspace    | Second creation attempt                     | API conflict `WORKSPACE_EXISTS`; route normally redirects existing users away |
 | Project      | Empty/too-long name                         | Field error for project name                                                  |
-| Project      | Invalid slug                                | Field error for lowercase project URL slug                                    |
-| Project      | Slug already used in workspace              | API conflict `PROJECT_SLUG_TAKEN` mapped to the slug field/page alert         |
+| Project      | Invalid custom slug                         | Field error for lowercase project URL slug                                    |
+| Project      | Suggested or custom slug already used       | API conflict `PROJECT_SLUG_TAKEN`; keep the custom URL action available       |
 | Project home | Missing or inaccessible project             | `Project unavailable` state with a back-to-workspace action                   |
 | Database     | Empty/too-long name                         | Field error for database name                                                 |
 | Database     | Provisioning permissions or cluster failure | Safe API error; retain dialog action and never show raw SQL                   |
@@ -1015,9 +1029,10 @@ Target WCAG 2.2 AA for all new work in this surface.
   defaults to verification required; a future email flow must add an explicit
   pending/verified UX before enabling it in production.
 - Workspace access is always derived from the current authenticated session;
-  never trust a slug supplied by the user as proof of membership.
+  never trust a workspace UUID or project slug in the route as proof of
+  membership.
 - Project list/create/detail requests are scoped through the authenticated
-  workspace membership; the route slug is never treated as authorization.
+  workspace membership; route identifiers are never treated as authorization.
 
 ## 14. Runtime and deployment design
 
@@ -1040,7 +1055,7 @@ Vite source
 - Worker observability enabled.
 
 The SPA fallback is required so direct visits to `/login`, `/new/workspace`,
-`/workspace/:slug`, and `/workspace/:workspaceSlug/project/:projectSlug` resolve
+`/workspace/:workspaceId`, and `/workspace/:workspaceId/project/:projectSlug` resolve
 to the React application.
 
 ### Environment contract
@@ -1066,17 +1081,18 @@ pnpm build:web
 Current behavior coverage includes:
 
 - Registration routes to `/new/workspace`.
-- First workspace creation routes to `/workspace/:slug` after confirmation.
+- First workspace creation routes to `/workspace/:workspaceId` after confirmation.
 - Existing workspace login routes directly to that workspace.
-- Slug normalization handles accents and kebab-case rules.
-- Project creation routes to `/workspace/:workspaceSlug/project/:projectSlug`.
-- Project list/detail API responses drive the workspace list and topology home.
-- Topology interactions cover resource selection/workspace, Add menu feedback,
-  workspace tabs, connection copy, theme/log navigation, zoom controls,
-  responsive bottom navigation, and no-overflow mobile layout.
-- The Metrics tab loads and renders live CPU, memory, volume, network, and disk
-  read/write data for a ready PostgreSQL resource, exposes the live polling and
-  range controls, and shows hover details for historical samples.
+- Project URL suggestions normalize accents and kebab-case; the API remains
+  authoritative when the suggested URL is submitted.
+- Project creation routes to `/workspace/:workspaceId/project/:projectSlug`.
+- Project list/detail API responses drive the workspace list and project dashboard.
+- Dashboard interactions cover resource search/filter/open, Resources/Topology/
+  Metrics/Logs/Integrations navigation, Add menu feedback, resource tabs,
+  connection copy, theme controls, responsive navigation, and mobile layout.
+- The Metrics view opens real API metrics for supported resources, exposes the
+  live polling and range controls, and shows hover details for historical
+  samples.
 
 Every new route or meaningful interaction should add:
 
@@ -1088,11 +1104,11 @@ Every new route or meaningful interaction should add:
 ### Manual visual QA checklist
 
 - Check 320px, 390px, 768px, 1024px, and desktop widths.
-- Confirm no horizontal overflow in the workspace URL input.
+- Confirm the project URL preview and custom slug input fit without overflow.
 - Tab through every form without a mouse.
 - Toggle password visibility without submitting the form.
 - Verify errors are readable and do not shift the primary CTA unpredictably.
-- Refresh `/new/workspace` and `/workspace/:slug` while authenticated.
+- Refresh `/new/workspace` and `/workspace/:workspaceId` while authenticated.
 - Refresh a project deep link while authenticated and verify the project reloads.
 - Check topology selection, resource workspace close, Add → Postgres, pending
   and error states, Deployments/Database tabs, table creation, live rows, SQL
@@ -1150,7 +1166,7 @@ When adding a feature to this frontend:
 | PostgreSQL resource API boundary | `apps/web/src/lib/resources.ts`                                                                            |
 | Project creation dialog          | `apps/web/src/components/project-create-dialog.tsx`                                                        |
 | PostgreSQL creation dialog       | `apps/web/src/components/postgres-create-dialog.tsx`                                                       |
-| Project topology home            | `apps/web/src/pages/project-home-page.tsx`, `apps/web/src/pages/project-home.css`                          |
+| Project dashboard                | `apps/web/src/pages/project-home-page.tsx`, `apps/web/src/pages/project-home.css`                          |
 | Product composition              | `apps/web/src/components/`                                                                                 |
 | Design tokens and layout CSS     | `apps/web/src/index.css`                                                                                   |
 | Frontend deployment              | `apps/web/wrangler.jsonc`                                                                                  |

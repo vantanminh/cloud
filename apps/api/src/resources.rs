@@ -48,11 +48,11 @@ const RESOURCE_COLUMNS: &str = "id, name, database_name, role_name, host, port, 
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
 ) -> Result<Json<Vec<PostgresResourceResponse>>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let resources = sqlx::query_as::<_, PostgresResourceRow>(&format!(
         "SELECT {RESOURCE_COLUMNS} FROM project_postgres_databases WHERE project_id = $1 ORDER BY created_at ASC, id ASC"
     ))
@@ -70,13 +70,13 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
     Json(input): Json<CreateResourceRequest>,
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
 
     if !state.config.database_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {
@@ -197,12 +197,12 @@ pub async fn create(
 pub async fn retry(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, resource_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, resource_id)): Path<(String, String, Uuid)>,
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
 
     if !state.config.database_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {

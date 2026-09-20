@@ -32,7 +32,7 @@ type AuthContextValue = {
   signIn: (input: LoginRequest) => Promise<AuthResponse>
   signUp: (input: RegisterRequest) => Promise<AuthResponse>
   signOut: () => Promise<void>
-  createWorkspace: (input: { name: string; slug: string }) => Promise<Workspace>
+  createWorkspace: (input: { name: string }) => Promise<Workspace>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -114,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const createWorkspace = useCallback(
-    async (input: { name: string; slug: string }) => {
+    async (input: { name: string }) => {
       const workspace = await apiRequest<CreateWorkspaceResponse>(
         "/workspaces",
         { method: "POST", body: input }

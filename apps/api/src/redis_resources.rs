@@ -46,10 +46,10 @@ const RESOURCE_COLUMNS: &str = "id, project_id, name, host, port, password_ciphe
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
 ) -> Result<Json<Vec<RedisResourceResponse>>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
-    list_for_user(&state, user.id, &workspace_slug, &project_slug)
+    list_for_user(&state, user.id, &workspace_id, &project_slug)
         .await
         .map(Json)
 }
@@ -57,11 +57,11 @@ pub async fn list(
 pub async fn list_for_user(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
 ) -> Result<Vec<RedisResourceResponse>, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let resources = sqlx::query_as::<_, RedisResourceRow>(&format!(
         "SELECT {RESOURCE_COLUMNS} FROM project_redis_instances WHERE project_id = $1 ORDER BY created_at ASC, id ASC"
     ))
@@ -77,7 +77,7 @@ pub async fn list_for_user(
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
     Json(input): Json<CreateResourceRequest>,
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
@@ -85,7 +85,7 @@ pub async fn create(
     let resource = create_for_user(
         &state,
         user.id,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         input.name.as_deref(),
     )
@@ -96,18 +96,18 @@ pub async fn create(
 pub async fn mcp_create(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     name: Option<&str>,
 ) -> Result<Value, AppError> {
-    let resource = create_for_user(state, user_id, workspace_slug, project_slug, name).await?;
+    let resource = create_for_user(state, user_id, workspace_id, project_slug, name).await?;
     serde_json::to_value(resource).map_err(AppError::internal)
 }
 
 pub async fn create_for_user(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     name: Option<&str>,
 ) -> Result<RedisResourceResponse, AppError> {
@@ -118,7 +118,7 @@ pub async fn create_for_user(
         });
     }
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let name = validate_resource_name(name.unwrap_or("Redis"))?;
     let (resource, is_new) = {
         let mut transaction = state.db.begin().await?;

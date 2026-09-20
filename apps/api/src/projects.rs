@@ -27,10 +27,10 @@ struct ProjectRow {
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(workspace_slug): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> Result<Json<Vec<ProjectResponse>>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
-    let workspace_id = accessible_workspace_id(&state, user.id, &workspace_slug).await?;
+    let workspace_id = accessible_workspace_id(&state, user.id, &workspace_id).await?;
     let projects = sqlx::query_as::<_, ProjectRow>(
         "SELECT id, name, slug FROM projects WHERE workspace_id = $1 ORDER BY created_at ASC, id ASC",
     )
@@ -46,12 +46,12 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(workspace_slug): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(input): Json<CreateProjectRequest>,
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
-    let workspace_id = accessible_workspace_id(&state, user.id, &workspace_slug).await?;
+    let workspace_id = accessible_workspace_id(&state, user.id, &workspace_id).await?;
 
     let name = input.name.trim().to_owned();
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
@@ -63,7 +63,14 @@ pub async fn create(
         return Err(AppError::validation(fields));
     }
 
-    let slug = normalize_slug(input.slug.as_deref().unwrap_or(&name));
+    let is_custom_slug = input.slug.is_some();
+    let mut slug = normalize_slug(input.slug.as_deref().unwrap_or(&name));
+    if !is_custom_slug && slug.len() > 48 {
+        slug.truncate(48);
+        if slug.ends_with('-') {
+            slug.pop();
+        }
+    }
     if slug.is_empty() || slug.chars().count() > 48 {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -101,14 +108,15 @@ pub async fn create(
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
 ) -> Result<Json<ProjectResponse>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
+    let workspace_id = parse_workspace_id(&workspace_id)?;
     let project = sqlx::query_as::<_, ProjectRow>(
-        "SELECT p.id, p.name, p.slug FROM projects p INNER JOIN workspaces w ON w.id = p.workspace_id INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.slug = $2 AND p.slug = $3",
+        "SELECT p.id, p.name, p.slug FROM projects p INNER JOIN workspaces w ON w.id = p.workspace_id INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.id = $2 AND p.slug = $3",
     )
     .bind(user.id)
-    .bind(workspace_slug)
+    .bind(workspace_id)
     .bind(project_slug)
     .fetch_optional(&state.db)
     .await?
@@ -123,14 +131,15 @@ pub async fn get(
 pub(crate) async fn accessible_project_id(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
 ) -> Result<Uuid, AppError> {
+    let workspace_id = parse_workspace_id(workspace_id)?;
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT p.id FROM projects p INNER JOIN workspaces w ON w.id = p.workspace_id INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.slug = $2 AND p.slug = $3",
+        "SELECT p.id FROM projects p INNER JOIN workspaces w ON w.id = p.workspace_id INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.id = $2 AND p.slug = $3",
     )
     .bind(user_id)
-    .bind(workspace_slug)
+    .bind(workspace_id)
     .bind(project_slug)
     .fetch_optional(&state.db)
     .await?
@@ -143,16 +152,24 @@ pub(crate) async fn accessible_project_id(
 async fn accessible_workspace_id(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
 ) -> Result<Uuid, AppError> {
+    let workspace_id = parse_workspace_id(workspace_id)?;
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT w.id FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.slug = $2",
+        "SELECT w.id FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.id = $2",
     )
     .bind(user_id)
-    .bind(workspace_slug)
+    .bind(workspace_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound {
+        code: "WORKSPACE_NOT_FOUND",
+        message: "Workspace not found.",
+    })
+}
+
+fn parse_workspace_id(value: &str) -> Result<Uuid, AppError> {
+    Uuid::parse_str(value).map_err(|_| AppError::NotFound {
         code: "WORKSPACE_NOT_FOUND",
         message: "Workspace not found.",
     })

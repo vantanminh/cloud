@@ -51,7 +51,7 @@ describe("HtmlSourceEditor", () => {
     render(
       <HtmlSourceEditor
         appService={pastedPage}
-        workspaceSlug="ws"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="proj"
         onToast={onToast}
         onAppServiceUpdated={onAppServiceUpdated}
@@ -82,7 +82,7 @@ describe("HtmlSourceEditor", () => {
           htmlBranch: "main",
           htmlSha: "deadbeef",
         }}
-        workspaceSlug="ws"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="proj"
         onToast={vi.fn()}
       />

@@ -28,7 +28,10 @@ import { cn } from "cn"
 import { Button } from "@/components/ui/button"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { AppServiceRuntimeLogs } from "@/components/app-service-runtime-logs"
-import { HtmlAnalyticsPane, HtmlSourceEditor } from "@/components/html-page-workspace"
+import {
+  HtmlAnalyticsPane,
+  HtmlSourceEditor,
+} from "@/components/html-page-workspace"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -76,7 +79,7 @@ type ResourceWorkspaceNode = {
   resource?: PostgresResource | AppService | RedisResource
 }
 
-type ResourceWorkspaceTab =
+export type ResourceWorkspaceTab =
   | "deployments"
   | "database"
   | "backups"
@@ -103,8 +106,9 @@ const resourceTabs: Array<{
 type ResourceWorkspaceProps = {
   node: ResourceWorkspaceNode
   environment: string
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
+  initialTab?: ResourceWorkspaceTab
   onClose: () => void
   onCopyConnectionString: (value: string) => void
   copiedConnectionString: boolean
@@ -131,8 +135,9 @@ const METRIC_RANGE_OPTIONS: Array<{
 export function ResourceWorkspace({
   node,
   environment,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
+  initialTab = "deployments",
   onClose,
   onCopyConnectionString,
   copiedConnectionString,
@@ -142,8 +147,7 @@ export function ResourceWorkspace({
   onPostgresUpdated,
 }: ResourceWorkspaceProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const [activeTab, setActiveTab] =
-    useState<ResourceWorkspaceTab>("deployments")
+  const [activeTab, setActiveTab] = useState<ResourceWorkspaceTab>(initialTab)
 
   useEffect(() => {
     closeButtonRef.current?.focus()
@@ -222,7 +226,9 @@ export function ResourceWorkspace({
             <span
               className={cn(
                 "resource-workspace-logo",
-                node.resource?.resourceType === "postgres" ? "postgres" : "project"
+                node.resource?.resourceType === "postgres"
+                  ? "postgres"
+                  : "project"
               )}
               aria-hidden="true"
             >
@@ -273,7 +279,7 @@ export function ResourceWorkspace({
           {activeTab === "deployments" && (
             <DeploymentsPane
               node={node}
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               projectSlug={projectSlug}
               onToast={onToast}
               onOpenLogs={onOpenLogs}
@@ -284,7 +290,7 @@ export function ResourceWorkspace({
           {activeTab === "database" && (
             <DatabasePane
               node={node}
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               projectSlug={projectSlug}
               connectionString={connectionString}
               copiedConnectionString={copiedConnectionString}
@@ -301,7 +307,7 @@ export function ResourceWorkspace({
             <MetricsPane
               node={node}
               projectSlug={projectSlug}
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               onToast={onToast}
             />
           )}
@@ -309,14 +315,14 @@ export function ResourceWorkspace({
             node.resource?.resourceType === "app" && (
               <HtmlAnalyticsPane
                 appService={node.resource}
-                workspaceSlug={workspaceSlug}
+                workspaceId={workspaceId}
                 projectSlug={projectSlug}
               />
             )}
           {activeTab === "console" && (
             <ConsolePane
               node={node}
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               projectSlug={projectSlug}
               onToast={onToast}
             />
@@ -325,7 +331,7 @@ export function ResourceWorkspace({
             <SettingsPane
               node={node}
               environment={environment}
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               projectSlug={projectSlug}
               onToast={onToast}
               onAppServiceUpdated={onAppServiceUpdated}
@@ -339,7 +345,7 @@ export function ResourceWorkspace({
 
 function DeploymentsPane({
   node,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onOpenLogs,
@@ -347,7 +353,7 @@ function DeploymentsPane({
   onPostgresUpdated,
 }: {
   node: ResourceWorkspaceNode
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onOpenLogs: () => void
@@ -480,7 +486,7 @@ function DeploymentsPane({
           </span>
           {isError && postgresResource && (
             <PostgresRetryButton
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
               projectSlug={projectSlug}
               resource={postgresResource}
               onToast={onToast}
@@ -564,13 +570,13 @@ function DeploymentsPane({
 }
 
 function PostgresRetryButton({
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   resource,
   onToast,
   onUpdated,
 }: {
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   resource: PostgresResource
   onToast: (message: string) => void
@@ -587,7 +593,7 @@ function PostgresRetryButton({
     setError(null)
     try {
       const nextResource = await retryPostgresResource(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         resource.id
       )
@@ -633,7 +639,7 @@ function PostgresRetryButton({
 
 function DatabasePane({
   node,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   connectionString,
   copiedConnectionString,
@@ -642,7 +648,7 @@ function DatabasePane({
   onPostgresUpdated,
 }: {
   node: ResourceWorkspaceNode
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   connectionString?: string
   copiedConnectionString: boolean
@@ -683,7 +689,7 @@ function DatabasePane({
     tableRequestId.current = requestId
     try {
       const nextTables = await listDatabaseTables(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         resourceId,
         tableSearch
@@ -716,7 +722,7 @@ function DatabasePane({
         setLoading(false)
       }
     }
-  }, [isReady, projectSlug, resourceId, tableSearch, workspaceSlug])
+  }, [isReady, projectSlug, resourceId, tableSearch, workspaceId])
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -747,7 +753,7 @@ function DatabasePane({
     }
     let active = true
     void getDatabaseTableData(
-      workspaceSlug,
+      workspaceId,
       projectSlug,
       resourceId,
       selectedTableName,
@@ -782,7 +788,7 @@ function DatabasePane({
     selectedTableSchemaName,
     tableOffset,
     view,
-    workspaceSlug,
+    workspaceId,
   ])
 
   useEffect(() => {
@@ -790,7 +796,7 @@ function DatabasePane({
       return
     }
     let active = true
-    void getDatabaseStats(workspaceSlug, projectSlug, resourceId)
+    void getDatabaseStats(workspaceId, projectSlug, resourceId)
       .then((nextStats) => {
         if (active) {
           setStats(nextStats)
@@ -809,14 +815,14 @@ function DatabasePane({
     return () => {
       active = false
     }
-  }, [isReady, projectSlug, resourceId, view, workspaceSlug])
+  }, [isReady, projectSlug, resourceId, view, workspaceId])
 
   useEffect(() => {
     if (!resourceId || !isReady || view !== "config") {
       return
     }
     let active = true
-    void getDatabaseConfig(workspaceSlug, projectSlug, resourceId)
+    void getDatabaseConfig(workspaceId, projectSlug, resourceId)
       .then((nextConfig) => {
         if (active) {
           setConfig(nextConfig)
@@ -835,7 +841,7 @@ function DatabasePane({
     return () => {
       active = false
     }
-  }, [isReady, projectSlug, resourceId, view, workspaceSlug])
+  }, [isReady, projectSlug, resourceId, view, workspaceId])
 
   async function handleRunQuery() {
     if (!resourceId || !isReady || !query.trim()) {
@@ -846,7 +852,7 @@ function DatabasePane({
     setQueryResult(null)
     try {
       const result = await executeDatabaseQuery(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         resourceId,
         query
@@ -942,7 +948,7 @@ function DatabasePane({
           action={
             isError && node.resource?.resourceType === "postgres" ? (
               <PostgresRetryButton
-                workspaceSlug={workspaceSlug}
+                workspaceId={workspaceId}
                 projectSlug={projectSlug}
                 resource={node.resource}
                 onToast={onToast}
@@ -1112,7 +1118,7 @@ function DatabasePane({
               projectSlug={projectSlug}
               resourceId={resourceId}
               schemaName="public"
-              workspaceSlug={workspaceSlug}
+              workspaceId={workspaceId}
             />
           )}
         </>
@@ -1293,7 +1299,7 @@ function DatabaseConfigView({ config }: { config: DatabaseConfig[] }) {
 }
 
 function CreateTableForm({
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   resourceId,
   schemaName,
@@ -1301,7 +1307,7 @@ function CreateTableForm({
   onCreated,
   onError,
 }: {
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   resourceId: string
   schemaName: string
@@ -1319,7 +1325,7 @@ function CreateTableForm({
     event.preventDefault()
     setSaving(true)
     try {
-      await createDatabaseTable(workspaceSlug, projectSlug, resourceId, {
+      await createDatabaseTable(workspaceId, projectSlug, resourceId, {
         name,
         schema: schemaName,
         columns,
@@ -1709,12 +1715,12 @@ function VariablesPane({
 function MetricsPane({
   node,
   projectSlug,
-  workspaceSlug,
+  workspaceId,
   onToast,
 }: {
   node: ResourceWorkspaceNode
   projectSlug: string
-  workspaceSlug: string
+  workspaceId: string
   onToast: (message: string) => void
 }) {
   const resourceId = node.resource?.id
@@ -1753,13 +1759,13 @@ function MetricsPane({
       try {
         const nextMetrics = isAppService
           ? await getAppServiceMetrics(
-              workspaceSlug,
+              workspaceId,
               projectSlug,
               resourceId,
               range
             )
           : await getDatabaseMetrics(
-              workspaceSlug,
+              workspaceId,
               projectSlug,
               resourceId,
               range
@@ -1782,7 +1788,7 @@ function MetricsPane({
         }
       }
     },
-    [isAppService, isReady, projectSlug, range, resourceId, workspaceSlug]
+    [isAppService, isReady, projectSlug, range, resourceId, workspaceId]
   )
 
   useEffect(() => {
@@ -1839,8 +1845,8 @@ function MetricsPane({
           }
           description={
             isError
-              ? node.resource?.errorMessage ??
-                `Live metrics are unavailable for this ${resourceLabel}.`
+              ? (node.resource?.errorMessage ??
+                `Live metrics are unavailable for this ${resourceLabel}.`)
               : `Live metrics become available as soon as the ${resourceLabel} is ready.`
           }
         />
@@ -2278,12 +2284,12 @@ function MetricCard({
     ? "—"
     : (axisMaxLabel ??
       (measuredMax === 0
-        ? axisFormat?.(0) ?? formatBytes(0)
-        : axisFormat?.(chartMax) ?? formatBytes(chartMax)))
+        ? (axisFormat?.(0) ?? formatBytes(0))
+        : (axisFormat?.(chartMax) ?? formatBytes(chartMax))))
   const axisMidLabel = !hasChartData
     ? "—"
     : measuredMax === 0
-      ? axisFormat?.(0) ?? formatBytes(0)
+      ? (axisFormat?.(0) ?? formatBytes(0))
       : axisFormat
         ? axisFormat(chartMax / 2)
         : axisMaxLabel?.endsWith("%")
@@ -2600,12 +2606,12 @@ function volumePercent(point: ResourceMetricPoint) {
 
 function ConsolePane({
   node,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
 }: {
   node: ResourceWorkspaceNode
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
 }) {
@@ -2631,7 +2637,7 @@ function ConsolePane({
         {appService ? (
           <AppServiceRuntimeLogs
             appService={appService}
-            workspaceSlug={workspaceSlug}
+            workspaceId={workspaceId}
             projectSlug={projectSlug}
           />
         ) : (
@@ -2658,13 +2664,13 @@ function ConsolePane({
 
 function AutoDeployEditor({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
@@ -2684,7 +2690,7 @@ function AutoDeployEditor({
     setError(null)
     try {
       const resource = await updateAppServiceAutoDeploy(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id,
         { enabled: nextEnabled }
@@ -2786,13 +2792,13 @@ function AutoDeployEditor({
 
 function AppPortEditor({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
@@ -2819,7 +2825,7 @@ function AppPortEditor({
     setError(null)
     try {
       const resource = await updateAppService(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id,
         { appPort: parsedPort }
@@ -2879,13 +2885,13 @@ function AppPortEditor({
 
 function DatabaseAttachmentEditor({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
@@ -2900,7 +2906,7 @@ function DatabaseAttachmentEditor({
 
   useEffect(() => {
     let active = true
-    void listPostgresResources(workspaceSlug, projectSlug)
+    void listPostgresResources(workspaceId, projectSlug)
       .then((nextResources) => {
         if (active) {
           setResources(nextResources)
@@ -2926,7 +2932,7 @@ function DatabaseAttachmentEditor({
     return () => {
       active = false
     }
-  }, [projectSlug, workspaceSlug])
+  }, [projectSlug, workspaceId])
 
   async function handleChange(event: React.ChangeEvent<HTMLSelectElement>) {
     const nextResourceId = event.target.value
@@ -2936,7 +2942,7 @@ function DatabaseAttachmentEditor({
     setError(null)
     try {
       const resource = await updateAppServiceDatabase(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id,
         { databaseResourceId: nextDatabaseResourceId }
@@ -3007,18 +3013,20 @@ function DatabaseAttachmentEditor({
 
 function PublicAccessEditor({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
 }) {
-  const [enabled, setEnabled] = useState(Boolean(appService.publicAccessEnabled))
+  const [enabled, setEnabled] = useState(
+    Boolean(appService.publicAccessEnabled)
+  )
   const [rateLimitRpm, setRateLimitRpm] = useState(
     String(appService.rateLimitRpm ?? 60)
   )
@@ -3035,7 +3043,7 @@ function PublicAccessEditor({
     setError(null)
     try {
       const resource = await updateAppServicePublicAccess(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id,
         { enabled, rateLimitRpm: parsed }
@@ -3058,10 +3066,7 @@ function PublicAccessEditor({
   }
 
   return (
-    <article
-      id="public-access"
-      className="resource-workspace-setting-section"
-    >
+    <article id="public-access" className="resource-workspace-setting-section">
       <h3>Public access</h3>
       <p>
         A random *.knotree.org hostname is assigned only after public access is
@@ -3111,14 +3116,14 @@ function PublicAccessEditor({
 function SettingsPane({
   node,
   environment,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   onToast,
   onAppServiceUpdated,
 }: {
   node: ResourceWorkspaceNode
   environment: string
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   onToast: (message: string) => void
   onAppServiceUpdated?: (resource: AppService) => void
@@ -3192,10 +3197,7 @@ function SettingsPane({
                 ],
                 ["Public domain", appService.publicDomain ?? "Not assigned"],
                 ["Public URL", appService.serviceUrl ?? "Private"],
-                [
-                  "Rate limit",
-                  `${appService.rateLimitRpm ?? 60} req/min`,
-                ],
+                ["Rate limit", `${appService.rateLimitRpm ?? 60} req/min`],
                 ["Container", appService.containerName ?? "Pending"],
               ]
             : node.resource?.resourceType === "redis"
@@ -3248,7 +3250,7 @@ function SettingsPane({
               {isHtmlPage(appService) && (
                 <HtmlSourceEditor
                   appService={appService}
-                  workspaceSlug={workspaceSlug}
+                  workspaceId={workspaceId}
                   projectSlug={projectSlug}
                   onToast={onToast}
                   onAppServiceUpdated={onAppServiceUpdated}
@@ -3256,7 +3258,7 @@ function SettingsPane({
               )}
               <PublicAccessEditor
                 appService={appService}
-                workspaceSlug={workspaceSlug}
+                workspaceId={workspaceId}
                 projectSlug={projectSlug}
                 onToast={onToast}
                 onAppServiceUpdated={onAppServiceUpdated}
@@ -3264,7 +3266,7 @@ function SettingsPane({
               {!isHtmlPage(appService) && (
                 <DatabaseAttachmentEditor
                   appService={appService}
-                  workspaceSlug={workspaceSlug}
+                  workspaceId={workspaceId}
                   projectSlug={projectSlug}
                   onToast={onToast}
                   onAppServiceUpdated={onAppServiceUpdated}
@@ -3286,7 +3288,7 @@ function SettingsPane({
                     <AutoDeployEditor
                       key={`${appService.id}:${appService.autoDeployEnabled ? "on" : "off"}`}
                       appService={appService}
-                      workspaceSlug={workspaceSlug}
+                      workspaceId={workspaceId}
                       projectSlug={projectSlug}
                       onToast={onToast}
                       onAppServiceUpdated={onAppServiceUpdated}
@@ -3302,11 +3304,13 @@ function SettingsPane({
                         </div>
                       ))}
                     </dl>
-                    {section.id === "networking" && appService && !isHtmlPage(appService) ? (
+                    {section.id === "networking" &&
+                    appService &&
+                    !isHtmlPage(appService) ? (
                       <AppPortEditor
                         key={`${appService.id}:${appService.appPort}`}
                         appService={appService}
-                        workspaceSlug={workspaceSlug}
+                        workspaceId={workspaceId}
                         projectSlug={projectSlug}
                         onToast={onToast}
                         onAppServiceUpdated={onAppServiceUpdated}
@@ -3317,7 +3321,9 @@ function SettingsPane({
                         variant="outline"
                         size="sm"
                         onClick={() =>
-                          onToast(`${section.title} is read-only in development`)
+                          onToast(
+                            `${section.title} is read-only in development`
+                          )
                         }
                       >
                         Manage

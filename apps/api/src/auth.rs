@@ -41,7 +41,6 @@ struct SessionRow {
 struct WorkspaceRow {
     id: Uuid,
     name: String,
-    slug: String,
 }
 
 #[derive(Debug, Clone)]
@@ -284,7 +283,7 @@ async fn fetch_workspace(
     user_id: Uuid,
 ) -> Result<Option<WorkspaceResponse>, AppError> {
     let workspace = sqlx::query_as::<_, WorkspaceRow>(
-        "SELECT w.id, w.name, w.slug FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1",
+        "SELECT w.id, w.name FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(&state.db)
@@ -292,7 +291,6 @@ async fn fetch_workspace(
     Ok(workspace.map(|workspace| WorkspaceResponse {
         id: workspace.id,
         name: workspace.name,
-        slug: workspace.slug,
     }))
 }
 

@@ -12,12 +12,12 @@ const LOG_REFRESH_MS = 3_000
 
 export function AppServiceRuntimeLogs({
   appService,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
   compact = false,
 }: {
   appService: AppService
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
   compact?: boolean
 }) {
@@ -31,7 +31,7 @@ export function AppServiceRuntimeLogs({
     setIsRefreshing(true)
     try {
       const nextLogs = await getAppServiceLogs(
-        workspaceSlug,
+        workspaceId,
         projectSlug,
         appService.id
       )
@@ -47,7 +47,7 @@ export function AppServiceRuntimeLogs({
       setIsLoading(false)
       setIsRefreshing(false)
     }
-  }, [appService.id, projectSlug, workspaceSlug])
+  }, [appService.id, projectSlug, workspaceId])
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {

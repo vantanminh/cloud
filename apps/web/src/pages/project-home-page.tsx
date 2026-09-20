@@ -8,24 +8,19 @@ import {
   type ReactNode,
 } from "react"
 import {
-  ActivityIcon,
+  ArrowUpRightIcon,
   BarChart3Icon,
   BoxIcon,
-  BellIcon,
-  ChevronDownIcon,
   DatabaseIcon,
   FileTextIcon,
   GitBranchIcon,
   HardDriveIcon,
-  Layers3Icon,
   Maximize2Icon,
   NetworkIcon,
-  Redo2Icon,
   SearchIcon,
   Settings2Icon,
   MoonIcon,
   SunIcon,
-  Undo2Icon,
   XIcon,
   ZoomInIcon,
   ZoomOutIcon,
@@ -76,7 +71,7 @@ type TopologyNodeId = string
 type ConnectorId = string
 type Environment = "production" | "staging"
 type Theme = "light" | "dark"
-type WorkspaceView = "topology" | "logs"
+type WorkspaceView = "resources" | "topology" | "metrics" | "logs"
 
 type TopologyNode = {
   id: TopologyNodeId
@@ -97,17 +92,17 @@ type PersistedDashboardState = {
 
 export function ProjectHomePage() {
   const { session } = useAuth()
-  const { workspaceSlug, projectSlug } = useParams()
+  const { workspaceId, projectSlug } = useParams()
   const [project, setProject] = useState<Project | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!workspaceSlug || !projectSlug) {
+    if (!workspaceId || !projectSlug) {
       return undefined
     }
 
     let active = true
-    void getProject(workspaceSlug, projectSlug)
+    void getProject(workspaceId, projectSlug)
       .then((nextProject) => {
         if (active) {
           setProject(nextProject)
@@ -127,9 +122,9 @@ export function ProjectHomePage() {
     return () => {
       active = false
     }
-  }, [projectSlug, workspaceSlug])
+  }, [projectSlug, workspaceId])
 
-  if (!session?.workspace || !workspaceSlug || !projectSlug) {
+  if (!session?.workspace || !workspaceId || !projectSlug) {
     return null
   }
 
@@ -152,7 +147,7 @@ export function ProjectHomePage() {
     <TopologyDashboard
       project={project}
       workspace={session.workspace}
-      workspaceSlug={workspaceSlug}
+      workspaceId={workspaceId}
       projectSlug={projectSlug}
     />
   )
@@ -178,7 +173,7 @@ function ProjectLoadError({
         </h1>
         <p className="leading-7 text-muted-foreground">{message}</p>
       </div>
-      <Button onClick={() => navigate(`/workspace/${workspace.slug}`)}>
+      <Button onClick={() => navigate(`/workspace/${workspace.id}`)}>
         Back to workspace
       </Button>
     </main>
@@ -188,12 +183,12 @@ function ProjectLoadError({
 function TopologyDashboard({
   project,
   workspace,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
 }: {
   project: Project
   workspace: Workspace
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
 }) {
   const navigate = useNavigate()
@@ -214,7 +209,9 @@ function TopologyDashboard({
   const [canvasTheme, setCanvasTheme] = useState<Theme>(() =>
     readStoredTheme("project-topology-canvas-theme")
   )
-  const [activeView, setActiveView] = useState<WorkspaceView>("topology")
+  const [activeView, setActiveView] = useState<WorkspaceView>("resources")
+  const [resourceWorkspaceInitialTab, setResourceWorkspaceInitialTab] =
+    useState<"deployments" | "metrics">("deployments")
   const canvasRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ id: string; moved: boolean } | null>(null)
   const stateKey = `project-topology-dashboard-state:${project.id}`
@@ -268,15 +265,18 @@ function TopologyDashboard({
         subtitle:
           appServices.length === 1
             ? `${service.name} · ${
-                service.imageSource === "html" || service.imageSource === "html_github"
-                  ? service.publicDomain ?? "HTML page"
+                service.imageSource === "html" ||
+                service.imageSource === "html_github"
+                  ? (service.publicDomain ?? "HTML page")
                   : service.image
               }`
-            : service.imageSource === "html" || service.imageSource === "html_github"
-              ? service.publicDomain ?? "HTML page"
+            : service.imageSource === "html" ||
+                service.imageSource === "html_github"
+              ? (service.publicDomain ?? "HTML page")
               : service.image,
         type:
-          service.imageSource === "html" || service.imageSource === "html_github"
+          service.imageSource === "html" ||
+          service.imageSource === "html_github"
             ? "HTML page"
             : "App service",
         volume: service.containerName ?? `${service.name}-volume`,
@@ -286,11 +286,9 @@ function TopologyDashboard({
       }
     })
     const merged = mergePositions(defaults, positions)
-    const placed = [
-      databaseNode,
-      redisNode,
-      ...serviceNodes,
-    ].filter((node): node is TopologyNode => Boolean(node))
+    const placed = [databaseNode, redisNode, ...serviceNodes].filter(
+      (node): node is TopologyNode => Boolean(node)
+    )
     if (placed.length > 0) {
       return placed.map((node) => ({
         ...node,
@@ -319,24 +317,19 @@ function TopologyDashboard({
   const [selectedNode, setSelectedNode] = useState<TopologyNodeId | null>(
     initialState.selectedNode
   )
-  const [layersVisible, setLayersVisible] = useState(false)
-  const [environment, setEnvironment] = useState<Environment>("production")
+  const environment: Environment = "production"
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
-  const [environmentMenuOpen, setEnvironmentMenuOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
   const copyTimer = useRef<number | null>(null)
   const addMenuRef = useRef<HTMLDivElement>(null)
-  const workspaceMenuRef = useRef<HTMLDivElement>(null)
-  const environmentMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let active = true
     void Promise.all([
-      listPostgresResources(workspaceSlug, projectSlug),
-      listRedisResources(workspaceSlug, projectSlug),
-      listAppServices(workspaceSlug, projectSlug),
+      listPostgresResources(workspaceId, projectSlug),
+      listRedisResources(workspaceId, projectSlug),
+      listAppServices(workspaceId, projectSlug),
     ])
       .then(([postgresResources, redisResources, appServices]) => {
         if (!active) {
@@ -362,7 +355,7 @@ function TopologyDashboard({
     return () => {
       active = false
     }
-  }, [projectSlug, workspaceSlug])
+  }, [projectSlug, workspaceId])
 
   const appServiceIsProvisioning = appServices.some(
     (service) => service.status === "provisioning"
@@ -377,7 +370,7 @@ function TopologyDashboard({
 
     let active = true
     const refresh = () => {
-      void listPostgresResources(workspaceSlug, projectSlug)
+      void listPostgresResources(workspaceId, projectSlug)
         .then((resources) => {
           if (active) {
             setPostgresResource(resources[0] ?? null)
@@ -394,7 +387,7 @@ function TopologyDashboard({
       active = false
       window.clearInterval(intervalId)
     }
-  }, [postgresIsProvisioning, projectSlug, workspaceSlug])
+  }, [postgresIsProvisioning, projectSlug, workspaceId])
 
   useEffect(() => {
     if (!appServiceIsProvisioning) {
@@ -403,7 +396,7 @@ function TopologyDashboard({
 
     let active = true
     const refresh = () => {
-      void listAppServices(workspaceSlug, projectSlug)
+      void listAppServices(workspaceId, projectSlug)
         .then((resources) => {
           if (active) {
             setAppServices(resources)
@@ -419,7 +412,7 @@ function TopologyDashboard({
       active = false
       window.clearInterval(intervalId)
     }
-  }, [appServiceIsProvisioning, projectSlug, workspaceSlug])
+  }, [appServiceIsProvisioning, projectSlug, workspaceId])
 
   const showToast = useCallback((message: string) => {
     if (toastTimer.current !== null) {
@@ -468,12 +461,6 @@ function TopologyDashboard({
       if (!addMenuRef.current?.contains(target)) {
         setAddMenuOpen(false)
       }
-      if (!workspaceMenuRef.current?.contains(target)) {
-        setWorkspaceMenuOpen(false)
-      }
-      if (!environmentMenuRef.current?.contains(target)) {
-        setEnvironmentMenuOpen(false)
-      }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -481,8 +468,6 @@ function TopologyDashboard({
         return
       }
       setAddMenuOpen(false)
-      setWorkspaceMenuOpen(false)
-      setEnvironmentMenuOpen(false)
     }
 
     document.addEventListener("pointerdown", handlePointerDown)
@@ -503,13 +488,14 @@ function TopologyDashboard({
   }
 
   function selectNode(nodeId: TopologyNodeId) {
+    setResourceWorkspaceInitialTab("deployments")
     setSelectedNode(nodeId)
   }
 
   function handlePostgresAdd() {
     setAddMenuOpen(false)
     if (postgresResource?.status === "ready") {
-      setSelectedNode("postgres")
+      selectNode("postgres")
       showToast("Postgres is already provisioned")
       return
     }
@@ -520,7 +506,7 @@ function TopologyDashboard({
     setPostgresResource(resource)
     setResourceError(null)
     setPostgresDialogOpen(false)
-    setSelectedNode("postgres")
+    selectNode("postgres")
     showToast(
       resource.status === "provisioning"
         ? "Postgres database creation started"
@@ -531,7 +517,7 @@ function TopologyDashboard({
   function handleRedisAdd() {
     setAddMenuOpen(false)
     if (redisResource?.status === "ready") {
-      setSelectedNode("redis")
+      selectNode("redis")
       showToast("Redis is already provisioned")
       return
     }
@@ -542,7 +528,7 @@ function TopologyDashboard({
     setRedisResource(resource)
     setResourceError(null)
     setRedisDialogOpen(false)
-    setSelectedNode("redis")
+    selectNode("redis")
     showToast("Redis is ready")
   }
 
@@ -576,8 +562,7 @@ function TopologyDashboard({
     }
     drag.moved = true
     setPositions((current) => {
-      const existing =
-        current[drag.id] ??
+      const existing = current[drag.id] ??
         nodes.find((node) => node.id === drag.id)?.position ?? {
           left: 50,
           top: 40,
@@ -615,6 +600,7 @@ function TopologyDashboard({
         : [...current, resource]
     })
     setResourceError(null)
+    setResourceWorkspaceInitialTab("deployments")
     setSelectedNode(appServiceNodeId(resource.id))
     showToast(
       resource.status === "provisioning"
@@ -653,12 +639,6 @@ function TopologyDashboard({
     setActiveView("logs")
   }, [])
 
-  function closeMenus() {
-    setAddMenuOpen(false)
-    setWorkspaceMenuOpen(false)
-    setEnvironmentMenuOpen(false)
-  }
-
   function toggleTheme() {
     setTheme((current) => (current === "dark" ? "light" : "dark"))
   }
@@ -685,113 +665,79 @@ function TopologyDashboard({
           <button
             className="project-brand-button"
             type="button"
-            aria-label="Open workspace home"
-            onClick={() => navigate(`/workspace/${workspace.slug}`)}
+            aria-label={`Open ${workspace.name} workspace`}
+            onClick={() => navigate(`/workspace/${workspace.id}`)}
           >
             <span className="project-brand-mark" aria-hidden="true">
               <span />
             </span>
           </button>
           <span className="project-topbar-divider" aria-hidden="true" />
-          <div
-            ref={workspaceMenuRef}
-            className="project-workspace-switcher project-menu-anchor"
-          >
-            <div className="project-workspace-name">
-              <span className="project-avatar-dot" aria-hidden="true">
-                {getInitial(workspace.name)}
-              </span>
-              <button
-                className="project-context-trigger"
-                type="button"
-                aria-expanded={workspaceMenuOpen}
-                aria-controls="project-workspace-menu"
-                onClick={() => {
-                  setWorkspaceMenuOpen((current) => !current)
-                  setEnvironmentMenuOpen(false)
-                }}
-              >
-                <span className="project-context-label">{workspace.name}</span>
-                <ChevronDownIcon
-                  className="project-chevron"
-                  aria-hidden="true"
-                />
-              </button>
-            </div>
-            <div
-              id="project-workspace-menu"
-              className="project-context-menu project-workspace-menu"
-              hidden={!workspaceMenuOpen}
-            >
-              <div className="project-menu-heading">Workspace</div>
-              <button
-                type="button"
-                className="project-context-menu-item is-current"
-                onClick={() => {
-                  closeMenus()
-                  showToast(`${workspace.name} selected`)
-                }}
-              >
-                {workspace.name}
-              </button>
-              <button
-                type="button"
-                className="project-context-menu-item"
-                onClick={() => {
-                  closeMenus()
-                  showToast("Additional workspaces are coming soon")
-                }}
-              >
-                Workspace settings
-              </button>
-            </div>
-          </div>
-          <div
-            ref={environmentMenuRef}
-            className="project-environment-switcher project-menu-anchor"
-          >
+          <div className="project-workspace-switcher">
+            <span className="project-avatar-dot" aria-hidden="true">
+              {getInitial(workspace.name)}
+            </span>
             <button
-              className="project-context-trigger project-environment-trigger"
+              className="project-context-trigger"
               type="button"
-              aria-expanded={environmentMenuOpen}
-              aria-controls="project-environment-menu"
-              onClick={() => {
-                setEnvironmentMenuOpen((current) => !current)
-                setWorkspaceMenuOpen(false)
-              }}
+              aria-label={`Return to ${workspace.name} workspace`}
+              onClick={() => navigate(`/workspace/${workspace.id}`)}
             >
-              <span className="project-context-label">{environment}</span>
-              <ChevronDownIcon className="project-chevron" aria-hidden="true" />
+              <span className="project-context-label">{workspace.name}</span>
             </button>
-            <div
-              id="project-environment-menu"
-              className="project-context-menu project-environment-menu"
-              hidden={!environmentMenuOpen}
-            >
-              <div className="project-menu-heading">Environment</div>
-              {(["production", "staging"] as Environment[]).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={cn(
-                    "project-context-menu-item",
-                    option === environment && "is-current"
-                  )}
-                  onClick={() => {
-                    setEnvironment(option)
-                    closeMenus()
-                    showToast(`${option} selected`)
-                  }}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
           </div>
+          <span className="project-topbar-divider" aria-hidden="true" />
+          <span className="project-project-context">{project.name}</span>
+          <span className="project-environment-context">{environment}</span>
         </div>
 
         <div className="project-topbar-right">
-          <div className="project-topbar-actions" aria-label="Utility actions">
+          <div ref={addMenuRef} className="project-add-wrap">
+            <button
+              className="project-primary-button"
+              type="button"
+              aria-expanded={addMenuOpen}
+              aria-controls="project-add-menu"
+              onClick={() => setAddMenuOpen((current) => !current)}
+            >
+              <span className="project-plus" aria-hidden="true">
+                +
+              </span>
+              <span className="project-add-label">Add resource</span>
+            </button>
+            <div
+              id="project-add-menu"
+              className="project-add-menu"
+              hidden={!addMenuOpen}
+            >
+              <div className="project-menu-heading">Add resource</div>
+              <ProjectAddOption
+                mark="P"
+                label={
+                  postgresResource?.status === "ready"
+                    ? "Postgres (ready)"
+                    : postgresResource?.status === "provisioning"
+                      ? "Postgres (creating)"
+                      : "Postgres"
+                }
+                onClick={handlePostgresAdd}
+              />
+              <ProjectAddOption
+                mark="R"
+                label={
+                  redisResource?.status === "ready" ? "Redis (ready)" : "Redis"
+                }
+                onClick={handleRedisAdd}
+              />
+              <ProjectAddOption
+                mark="S"
+                label="App service / HTML page"
+                disabled={appServices.length >= 6}
+                onClick={handleAppServiceAdd}
+              />
+            </div>
+          </div>
+          <div className="project-topbar-actions" aria-label="Account actions">
             <button
               className="project-icon-button"
               type="button"
@@ -809,42 +755,34 @@ function TopologyDashboard({
                 <SunIcon aria-hidden="true" />
               )}
             </button>
-            <button
-              className="project-icon-button"
-              type="button"
-              aria-label="Open activity"
-              onClick={() => showToast("Activity is coming soon")}
-            >
-              <ActivityIcon aria-hidden="true" />
-            </button>
-            <button
-              className="project-icon-button"
-              type="button"
-              aria-label="Open notifications"
-              onClick={() => showToast("Notifications are coming soon")}
-            >
-              <BellIcon aria-hidden="true" />
-            </button>
-          </div>
-          <div className="project-billing-badge" aria-label="Trial status">
-            <strong>30 days</strong>&nbsp;or $4.99 left
           </div>
           <button
             className="project-agent-button"
             type="button"
-            aria-label="Open agent"
-            onClick={() => showToast("Agent is coming soon")}
+            aria-label={`Sign out ${session?.user.email ?? "account"}`}
+            onClick={() => void handleSignOut()}
           >
             <span className="project-agent-avatar" aria-hidden="true">
               {memberInitial}
             </span>
-            <span>Agent</span>
+            <span className="project-sign-out-label">Sign out</span>
           </button>
         </div>
       </header>
 
       <aside className="project-side-rail">
+        <div className="project-rail-project">
+          <strong>{project.name}</strong>
+          <span>{workspace.name}</span>
+        </div>
         <nav className="project-rail-nav" aria-label="Primary">
+          <ProjectRailButton
+            active={activeView === "resources"}
+            label="Resources"
+            onClick={() => setActiveView("resources")}
+          >
+            <BoxIcon aria-hidden="true" />
+          </ProjectRailButton>
           <ProjectRailButton
             active={activeView === "topology"}
             label="Topology"
@@ -853,8 +791,9 @@ function TopologyDashboard({
             <NetworkIcon aria-hidden="true" />
           </ProjectRailButton>
           <ProjectRailButton
+            active={activeView === "metrics"}
             label="Metrics"
-            onClick={() => showToast("Metrics is available in this workspace")}
+            onClick={() => setActiveView("metrics")}
           >
             <BarChart3Icon aria-hidden="true" />
           </ProjectRailButton>
@@ -869,15 +808,7 @@ function TopologyDashboard({
             <FileTextIcon aria-hidden="true" />
           </ProjectRailButton>
           <ProjectRailButton
-            label="Resources"
-            onClick={() =>
-              showToast("Resources is available in this workspace")
-            }
-          >
-            <BoxIcon aria-hidden="true" />
-          </ProjectRailButton>
-          <ProjectRailButton
-            label="Settings"
+            label="Integrations"
             onClick={() => navigate("/settings/integrations")}
           >
             <Settings2Icon aria-hidden="true" />
@@ -899,8 +830,28 @@ function TopologyDashboard({
             project={project}
             environment={environment}
             appServices={appServices}
-            workspaceSlug={workspaceSlug}
+            workspaceId={workspaceId}
             projectSlug={projectSlug}
+          />
+        ) : activeView === "resources" ? (
+          <ResourcesWorkspace
+            project={project}
+            nodes={nodes.filter((node) => Boolean(node.resource))}
+            loading={resourcesLoading}
+            error={resourceError}
+            onOpenResource={(node) => selectNode(node.id)}
+            onAddResource={() => setAddMenuOpen(true)}
+          />
+        ) : activeView === "metrics" ? (
+          <MetricsWorkspace
+            project={project}
+            nodes={nodes.filter((node) => Boolean(node.resource))}
+            loading={resourcesLoading}
+            error={resourceError}
+            onOpenMetrics={(node) => {
+              setResourceWorkspaceInitialTab("metrics")
+              setSelectedNode(node.id)
+            }}
           />
         ) : (
           <>
@@ -908,8 +859,7 @@ function TopologyDashboard({
             <section
               className={cn(
                 "project-topology-shell",
-                selectedNode && "has-selection",
-                layersVisible && "has-layer-guidance"
+                selectedNode && "has-selection"
               )}
               aria-label={`${environment} infrastructure topology for ${project.name}`}
               data-canvas-theme={canvasTheme}
@@ -932,57 +882,6 @@ function TopologyDashboard({
                     <SunIcon aria-hidden="true" />
                   )}
                 </button>
-                <div ref={addMenuRef} className="project-add-wrap">
-                  <button
-                    className="project-primary-button"
-                    type="button"
-                    aria-expanded={addMenuOpen}
-                    aria-controls="project-add-menu"
-                    onClick={() => {
-                      setAddMenuOpen((current) => !current)
-                      setWorkspaceMenuOpen(false)
-                      setEnvironmentMenuOpen(false)
-                    }}
-                  >
-                    <span className="project-plus" aria-hidden="true">
-                      +
-                    </span>
-                    <span>Add</span>
-                  </button>
-                  <div
-                    id="project-add-menu"
-                    className="project-add-menu"
-                    hidden={!addMenuOpen}
-                  >
-                    <div className="project-menu-heading">Add resource</div>
-                    <ProjectAddOption
-                      mark="P"
-                      label={
-                        postgresResource?.status === "ready"
-                          ? "Postgres (ready)"
-                          : postgresResource?.status === "provisioning"
-                            ? "Postgres (creating)"
-                            : "Postgres"
-                      }
-                      onClick={handlePostgresAdd}
-                    />
-                    <ProjectAddOption
-                      mark="R"
-                      label={
-                        redisResource?.status === "ready"
-                          ? "Redis (ready)"
-                          : "Redis"
-                      }
-                      onClick={handleRedisAdd}
-                    />
-                    <ProjectAddOption
-                      mark="S"
-                      label="App service / HTML page"
-                      disabled={appServices.length >= 6}
-                      onClick={handleAppServiceAdd}
-                    />
-                  </div>
-                </div>
               </div>
 
               <svg
@@ -1174,47 +1073,13 @@ function TopologyDashboard({
                     <ZoomOutIcon aria-hidden="true" />
                   </button>
                 </div>
-                <div className="project-history-group">
-                  <button
-                    className="project-zoom-button"
-                    type="button"
-                    aria-label="Fit topology to view"
-                    onClick={() => updateZoom(1, "View fitted")}
-                  >
-                    <Maximize2Icon aria-hidden="true" />
-                  </button>
-                  <button
-                    className="project-zoom-button"
-                    type="button"
-                    aria-label="Undo view change"
-                    onClick={() => showToast("No earlier view change")}
-                  >
-                    <Undo2Icon aria-hidden="true" />
-                  </button>
-                  <button
-                    className="project-zoom-button"
-                    type="button"
-                    aria-label="Redo view change"
-                    onClick={() => showToast("No later view change")}
-                  >
-                    <Redo2Icon aria-hidden="true" />
-                  </button>
-                </div>
                 <button
-                  className="project-layers-button"
+                  className="project-zoom-button"
                   type="button"
-                  aria-label="Toggle layer guidance"
-                  aria-pressed={layersVisible}
-                  onClick={() => {
-                    setLayersVisible((current) => !current)
-                    showToast(
-                      layersVisible
-                        ? "Layer guidance hidden"
-                        : "Layer guidance visible"
-                    )
-                  }}
+                  aria-label="Fit topology to view"
+                  onClick={() => updateZoom(1, "View fitted")}
                 >
-                  <Layers3Icon aria-hidden="true" />
+                  <Maximize2Icon aria-hidden="true" />
                 </button>
                 <span className="project-zoom-readout" aria-live="polite">
                   {Math.round(zoom * 100)}%
@@ -1227,11 +1092,12 @@ function TopologyDashboard({
 
       {selectedNodeData && (
         <ResourceWorkspace
-          key={selectedNodeData.id}
+          key={`${selectedNodeData.id}:${resourceWorkspaceInitialTab}`}
           node={selectedNodeData}
           environment={environment}
-          workspaceSlug={workspaceSlug}
+          workspaceId={workspaceId}
           projectSlug={projectSlug}
+          initialTab={resourceWorkspaceInitialTab}
           onClose={closeResourceWorkspace}
           onCopyConnectionString={(value) => {
             void handleCopyConnectionString(value)
@@ -1258,7 +1124,7 @@ function TopologyDashboard({
         key={
           postgresDialogOpen ? "postgres-dialog-open" : "postgres-dialog-closed"
         }
-        workspaceSlug={workspaceSlug}
+        workspaceId={workspaceId}
         projectSlug={projectSlug}
         open={postgresDialogOpen}
         onOpenChange={setPostgresDialogOpen}
@@ -1267,7 +1133,7 @@ function TopologyDashboard({
 
       <RedisCreateDialog
         key={redisDialogOpen ? "redis-dialog-open" : "redis-dialog-closed"}
-        workspaceSlug={workspaceSlug}
+        workspaceId={workspaceId}
         projectSlug={projectSlug}
         open={redisDialogOpen}
         onOpenChange={setRedisDialogOpen}
@@ -1280,7 +1146,7 @@ function TopologyDashboard({
             ? "app-service-dialog-open"
             : "app-service-dialog-closed"
         }
-        workspaceSlug={workspaceSlug}
+        workspaceId={workspaceId}
         projectSlug={projectSlug}
         open={appServiceDialogOpen}
         onOpenChange={setAppServiceDialogOpen}
@@ -1316,22 +1182,319 @@ function ProjectRailButton({
       aria-label={label}
       onClick={onClick}
     >
-      {children}
+      <span className="project-rail-icon" aria-hidden="true">
+        {children}
+      </span>
+      <span className="project-rail-label">{label}</span>
     </button>
   )
+}
+
+function ResourcesWorkspace({
+  project,
+  nodes,
+  loading,
+  error,
+  onOpenResource,
+  onAddResource,
+}: {
+  project: Project
+  nodes: TopologyNode[]
+  loading: boolean
+  error: string | null
+  onOpenResource: (node: TopologyNode) => void
+  onAddResource: () => void
+}) {
+  const [search, setSearch] = useState("")
+  const [filter, setFilter] = useState<"all" | "services" | "data">("all")
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredNodes = nodes.filter((node) => {
+    const isDataStore =
+      node.resource?.resourceType === "postgres" ||
+      node.resource?.resourceType === "redis"
+    const matchesFilter =
+      filter === "all" || (filter === "data" ? isDataStore : !isDataStore)
+    const matchesSearch =
+      !normalizedSearch ||
+      `${node.title} ${node.type} ${node.subtitle ?? ""}`
+        .toLowerCase()
+        .includes(normalizedSearch)
+    return matchesFilter && matchesSearch
+  })
+
+  return (
+    <section className="project-content-view" aria-labelledby="resources-title">
+      <div className="project-view-heading">
+        <div>
+          <h1 id="resources-title">Resources</h1>
+          <p>Manage app services and data stores for this project.</p>
+        </div>
+      </div>
+
+      <div className="project-resource-toolbar">
+        <label className="project-resource-search">
+          <SearchIcon aria-hidden="true" />
+          <span className="sr-only">Search resources</span>
+          <input
+            type="search"
+            value={search}
+            placeholder="Search resources"
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+        <div
+          className="project-resource-filters"
+          role="group"
+          aria-label="Filter resources"
+        >
+          {(
+            [
+              ["all", "All resources"],
+              ["services", "App services"],
+              ["data", "Data stores"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={filter === value}
+              className={cn(filter === value && "is-active")}
+              onClick={() => setFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="project-view-error" role="alert">
+          <strong>Resources unavailable</strong>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="project-view-loading" role="status">
+          <Spinner />
+          <span>Loading resources</span>
+        </div>
+      ) : nodes.length === 0 && !error ? (
+        <div className="project-view-empty">
+          <span className="project-view-empty-icon" aria-hidden="true">
+            <BoxIcon />
+          </span>
+          <h2>No resources yet</h2>
+          <p>
+            Add an app service, HTML page, PostgreSQL database, or Redis store
+            to get started.
+          </p>
+          <Button type="button" onClick={onAddResource}>
+            Add resource
+          </Button>
+        </div>
+      ) : filteredNodes.length === 0 && !error ? (
+        <div className="project-view-empty project-view-empty-compact">
+          <h2>No matching resources</h2>
+          <p>Try another search or filter for {project.name}.</p>
+        </div>
+      ) : (
+        <div className="project-resource-table-wrap">
+          <table className="project-resource-table">
+            <caption className="sr-only">Resources for {project.name}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
+                <th scope="col">Status</th>
+                <th scope="col">Open</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredNodes.map((node) => (
+                <tr key={node.id}>
+                  <th scope="row" className="project-resource-name-cell">
+                    <span className="project-resource-icon" aria-hidden="true">
+                      <ResourceIcon node={node} />
+                    </span>
+                    <span className="project-resource-name">
+                      <strong>{node.title}</strong>
+                      <span className="project-resource-mobile-type">
+                        {node.type}
+                      </span>
+                    </span>
+                  </th>
+                  <td className="project-resource-type-cell">{node.type}</td>
+                  <td>
+                    <span className="project-resource-status">
+                      <span
+                        className={cn(
+                          "project-resource-status-dot",
+                          `status-${node.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
+                        )}
+                        aria-hidden="true"
+                      />
+                      {node.status}
+                    </span>
+                  </td>
+                  <td className="project-resource-action-cell">
+                    <button
+                      type="button"
+                      className="project-resource-open"
+                      aria-label={`Open ${node.title}`}
+                      onClick={() => onOpenResource(node)}
+                    >
+                      <span>Open</span>
+                      <ArrowUpRightIcon aria-hidden="true" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function MetricsWorkspace({
+  project,
+  nodes,
+  loading,
+  error,
+  onOpenMetrics,
+}: {
+  project: Project
+  nodes: TopologyNode[]
+  loading: boolean
+  error: string | null
+  onOpenMetrics: (node: TopologyNode) => void
+}) {
+  const metricNodes = nodes.filter(
+    (node) =>
+      node.resource?.resourceType === "postgres" ||
+      node.resource?.resourceType === "app"
+  )
+
+  return (
+    <section className="project-content-view" aria-labelledby="metrics-title">
+      <div className="project-view-heading">
+        <div>
+          <h1 id="metrics-title">Metrics</h1>
+          <p>
+            Choose a PostgreSQL database or app service to view its live
+            metrics.
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="project-view-error" role="alert">
+          <strong>Resources unavailable</strong>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="project-view-loading" role="status">
+          <Spinner />
+          <span>Loading resources</span>
+        </div>
+      ) : metricNodes.length === 0 && !error ? (
+        <div className="project-view-empty">
+          <span className="project-view-empty-icon" aria-hidden="true">
+            <BarChart3Icon />
+          </span>
+          <h2>No metrics resources yet</h2>
+          <p>
+            Add a PostgreSQL database or app service to view runtime metrics for
+            {` ${project.name}`}.
+          </p>
+        </div>
+      ) : (
+        <div className="project-resource-table-wrap">
+          <table className="project-resource-table project-metrics-table">
+            <caption className="sr-only">
+              Resources with runtime metrics in {project.name}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Type</th>
+                <th scope="col">Status</th>
+                <th scope="col">Metrics</th>
+              </tr>
+            </thead>
+            <tbody>
+              {metricNodes.map((node) => (
+                <tr key={node.id}>
+                  <th scope="row" className="project-resource-name-cell">
+                    <span className="project-resource-icon" aria-hidden="true">
+                      <ResourceIcon node={node} />
+                    </span>
+                    <span className="project-resource-name">
+                      <strong>{node.title}</strong>
+                      <span className="project-resource-mobile-type">
+                        {node.type}
+                      </span>
+                    </span>
+                  </th>
+                  <td className="project-resource-type-cell">{node.type}</td>
+                  <td>
+                    <span className="project-resource-status">
+                      <span
+                        className={cn(
+                          "project-resource-status-dot",
+                          `status-${node.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
+                        )}
+                        aria-hidden="true"
+                      />
+                      {node.status}
+                    </span>
+                  </td>
+                  <td className="project-resource-action-cell">
+                    <button
+                      type="button"
+                      className="project-resource-open"
+                      aria-label={`View metrics for ${node.title}`}
+                      onClick={() => onOpenMetrics(node)}
+                    >
+                      <span>View metrics</span>
+                      <ArrowUpRightIcon aria-hidden="true" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ResourceIcon({ node }: { node: TopologyNode }) {
+  if (node.type === "HTML page") {
+    return <FileTextIcon aria-hidden="true" />
+  }
+  if (node.resource?.resourceType === "app") {
+    return <BoxIcon aria-hidden="true" />
+  }
+  return <NodeIcon nodeId={node.id} />
 }
 
 function LogsWorkspace({
   project,
   environment,
   appServices,
-  workspaceSlug,
+  workspaceId,
   projectSlug,
 }: {
   project: Project
   environment: string
   appServices: AppService[]
-  workspaceSlug: string
+  workspaceId: string
   projectSlug: string
 }) {
   const [resourceFilter, setResourceFilter] = useState("all")
@@ -1351,7 +1514,11 @@ function LogsWorkspace({
         return []
       }
       const source = new EventSource(
-        appServiceDeploymentEventsUrl(workspaceSlug, projectSlug, deployment.id),
+        appServiceDeploymentEventsUrl(
+          workspaceId,
+          projectSlug,
+          deployment.id
+        ),
         { withCredentials: true }
       )
       source.addEventListener("deployment", (event) => {
@@ -1374,7 +1541,7 @@ function LogsWorkspace({
       return [source]
     })
     return () => sources.forEach((source) => source.close())
-  }, [appServices, live, projectSlug, workspaceSlug])
+  }, [appServices, live, projectSlug, workspaceId])
 
   const normalizedSearch = search.trim().toLowerCase()
   const showAppServiceLogs =

@@ -1,4 +1,4 @@
-export function slugifyWorkspaceName(value: string): string {
+export function slugifyProjectName(value: string): string {
   return value
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -6,4 +6,5 @@ export function slugifyWorkspaceName(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48)
+    .replace(/-+$/g, "")
 }

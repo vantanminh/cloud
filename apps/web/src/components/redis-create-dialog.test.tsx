@@ -39,7 +39,7 @@ describe("RedisCreateDialog", () => {
     const onCreated = vi.fn()
     render(
       <RedisCreateDialog
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         open
         onOpenChange={vi.fn()}
@@ -56,7 +56,7 @@ describe("RedisCreateDialog", () => {
 
     await waitFor(() => {
       expect(mocks.createRedisResource).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         { name: "Cache" }
       )

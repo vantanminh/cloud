@@ -177,6 +177,6 @@ function validateForm({
 
 function destinationFor(session: AuthResponse) {
   return session.workspace
-    ? `/workspace/${session.workspace.slug}`
+    ? `/workspace/${session.workspace.id}`
     : "/new/workspace"
 }

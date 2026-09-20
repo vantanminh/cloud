@@ -55,27 +55,27 @@ pub fn router(state: AppState) -> Router {
         .route("/oauth/token", post(mcp::token))
         .route("/mcp", post(mcp::mcp_endpoint))
         .route("/workspaces", post(workspaces::create))
-        .route("/workspaces/{slug}", get(workspaces::get));
+        .route("/workspaces/{workspace_id}", get(workspaces::get));
 
     let api = api
         .route(
-            "/workspaces/{workspace_slug}/projects",
+            "/workspaces/{workspace_id}/projects",
             get(projects::list).post(projects::create),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}",
+            "/workspaces/{workspace_id}/projects/{project_slug}",
             get(projects::get),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources",
             get(resources::list).post(resources::create),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/retry",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/retry",
             post(resources::retry),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/deployments/{deployment_id}/events",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/deployments/{deployment_id}/events",
             get(app_services::deployment_events),
         )
         .route(
@@ -87,31 +87,31 @@ pub fn router(state: AppState) -> Router {
             any(app_services::public_proxy_path),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/logs",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/logs",
             get(app_services::logs),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/metrics",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/metrics",
             get(app_services::metrics),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/auto-deploy",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/auto-deploy",
             patch(app_services::update_auto_deploy),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/database",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/database",
             patch(app_services::update_database_connection),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/public-access",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/public-access",
             patch(app_services::update_public_access),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/html",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/html",
             get(html_pages::get_index_html).patch(app_services::update_html_page),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}/html-analytics",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/html-analytics",
             get(html_pages::analytics_summary),
         )
         .route(
@@ -127,39 +127,39 @@ pub fn router(state: AppState) -> Router {
             post(html_pages::collect_event),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services/{app_service_id}",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}",
             patch(app_services::update),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/redis",
+            "/workspaces/{workspace_id}/projects/{project_slug}/redis",
             get(redis_resources::list).post(redis_resources::create),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/app-services",
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services",
             get(app_services::list).post(app_services::create),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/tables",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/tables",
             get(database::list_tables).post(database::create_table),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/table-data",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/table-data",
             get(database::table_data),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/stats",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/stats",
             get(database::stats),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/metrics",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/metrics",
             get(database::metrics),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/config",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/config",
             get(database::config),
         )
         .route(
-            "/workspaces/{workspace_slug}/projects/{project_slug}/resources/{resource_id}/database/query",
+            "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/query",
             post(database::execute_query),
         );
 

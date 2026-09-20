@@ -71,20 +71,21 @@ describe("AuthPage", () => {
               emailVerified: false,
             },
             workspace: {
-              id: "existing-workspace-id",
+              id: "6fa459ea-ee8a-3ca4-894e-db77e160355e",
               name: "Existing Workspace",
-              slug: "existing-workspace",
             },
           })
         }
         if (path === "/workspaces") {
           return Promise.resolve({
-            id: "workspace-id",
+            id: "de305d54-75b4-431b-adb2-eb6b9e546014",
             name: "Acme Studio",
-            slug: "acme-studio",
           })
         }
-        if (path === "/workspaces/acme-studio/projects") {
+        if (path === "/workspaces/6fa459ea-ee8a-3ca4-894e-db77e160355e/projects") {
+          return Promise.resolve([])
+        }
+        if (path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects") {
           if (options?.method === "POST") {
             return Promise.resolve({
               id: "project-id",
@@ -94,7 +95,7 @@ describe("AuthPage", () => {
           }
           return Promise.resolve([])
         }
-        if (path === "/workspaces/acme-studio/projects/knotree-study") {
+        if (path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study") {
           return Promise.resolve({
             id: "project-id",
             name: "Knotree Study",
@@ -102,7 +103,7 @@ describe("AuthPage", () => {
           })
         }
         if (
-          path === "/workspaces/acme-studio/projects/knotree-study/resources"
+          path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/resources"
         ) {
           if (options?.method === "POST") {
             return Promise.resolve({
@@ -122,7 +123,7 @@ describe("AuthPage", () => {
           }
           return Promise.resolve([])
         }
-        if (path === "/workspaces/acme-studio/projects/knotree-study/redis") {
+        if (path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/redis") {
           if (options?.method === "POST") {
             return Promise.resolve({
               id: "redis-resource-id",
@@ -144,7 +145,7 @@ describe("AuthPage", () => {
         }
         if (
           path ===
-          "/workspaces/acme-studio/projects/knotree-study/app-services"
+          "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/app-services"
         ) {
           if (options?.method === "POST") {
             return Promise.resolve({
@@ -165,7 +166,7 @@ describe("AuthPage", () => {
         }
         if (
           path ===
-          "/workspaces/acme-studio/projects/knotree-study/resources/postgres-resource-id/database/tables"
+          "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/resources/postgres-resource-id/database/tables"
         ) {
           return Promise.resolve([])
         }
@@ -200,7 +201,7 @@ describe("AuthPage", () => {
     )
   })
 
-  it("creates the first workspace and routes to its slug", async () => {
+  it("creates the first workspace and routes to its UUID", async () => {
     const user = userEvent.setup()
 
     render(
@@ -220,7 +221,7 @@ describe("AuthPage", () => {
       await screen.findByLabelText("Workspace name"),
       "Acme Studio"
     )
-    expect(screen.getByLabelText("Workspace URL")).toHaveValue("acme-studio")
+    expect(screen.queryByLabelText("Workspace URL")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Create workspace" }))
 
     await user.click(
@@ -292,9 +293,7 @@ describe("AuthPage", () => {
       await screen.findByLabelText("Project name"),
       "Knotree Study"
     )
-    expect(screen.getByLabelText("Project URL slug")).toHaveValue(
-      "knotree-study"
-    )
+    expect(screen.getByText("/knotree-study")).toBeInTheDocument()
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: "Create project",
@@ -371,7 +370,7 @@ describe("AuthPage", () => {
       })
     )
     expect(mocks.apiRequest).toHaveBeenCalledWith(
-      "/workspaces/acme-studio/projects/knotree-study/redis",
+      "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/redis",
       expect.objectContaining({ method: "POST" })
     )
     expect(
@@ -405,7 +404,7 @@ describe("AuthPage", () => {
       within(appResourceDialog).getByText("Service URL · http://localhost:32768")
     ).toBeInTheDocument()
     expect(mocks.apiRequest).toHaveBeenCalledWith(
-      "/workspaces/acme-studio/projects/knotree-study/app-services",
+      "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/app-services",
       expect.objectContaining({ method: "POST" })
     )
     await user.click(

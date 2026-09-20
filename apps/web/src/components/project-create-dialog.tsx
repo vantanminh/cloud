@@ -13,34 +13,35 @@ import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { createProject } from "@/lib/projects"
-import { slugifyWorkspaceName } from "@/lib/slug"
+import { slugifyProjectName } from "@/lib/slug"
 import type { Project } from "@/lib/types"
 
 type ProjectCreateDialogProps = {
-  workspaceSlug: string
+  workspaceId: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: (project: Project) => void
 }
 
 export function ProjectCreateDialog({
-  workspaceSlug,
+  workspaceId,
   open,
   onOpenChange,
   onCreated,
 }: ProjectCreateDialogProps) {
   const [name, setName] = useState("")
   const [slug, setSlug] = useState("")
-  const [slugTouched, setSlugTouched] = useState(false)
+  const [isCustomSlug, setIsCustomSlug] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   function handleNameChange(value: string) {
     setName(value)
-    if (!slugTouched) {
-      setSlug(slugifyWorkspaceName(value))
+    if (!isCustomSlug) {
+      setSlug(slugifyProjectName(value))
     }
+    setSubmitError(null)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -49,7 +50,10 @@ export function ProjectCreateDialog({
     if (name.trim().length === 0 || name.trim().length > 80) {
       nextErrors.name = "Enter a project name between 1 and 80 characters."
     }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 48) {
+    if (
+      isCustomSlug &&
+      (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 48)
+    ) {
       nextErrors.slug = "Use a lowercase project URL slug."
     }
     setErrors(nextErrors)
@@ -60,9 +64,9 @@ export function ProjectCreateDialog({
 
     setIsSubmitting(true)
     try {
-      const project = await createProject(workspaceSlug, {
+      const project = await createProject(workspaceId, {
         name: name.trim(),
-        slug,
+        ...(isCustomSlug ? { slug } : {}),
       })
       onCreated(project)
     } catch (error) {
@@ -133,8 +137,37 @@ export function ProjectCreateDialog({
                 />
                 {errors.name && <FieldError>{errors.name}</FieldError>}
               </Field>
-              <Field data-invalid={Boolean(errors.slug)}>
-                <FieldLabel htmlFor="projectSlug">Project URL slug</FieldLabel>
+            </FieldGroup>
+            <div className="project-dialog-url">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  Project URL
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {slug ? `/${slug}` : "Generated from the project name"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-expanded={isCustomSlug}
+                aria-controls={isCustomSlug ? "projectSlugField" : undefined}
+                onClick={() => {
+                  if (isCustomSlug) {
+                    setSlug(slugifyProjectName(name))
+                  }
+                  setIsCustomSlug((current) => !current)
+                  setErrors((current) => ({ ...current, slug: "" }))
+                  setSubmitError(null)
+                }}
+              >
+                {isCustomSlug ? "Use suggested URL" : "Customize URL"}
+              </Button>
+            </div>
+            {isCustomSlug && (
+              <Field id="projectSlugField" data-invalid={Boolean(errors.slug)}>
+                <FieldLabel htmlFor="projectSlug">Custom project URL</FieldLabel>
                 <Input
                   id="projectSlug"
                   name="projectSlug"
@@ -144,13 +177,14 @@ export function ProjectCreateDialog({
                   spellCheck={false}
                   aria-invalid={Boolean(errors.slug)}
                   onChange={(event) => {
-                    setSlugTouched(true)
                     setSlug(event.target.value.toLowerCase())
+                    setErrors((current) => ({ ...current, slug: "" }))
+                    setSubmitError(null)
                   }}
                 />
                 {errors.slug && <FieldError>{errors.slug}</FieldError>}
               </Field>
-            </FieldGroup>
+            )}
 
             <div className="project-dialog-actions">
               <Button

@@ -154,7 +154,7 @@ describe("ResourceWorkspace database pane", () => {
           resource,
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -175,7 +175,7 @@ describe("ResourceWorkspace database pane", () => {
 
     await waitFor(() => {
       expect(mocks.retryPostgresResource).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "resource-id"
       )
@@ -209,7 +209,7 @@ describe("ResourceWorkspace database pane", () => {
           },
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -232,7 +232,7 @@ describe("ResourceWorkspace database pane", () => {
     await user.click(within(dialog).getByRole("button", { name: /^1/ }))
     expect(await within(dialog).findByText("public.1")).toBeInTheDocument()
     expect(mocks.getDatabaseTableData).toHaveBeenCalledWith(
-      "mimo-i-tech",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "test-2",
       "resource-id",
       "1",
@@ -267,7 +267,7 @@ describe("ResourceWorkspace database pane", () => {
           },
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -289,7 +289,7 @@ describe("ResourceWorkspace database pane", () => {
     fireEvent.mouseMove(cpuChart, { clientX: 1 })
     expect(within(dialog).getByRole("status")).toHaveTextContent("3.33%")
     expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
-      "mimo-i-tech",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "test-2",
       "resource-id",
       "24h"
@@ -301,7 +301,7 @@ describe("ResourceWorkspace database pane", () => {
     )
     await waitFor(() => {
       expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "resource-id",
         "7d"
@@ -314,7 +314,7 @@ describe("ResourceWorkspace database pane", () => {
     )
     await waitFor(() => {
       expect(mocks.getDatabaseMetrics).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "resource-id",
         "30d"
@@ -348,7 +348,7 @@ describe("ResourceWorkspace database pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -396,7 +396,7 @@ describe("ResourceWorkspace database pane", () => {
     ).toHaveTextContent("86 ms")
     expect(within(dialog).getByText("Disk I/O")).toBeInTheDocument()
     expect(mocks.getAppServiceMetrics).toHaveBeenCalledWith(
-      "mimo-i-tech",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "test-2",
       "app-resource-id",
       "24h"
@@ -451,7 +451,7 @@ describe("ResourceWorkspace database pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -497,7 +497,7 @@ describe("ResourceWorkspace database pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -514,7 +514,7 @@ describe("ResourceWorkspace database pane", () => {
       "2026-09-13T12:00:01Z GET / 200"
     )
     expect(mocks.getAppServiceLogs).toHaveBeenCalledWith(
-      "mimo-i-tech",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "test-2",
       "app-resource-id"
     )
@@ -572,7 +572,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -598,7 +598,7 @@ describe("ResourceWorkspace settings pane", () => {
 
     await waitFor(() => {
       expect(mocks.updateAppService).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "app-resource-id",
         { appPort: 80 }
@@ -657,7 +657,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -678,7 +678,7 @@ describe("ResourceWorkspace settings pane", () => {
 
     await waitFor(() => {
       expect(mocks.updateAppServiceAutoDeploy).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "app-resource-id",
         { enabled: false }
@@ -717,7 +717,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -804,7 +804,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="development"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -824,7 +824,7 @@ describe("ResourceWorkspace settings pane", () => {
 
     await waitFor(() => {
       expect(mocks.updateAppServiceDatabase).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "app-resource-id",
         { databaseResourceId: "resource-id" }
@@ -883,7 +883,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -904,7 +904,7 @@ describe("ResourceWorkspace settings pane", () => {
     )
     await waitFor(() => {
       expect(mocks.updateAppServicePublicAccess).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "app-resource-id",
         { enabled: true, rateLimitRpm: 120 }
@@ -959,7 +959,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -978,7 +978,7 @@ describe("ResourceWorkspace settings pane", () => {
     expect(within(dialog).getByText("Pageviews")).toBeInTheDocument()
     expect(within(dialog).getByText("Chrome")).toBeInTheDocument()
     expect(mocks.getHtmlPageAnalytics).toHaveBeenCalledWith(
-      "mimo-i-tech",
+      "de305d54-75b4-431b-adb2-eb6b9e546014",
       "test-2",
       "html-id"
     )
@@ -1028,7 +1028,7 @@ describe("ResourceWorkspace settings pane", () => {
           },
         }}
         environment="production"
-        workspaceSlug="mimo-i-tech"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
         projectSlug="test-2"
         onClose={vi.fn()}
         onCopyConnectionString={vi.fn()}
@@ -1048,7 +1048,7 @@ describe("ResourceWorkspace settings pane", () => {
     )
     await waitFor(() => {
       expect(mocks.updateHtmlPage).toHaveBeenCalledWith(
-        "mimo-i-tech",
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
         "test-2",
         "html-id",
         { indexHtml: "<html><body>updated-v2</body></html>" }

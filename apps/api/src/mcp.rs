@@ -332,11 +332,11 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "workspaceSlug": { "type": "string" },
+                    "workspaceId": { "type": "string" },
                     "projectSlug": { "type": "string" },
                     "appServiceId": { "type": "string" }
                 },
-                "required": ["workspaceSlug", "projectSlug", "appServiceId"]
+                "required": ["workspaceId", "projectSlug", "appServiceId"]
             }
         },
         {
@@ -345,10 +345,10 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "workspaceSlug": { "type": "string" },
+                    "workspaceId": { "type": "string" },
                     "projectSlug": { "type": "string" }
                 },
-                "required": ["workspaceSlug", "projectSlug"]
+                "required": ["workspaceId", "projectSlug"]
             }
         },
         {
@@ -357,11 +357,11 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "workspaceSlug": { "type": "string" },
+                    "workspaceId": { "type": "string" },
                     "projectSlug": { "type": "string" },
                     "name": { "type": "string" }
                 },
-                "required": ["workspaceSlug", "projectSlug"]
+                "required": ["workspaceId", "projectSlug"]
             }
         },
         {
@@ -370,7 +370,7 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "workspaceSlug": { "type": "string" },
+                    "workspaceId": { "type": "string" },
                     "projectSlug": { "type": "string" },
                     "image": { "type": "string" },
                     "imageSource": { "type": "string" },
@@ -382,7 +382,7 @@ pub fn tool_definitions() -> Value {
                     "githubBranch": { "type": "string" },
                     "autoDeploy": { "type": "boolean" }
                 },
-                "required": ["workspaceSlug", "projectSlug"]
+                "required": ["workspaceId", "projectSlug"]
             }
         },
         {
@@ -391,13 +391,13 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "workspaceSlug": { "type": "string" },
+                    "workspaceId": { "type": "string" },
                     "projectSlug": { "type": "string" },
                     "appServiceId": { "type": "string" },
                     "enabled": { "type": "boolean" },
                     "rateLimitRpm": { "type": "integer" }
                 },
-                "required": ["workspaceSlug", "projectSlug", "appServiceId", "enabled"]
+                "required": ["workspaceId", "projectSlug", "appServiceId", "enabled"]
             }
         }
     ])
@@ -853,7 +853,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
             state,
             user_id,
             arguments
-                .get("workspaceSlug")
+                .get("workspaceId")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             arguments
@@ -884,7 +884,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
                 state,
                 user_id,
                 arguments
-                    .get("workspaceSlug")
+                    .get("workspaceId")
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
                 arguments
@@ -907,7 +907,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
             state,
             user_id,
             arguments
-                .get("workspaceSlug")
+                .get("workspaceId")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             arguments
@@ -920,7 +920,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
             state,
             user_id,
             arguments
-                .get("workspaceSlug")
+                .get("workspaceId")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             arguments
@@ -934,7 +934,7 @@ async fn call_tool(state: &AppState, user_id: Uuid, params: Value) -> Result<Val
             state,
             user_id,
             arguments
-                .get("workspaceSlug")
+                .get("workspaceId")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
             arguments
@@ -1190,7 +1190,7 @@ mod tests {
             context(
                 "deploy_app_service",
                 json!({
-                    "workspaceSlug": &seed.workspace_slug,
+                    "workspaceId": &seed.workspace_route_id,
                     "projectSlug": &seed.project_slug,
                     "name": "MCP site",
                     "image": "nginx:alpine",
@@ -1212,7 +1212,7 @@ mod tests {
             context(
                 "service_logs",
                 json!({
-                    "workspaceSlug": &seed.workspace_slug,
+                    "workspaceId": &seed.workspace_route_id,
                     "projectSlug": &seed.project_slug,
                     "appServiceId": service_id,
                 }),
@@ -1228,7 +1228,7 @@ mod tests {
             context(
                 "setup_public_access",
                 json!({
-                    "workspaceSlug": &seed.workspace_slug,
+                    "workspaceId": &seed.workspace_route_id,
                     "projectSlug": &seed.project_slug,
                     "appServiceId": service_id,
                     "enabled": true,

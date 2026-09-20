@@ -204,11 +204,11 @@ const DATABASE_RESOURCE_COLUMNS: &str = "id, name, database_name, role_name, pas
 pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
 ) -> Result<Json<Vec<AppServiceResponse>>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let services = sqlx::query_as::<_, AppServiceRow>(&format!(
         "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE project_id = $1 ORDER BY created_at ASC, id ASC"
     ))
@@ -253,12 +253,12 @@ pub async fn list(
 pub async fn deployment_events(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, deployment_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, deployment_id)): Path<(String, String, Uuid)>,
 ) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<Event, Infallible>>>, AppError>
 {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let deployment_exists = sqlx::query_scalar::<_, Uuid>(
         "SELECT d.id FROM app_service_deployments d JOIN project_app_services s ON s.id = d.app_service_id WHERE d.id = $1 AND s.project_id = $2",
     )
@@ -343,11 +343,11 @@ pub async fn deployment_events(
 pub async fn logs(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
 ) -> Result<Json<AppServiceLogsResponse>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     runtime_logs(&state, project_id, app_service_id)
         .await
         .map(Json)
@@ -1137,13 +1137,13 @@ fn url_host(host: &str) -> String {
 pub async fn update_auto_deploy(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<UpdateAppServiceAutoDeployRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
 
     let mut transaction = state.db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -1216,7 +1216,7 @@ pub async fn update_auto_deploy(
 pub async fn update_public_access(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<UpdateAppServicePublicAccessRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
@@ -1224,7 +1224,7 @@ pub async fn update_public_access(
     update_public_access_for_user(
         &state,
         user.id,
-        &workspace_slug,
+        &workspace_id,
         &project_slug,
         app_service_id,
         input,
@@ -1236,13 +1236,13 @@ pub async fn update_public_access(
 pub async fn update_public_access_for_user(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     app_service_id: Uuid,
     input: UpdateAppServicePublicAccessRequest,
 ) -> Result<AppServiceResponse, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let rate_limit_rpm = match input.rate_limit_rpm {
         Some(value) => validate_rate_limit_rpm(value).map_err(|_| AppError::BadRequest {
             code: "INVALID_RATE_LIMIT",
@@ -1397,13 +1397,13 @@ struct KongSyncRow {
 pub async fn metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Query(query): Query<AppServiceMetricsQuery>,
 ) -> Result<Json<AppServiceMetricsResponse>, AppError> {
     let range = parse_metric_range(query.range.as_deref())?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let target = sqlx::query_as::<_, AppServiceLogsTarget>(
         "SELECT container_name, status FROM project_app_services WHERE id = $1 AND project_id = $2",
     )
@@ -1502,24 +1502,24 @@ pub async fn metrics(
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug)): Path<(String, String)>,
+    Path((workspace_id, project_slug)): Path<(String, String)>,
     Json(input): Json<CreateAppServiceRequest>,
 ) -> Result<Response, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
-    let response = create_for_user(&state, user.id, &workspace_slug, &project_slug, input).await?;
+    let response = create_for_user(&state, user.id, &workspace_id, &project_slug, input).await?;
     Ok((StatusCode::ACCEPTED, Json(response)).into_response())
 }
 
 pub async fn create_for_user(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     input: CreateAppServiceRequest,
 ) -> Result<AppServiceResponse, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
 
     if !state.config.app_service_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {
@@ -1722,13 +1722,13 @@ pub async fn create_for_user(
 pub async fn update_html_page(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<html_pages::UpdateHtmlPageRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
     let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
         "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2"
     ))
@@ -1820,13 +1820,13 @@ pub async fn update_html_page(
 pub async fn update(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<UpdateAppServiceRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
 
     if !state.config.app_service_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {
@@ -1995,13 +1995,13 @@ pub async fn update(
 pub async fn update_database_connection(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((workspace_slug, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
     Json(input): Json<UpdateAppServiceDatabaseRequest>,
 ) -> Result<Json<AppServiceResponse>, AppError> {
     security::require_csrf(&headers, &state.config)?;
     let user = auth::authenticate(&state, &headers).await?;
     let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_slug, &project_slug).await?;
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
 
     if !state.config.app_service_provisioning_enabled {
         return Err(AppError::ServiceUnavailable {
@@ -4048,12 +4048,12 @@ struct AccountLogRow {
 pub async fn mcp_service_logs(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     app_service_id: Uuid,
 ) -> Result<AppServiceLogsResponse, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let owner = sqlx::query_scalar::<_, Uuid>(
         "SELECT m.user_id FROM workspace_memberships m
          JOIN projects p ON p.workspace_id = m.workspace_id
@@ -4069,11 +4069,11 @@ pub async fn mcp_service_logs(
 pub async fn mcp_list_resources(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
 ) -> Result<serde_json::Value, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let owner = sqlx::query_scalar::<_, Uuid>(
         "SELECT m.user_id FROM workspace_memberships m
          JOIN projects p ON p.workspace_id = m.workspace_id
@@ -4090,7 +4090,7 @@ pub async fn mcp_list_resources(
     .fetch_all(&state.db)
     .await?;
     let redis =
-        redis_resources::list_for_user(state, user_id, workspace_slug, project_slug).await?;
+        redis_resources::list_for_user(state, user_id, workspace_id, project_slug).await?;
     Ok(serde_json::json!({
         "appServices": apps.iter().map(|service| service.name.clone()).collect::<Vec<_>>(),
         "redis": redis,
@@ -4101,12 +4101,12 @@ pub async fn mcp_list_resources(
 pub async fn mcp_deploy(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let owner = sqlx::query_scalar::<_, Uuid>(
         "SELECT m.user_id FROM workspace_memberships m
          JOIN projects p ON p.workspace_id = m.workspace_id
@@ -4154,21 +4154,21 @@ pub async fn mcp_deploy(
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
     };
-    let service = create_for_user(state, user_id, workspace_slug, project_slug, input).await?;
+    let service = create_for_user(state, user_id, workspace_id, project_slug, input).await?;
     serde_json::to_value(service).map_err(AppError::internal)
 }
 
 pub async fn mcp_setup_public_access(
     state: &AppState,
     user_id: Uuid,
-    workspace_slug: &str,
+    workspace_id: &str,
     project_slug: &str,
     app_service_id: Uuid,
     enabled: bool,
     rate_limit_rpm: Option<u32>,
 ) -> Result<serde_json::Value, AppError> {
     let project_id =
-        projects::accessible_project_id(state, user_id, workspace_slug, project_slug).await?;
+        projects::accessible_project_id(state, user_id, workspace_id, project_slug).await?;
     let owner = sqlx::query_scalar::<_, Uuid>(
         "SELECT m.user_id FROM workspace_memberships m
          JOIN projects p ON p.workspace_id = m.workspace_id
@@ -4181,7 +4181,7 @@ pub async fn mcp_setup_public_access(
     let service = update_public_access_for_user(
         state,
         user_id,
-        workspace_slug,
+        workspace_id,
         project_slug,
         app_service_id,
         UpdateAppServicePublicAccessRequest {
@@ -4616,7 +4616,7 @@ mod tests {
         let deployed = mcp_deploy(
             &state,
             seed.user_id,
-            &seed.workspace_slug,
+            &seed.workspace_route_id,
             &seed.project_slug,
             serde_json::json!({
                 "name": "Docs site",
@@ -4643,7 +4643,7 @@ mod tests {
         let logs = mcp_service_logs(
             &state,
             seed.user_id,
-            &seed.workspace_slug,
+            &seed.workspace_route_id,
             &seed.project_slug,
             service_id,
         )
@@ -4660,7 +4660,7 @@ mod tests {
         let setup = mcp_setup_public_access(
             &state,
             seed.user_id,
-            &seed.workspace_slug,
+            &seed.workspace_route_id,
             &seed.project_slug,
             service_id,
             true,

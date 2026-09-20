@@ -78,70 +78,70 @@ function deduplicateDatabaseRequest<T>(key: string, request: () => Promise<T>) {
   return pending
 }
 
-function resourcesPath(workspaceSlug: string, projectSlug: string) {
-  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/resources`
+function resourcesPath(workspaceId: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/resources`
 }
 
-function appServicesPath(workspaceSlug: string, projectSlug: string) {
-  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/app-services`
+function appServicesPath(workspaceId: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/app-services`
 }
 
 export function appServiceDeploymentEventsUrl(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   deploymentId: string
 ) {
   return apiUrl(
-    `${appServicesPath(workspaceSlug, projectSlug)}/deployments/${encodeURIComponent(deploymentId)}/events`
+    `${appServicesPath(workspaceId, projectSlug)}/deployments/${encodeURIComponent(deploymentId)}/events`
   )
 }
 
 export function getAppServiceLogs(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string
 ) {
   return apiRequest<AppServiceLogs>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/logs`
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/logs`
   )
 }
 
 export function getAppServiceMetrics(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   range: DatabaseMetricsRange = "24h"
 ) {
   const query = new URLSearchParams({ range })
-  const path = `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/metrics?${query.toString()}`
+  const path = `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/metrics?${query.toString()}`
   return apiRequest<AppServiceMetrics>(path)
 }
 
 function databasePath(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   suffix: string
 ) {
-  return `${resourcesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(resourceId)}/database/${suffix}`
+  return `${resourcesPath(workspaceId, projectSlug)}/${encodeURIComponent(resourceId)}/database/${suffix}`
 }
 
 export function listPostgresResources(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string
 ) {
   return apiRequest<PostgresResource[]>(
-    resourcesPath(workspaceSlug, projectSlug)
+    resourcesPath(workspaceId, projectSlug)
   )
 }
 
 export function createPostgresResource(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   input: CreatePostgresResourceInput
 ) {
   return apiRequest<PostgresResource>(
-    resourcesPath(workspaceSlug, projectSlug),
+    resourcesPath(workspaceId, projectSlug),
     {
       method: "POST",
       body: { resourceType: "postgres", name: input.name },
@@ -150,46 +150,46 @@ export function createPostgresResource(
 }
 
 export function retryPostgresResource(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string
 ) {
   return apiRequest<PostgresResource>(
-    `${resourcesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(resourceId)}/retry`,
+    `${resourcesPath(workspaceId, projectSlug)}/${encodeURIComponent(resourceId)}/retry`,
     { method: "POST" }
   )
 }
 
-function redisPath(workspaceSlug: string, projectSlug: string) {
-  return `/workspaces/${encodeURIComponent(workspaceSlug)}/projects/${encodeURIComponent(projectSlug)}/redis`
+function redisPath(workspaceId: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/redis`
 }
 
 export function listRedisResources(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string
 ) {
-  return apiRequest<RedisResource[]>(redisPath(workspaceSlug, projectSlug))
+  return apiRequest<RedisResource[]>(redisPath(workspaceId, projectSlug))
 }
 
 export function createRedisResource(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   input: CreateRedisResourceInput
 ) {
-  return apiRequest<RedisResource>(redisPath(workspaceSlug, projectSlug), {
+  return apiRequest<RedisResource>(redisPath(workspaceId, projectSlug), {
     method: "POST",
     body: { resourceType: "redis", name: input.name },
   })
 }
 
 export function updateAppServicePublicAccess(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   input: UpdateAppServicePublicAccessInput
 ) {
   return apiRequest<AppService>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/public-access`,
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/public-access`,
     {
       method: "PATCH",
       body: input,
@@ -197,29 +197,29 @@ export function updateAppServicePublicAccess(
   )
 }
 
-export function listAppServices(workspaceSlug: string, projectSlug: string) {
-  return apiRequest<AppService[]>(appServicesPath(workspaceSlug, projectSlug))
+export function listAppServices(workspaceId: string, projectSlug: string) {
+  return apiRequest<AppService[]>(appServicesPath(workspaceId, projectSlug))
 }
 
 export function createAppService(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   input: CreateAppServiceInput
 ) {
-  return apiRequest<AppService>(appServicesPath(workspaceSlug, projectSlug), {
+  return apiRequest<AppService>(appServicesPath(workspaceId, projectSlug), {
     method: "POST",
     body: input,
   })
 }
 
 export function updateAppService(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   input: UpdateAppServiceInput
 ) {
   return apiRequest<AppService>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}`,
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}`,
     {
       method: "PATCH",
       body: input,
@@ -228,13 +228,13 @@ export function updateAppService(
 }
 
 export function updateAppServiceAutoDeploy(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   input: UpdateAppServiceAutoDeployInput
 ) {
   return apiRequest<AppService>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/auto-deploy`,
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/auto-deploy`,
     {
       method: "PATCH",
       body: input,
@@ -243,45 +243,45 @@ export function updateAppServiceAutoDeploy(
 }
 
 export function getHtmlPageIndex(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string
 ) {
   return apiRequest<{ indexHtml: string }>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html`
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/html`
   )
 }
 
 export function updateHtmlPage(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   input: { indexHtml: string }
 ) {
   return apiRequest<AppService>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html`,
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/html`,
     { method: "PATCH", body: input }
   )
 }
 
 export function getHtmlPageAnalytics(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string
 ) {
   return apiRequest<HtmlAnalyticsSummary>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/html-analytics`
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/html-analytics`
   )
 }
 
 export function updateAppServiceDatabase(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   appServiceId: string,
   input: UpdateAppServiceDatabaseInput
 ) {
   return apiRequest<AppService>(
-    `${appServicesPath(workspaceSlug, projectSlug)}/${encodeURIComponent(appServiceId)}/database`,
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/database`,
     {
       method: "PATCH",
       body: input,
@@ -303,20 +303,20 @@ export function disconnectGithub() {
 }
 
 export function listDatabaseTables(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   search?: string
 ) {
   const query = search ? `?search=${encodeURIComponent(search)}` : ""
-  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "tables")}${query}`
+  const path = `${databasePath(workspaceId, projectSlug, resourceId, "tables")}${query}`
   return deduplicateDatabaseRequest(path, () =>
     apiRequest<DatabaseTable[]>(path)
   )
 }
 
 export function getDatabaseTableData(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   tableName: string,
@@ -330,7 +330,7 @@ export function getDatabaseTableData(
     limit: String(limit),
     offset: String(offset),
   })
-  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "table-data")}?${query.toString()}`
+  const path = `${databasePath(workspaceId, projectSlug, resourceId, "table-data")}?${query.toString()}`
   return deduplicateDatabaseRequest(path, () =>
     apiRequest<DatabaseTableData>(path)
   )
@@ -348,56 +348,56 @@ export type CreateDatabaseTableInput = {
 }
 
 export function createDatabaseTable(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   input: CreateDatabaseTableInput
 ) {
   return apiRequest<{ schemaName: string; tableName: string }>(
-    databasePath(workspaceSlug, projectSlug, resourceId, "tables"),
+    databasePath(workspaceId, projectSlug, resourceId, "tables"),
     { method: "POST", body: input }
   )
 }
 
 export function getDatabaseStats(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string
 ) {
-  const path = databasePath(workspaceSlug, projectSlug, resourceId, "stats")
+  const path = databasePath(workspaceId, projectSlug, resourceId, "stats")
   return deduplicateDatabaseRequest(path, () => apiRequest<DatabaseStats>(path))
 }
 
 export function getDatabaseMetrics(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   range: DatabaseMetricsRange = "24h"
 ) {
   const query = new URLSearchParams({ range })
-  const path = `${databasePath(workspaceSlug, projectSlug, resourceId, "metrics")}?${query.toString()}`
+  const path = `${databasePath(workspaceId, projectSlug, resourceId, "metrics")}?${query.toString()}`
   return apiRequest<DatabaseMetrics>(path)
 }
 
 export function getDatabaseConfig(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string
 ) {
-  const path = databasePath(workspaceSlug, projectSlug, resourceId, "config")
+  const path = databasePath(workspaceId, projectSlug, resourceId, "config")
   return deduplicateDatabaseRequest(path, () =>
     apiRequest<DatabaseConfig[]>(path)
   )
 }
 
 export function executeDatabaseQuery(
-  workspaceSlug: string,
+  workspaceId: string,
   projectSlug: string,
   resourceId: string,
   sql: string
 ) {
   return apiRequest<DatabaseQueryResult>(
-    databasePath(workspaceSlug, projectSlug, resourceId, "query"),
+    databasePath(workspaceId, projectSlug, resourceId, "query"),
     { method: "POST", body: { sql } }
   )
 }

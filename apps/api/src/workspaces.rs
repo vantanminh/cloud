@@ -6,7 +6,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use deunicode::deunicode;
 use uuid::Uuid;
 
 use crate::{
@@ -21,7 +20,6 @@ use crate::{
 struct WorkspaceRow {
     id: Uuid,
     name: String,
-    slug: String,
 }
 
 pub async fn create(
@@ -41,39 +39,17 @@ pub async fn create(
         return Err(AppError::validation(fields));
     }
 
-    let slug = normalize_slug(input.slug.as_deref().unwrap_or(&name));
-    if slug.is_empty() || slug.chars().count() > 48 || is_reserved_slug(&slug) {
-        let mut fields = BTreeMap::new();
-        fields.insert(
-            "slug".to_owned(),
-            "Use a unique workspace URL slug.".to_owned(),
-        );
-        return Err(AppError::validation(fields));
-    }
-
     let mut transaction = state.db.begin().await?;
     let workspace_id = Uuid::new_v4();
     let workspace = sqlx::query_as::<_, WorkspaceRow>(
-        "INSERT INTO workspaces (id, name, slug) VALUES ($1, $2, $3) RETURNING id, name, slug",
+        "INSERT INTO workspaces (id, name) VALUES ($1, $2) RETURNING id, name",
     )
     .bind(workspace_id)
     .bind(&name)
-    .bind(&slug)
     .fetch_one(&mut *transaction)
     .await;
 
-    let workspace = match workspace {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            if unique_constraint(&error) == Some("workspaces_slug_key") {
-                return Err(AppError::Conflict {
-                    code: "SLUG_TAKEN",
-                    message: "That workspace URL is already in use.",
-                });
-            }
-            return Err(error.into());
-        }
-    };
+    let workspace = workspace?;
 
     let membership_result = sqlx::query(
         "INSERT INTO workspace_memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')",
@@ -98,7 +74,6 @@ pub async fn create(
         Json(WorkspaceResponse {
             id: workspace.id,
             name: workspace.name,
-            slug: workspace.slug,
         }),
     )
         .into_response())
@@ -107,14 +82,14 @@ pub async fn create(
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(slug): Path<String>,
+    Path(workspace_id): Path<Uuid>,
 ) -> Result<Json<WorkspaceResponse>, AppError> {
     let user = auth::authenticate(&state, &headers).await?;
     let workspace = sqlx::query_as::<_, WorkspaceRow>(
-        "SELECT w.id, w.name, w.slug FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.slug = $2",
+        "SELECT w.id, w.name FROM workspaces w INNER JOIN workspace_memberships wm ON wm.workspace_id = w.id WHERE wm.user_id = $1 AND w.id = $2",
     )
     .bind(user.id)
-    .bind(slug)
+    .bind(workspace_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound {
@@ -125,50 +100,11 @@ pub async fn get(
     Ok(Json(WorkspaceResponse {
         id: workspace.id,
         name: workspace.name,
-        slug: workspace.slug,
     }))
-}
-
-fn normalize_slug(value: &str) -> String {
-    let transliterated = deunicode(value).to_lowercase();
-    let mut slug = String::new();
-    let mut pending_separator = false;
-    for character in transliterated.chars() {
-        if character.is_ascii_alphanumeric() {
-            if pending_separator && !slug.is_empty() {
-                slug.push('-');
-            }
-            slug.push(character);
-            pending_separator = false;
-        } else if !slug.is_empty() {
-            pending_separator = true;
-        }
-    }
-    slug
-}
-
-fn is_reserved_slug(slug: &str) -> bool {
-    matches!(slug, "login" | "register" | "new" | "workspace")
 }
 
 fn unique_constraint(error: &sqlx::Error) -> Option<&str> {
     error
         .as_database_error()
         .and_then(|database_error| database_error.constraint())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn creates_stable_kebab_case_slug() {
-        assert_eq!(normalize_slug("  Cà phê Studio  "), "ca-phe-studio");
-    }
-
-    #[test]
-    fn rejects_reserved_routes() {
-        assert!(is_reserved_slug("login"));
-        assert!(!is_reserved_slug("acme"));
-    }
 }
