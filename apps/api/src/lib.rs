@@ -8,6 +8,7 @@ pub mod error;
 pub mod github;
 pub mod html_pages;
 pub mod kong;
+pub mod knotree_registry;
 pub mod limits;
 pub mod mcp;
 pub mod metrics;
@@ -25,7 +26,7 @@ pub mod test_support;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     middleware,
     routing::{any, get, patch, post},
@@ -51,6 +52,19 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/github/callback", get(github::callback))
         .route("/auth/github/status", get(github::status))
         .route("/auth/github/disconnect", post(github::disconnect))
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections",
+            get(knotree_registry::list_connections).post(knotree_registry::create_connection),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/{connection_id}",
+            patch(knotree_registry::update_connection)
+                .delete(knotree_registry::revoke_connection),
+        )
+        .route(
+            "/public/webhooks/knotree-registry",
+            post(knotree_registry::webhook).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/oauth/register", post(mcp::register_client))
         .route("/oauth/token", post(mcp::token))
         .route("/mcp", post(mcp::mcp_endpoint))

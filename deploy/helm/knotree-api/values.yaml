@@ -84,6 +84,7 @@ secrets:
   databaseCredentialsEncryptionKey: DATABASE_CREDENTIALS_ENCRYPTION_KEY
   githubClientIdKey: GITHUB_CLIENT_ID
   githubClientSecretKey: GITHUB_CLIENT_SECRET
+  knotreeRegistryWebhookSecretKey: KNOTREE_REGISTRY_WEBHOOK_SECRET
 
 env:
   appEnv: production

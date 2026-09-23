@@ -262,6 +262,7 @@ pub struct AppWorkloadSpec {
     pub project_id: uuid::Uuid,
     pub service_id: uuid::Uuid,
     pub image: String,
+    pub image_pull_secret: Option<String>,
     pub app_port: u16,
     pub env: Vec<(String, String)>,
     pub html_site_host_path: Option<String>,
@@ -826,7 +827,12 @@ pub fn app_deployment_manifest(
             },
         }],
     });
-    if let Some(secret) = image_pull_secret.filter(|value| !value.is_empty()) {
+    if let Some(secret) = spec
+        .image_pull_secret
+        .as_deref()
+        .or(image_pull_secret)
+        .filter(|value| !value.is_empty())
+    {
         pod_spec["imagePullSecrets"] = json!([{ "name": secret }]);
     }
     if let Some(host_path) = spec.html_site_host_path.as_deref() {
@@ -860,6 +866,33 @@ pub fn app_deployment_manifest(
             },
         },
     })
+}
+
+pub(crate) fn registry_pull_secret_manifest(
+    service_id: uuid::Uuid,
+    namespace: &str,
+    username: &str,
+    password: &str,
+) -> Result<Value, serde_json::Error> {
+    let docker_config = crate::knotree_registry::docker_config_json(username, password)?;
+    let name = app_image_pull_secret_name(service_id);
+    Ok(json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {
+                "app.knotree.com/managed-by": "knotree-api",
+                "app.knotree.com/component": "registry-pull-credentials",
+                "app.knotree.com/app-service-id": service_id.to_string(),
+            },
+        },
+        "type": "kubernetes.io/dockerconfigjson",
+        "stringData": {
+            ".dockerconfigjson": docker_config.to_string(),
+        },
+    }))
 }
 
 pub fn app_service_manifest(spec: &AppWorkloadSpec, namespace: &str) -> Value {
@@ -959,12 +992,30 @@ pub fn project_network_policy_manifest(project_id: uuid::Uuid, namespace: &str) 
     })
 }
 
-pub async fn provision_app(config: &Config, spec: &AppWorkloadSpec) -> Result<ProvisionedApp> {
+pub async fn provision_app(
+    config: &Config,
+    spec: &AppWorkloadSpec,
+    registry_credentials: Option<(&str, &str)>,
+) -> Result<ProvisionedApp> {
     let client = Client::try_default()
         .await
         .context("could not connect to the Kubernetes API")?;
     let namespace = config.database_cluster_namespace.clone();
     let name = app_resource_name(spec.service_id);
+    if let Some((username, password)) = registry_credentials {
+        let secret_name = spec
+            .image_pull_secret
+            .as_deref()
+            .context("Registry credentials require a per-service Kubernetes pull Secret")?;
+        apply_resource(
+            client.clone(),
+            &namespace,
+            GroupVersionKind::gvk("", "v1", "Secret"),
+            secret_name,
+            registry_pull_secret_manifest(spec.service_id, &namespace, username, password)?,
+        )
+        .await?;
+    }
     apply_resource(
         client.clone(),
         &namespace,
@@ -1013,6 +1064,50 @@ pub async fn provision_app(config: &Config, spec: &AppWorkloadSpec) -> Result<Pr
         name,
         namespace,
     })
+}
+
+pub fn app_image_pull_secret_name(service_id: uuid::Uuid) -> String {
+    format!("knotree-registry-{}", service_id.simple())
+}
+
+pub async fn update_app_image_pull_secret(
+    config: &Config,
+    service_id: uuid::Uuid,
+    username: &str,
+    password: &str,
+) -> Result<()> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let namespace = config.database_cluster_namespace.as_str();
+    let secret_name = app_image_pull_secret_name(service_id);
+    apply_resource(
+        client,
+        namespace,
+        GroupVersionKind::gvk("", "v1", "Secret"),
+        &secret_name,
+        registry_pull_secret_manifest(service_id, namespace, username, password)?,
+    )
+    .await
+}
+
+pub async fn delete_app_image_pull_secret(config: &Config, service_id: uuid::Uuid) -> Result<()> {
+    let client = Client::try_default()
+        .await
+        .context("could not connect to the Kubernetes API")?;
+    let secrets: Api<DynamicObject> = namespaced_api(
+        client,
+        &config.database_cluster_namespace,
+        GroupVersionKind::gvk("", "v1", "Secret"),
+    );
+    let name = app_image_pull_secret_name(service_id);
+    match secrets.delete(&name, &DeleteParams::default()).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(response)) if response.code == 404 => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!("could not delete Kubernetes Secret {}/{}", config.database_cluster_namespace, name)
+        }),
+    }
 }
 
 /// Keep already-running App services on the current virtual CPU policy after
@@ -1368,6 +1463,7 @@ async fn public_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use crate::limits::{
         KUBERNETES_APP_CPU_LIMIT, KUBERNETES_APP_CPU_REQUEST,
         KUBERNETES_APP_EPHEMERAL_STORAGE_REQUEST, KUBERNETES_APP_MEMORY_REQUEST,
@@ -1434,6 +1530,7 @@ mod tests {
                 project_id: Uuid::nil(),
                 service_id,
                 image: "nginxinc/nginx-unprivileged:1.27-alpine".to_owned(),
+                image_pull_secret: None,
                 app_port: 8080,
                 env: vec![],
                 html_site_host_path: Some("/var/lib/knotree/html-sites/11111111-2222-3333-4444-555555555555".to_owned()),
@@ -1459,6 +1556,50 @@ mod tests {
     }
 
     #[test]
+    fn registry_app_uses_a_per_service_pull_secret_without_mounting_api_credentials() {
+        let service_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let pull_secret = app_image_pull_secret_name(service_id);
+        let app = app_deployment_manifest(
+            &AppWorkloadSpec {
+                project_id: Uuid::nil(),
+                service_id,
+                image: "registry.knotree.com/team/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                image_pull_secret: Some(pull_secret.clone()),
+                app_port: 3000,
+                env: vec![],
+                html_site_host_path: None,
+            },
+            "knotree-cloud",
+            Some("global-pull-secret"),
+        );
+        let pod_spec = &app["spec"]["template"]["spec"];
+        assert_eq!(pod_spec["automountServiceAccountToken"], false);
+        assert_eq!(pod_spec["imagePullSecrets"][0]["name"], pull_secret);
+
+        let secret = registry_pull_secret_manifest(
+            service_id,
+            "knotree-cloud",
+            "service-user",
+            "pull-token",
+        )
+        .unwrap();
+        assert_eq!(secret["type"], "kubernetes.io/dockerconfigjson");
+        assert_eq!(secret["metadata"]["name"], pull_secret);
+        let docker_config: Value = serde_json::from_str(
+            secret["stringData"][".dockerconfigjson"].as_str().unwrap(),
+        )
+        .unwrap();
+        let auth = docker_config["auths"][crate::knotree_registry::REGISTRY_HOST]["auth"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(auth).unwrap(),
+            b"service-user:pull-token"
+        );
+        assert!(!secret.to_string().contains("pull-token"));
+    }
+
+    #[test]
     fn app_and_redis_manifests_keep_virtual_app_cpu_and_tenant_caps() {
         let config = Config::test_fixture();
         let project_id = Uuid::nil();
@@ -1468,6 +1609,7 @@ mod tests {
                 project_id,
                 service_id,
                 image: "nginx:alpine".to_owned(),
+                image_pull_secret: None,
                 app_port: 80,
                 env: vec![(
                     "DATABASE_URL".to_owned(),

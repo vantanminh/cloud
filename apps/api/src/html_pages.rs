@@ -1398,6 +1398,7 @@ mod tests {
                 ),
                 github_repo: None,
                 github_branch: None,
+                registry_connection_id: None,
             },
         )
         .await
@@ -1830,6 +1831,7 @@ mod tests {
                 index_html: None,
                 github_repo: Some("acme/site".to_owned()),
                 github_branch: None,
+                registry_connection_id: None,
             },
         )
         .await

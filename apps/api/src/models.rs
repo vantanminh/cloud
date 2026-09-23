@@ -143,6 +143,7 @@ pub struct AppServiceResponse {
     pub deployed_image_digest: Option<String>,
     pub auto_deploy_checked_at: Option<String>,
     pub auto_deploy_error: Option<String>,
+    pub registry_connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_connection: Option<AppServiceDatabaseConnectionResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -161,6 +162,7 @@ pub struct CreateAppServiceRequest {
     pub index_html: Option<String>,
     pub github_repo: Option<String>,
     pub github_branch: Option<String>,
+    pub registry_connection_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

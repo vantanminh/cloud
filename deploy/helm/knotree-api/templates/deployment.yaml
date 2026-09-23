@@ -188,6 +188,12 @@ spec:
               value: {{ .Values.env.redisClusterImage | quote }}
             - name: APP_SERVICE_IMAGE_PULL_SECRET
               value: {{ .Values.env.appServiceImagePullSecret | quote }}
+            - name: KNOTREE_REGISTRY_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.knotreeRegistryWebhookSecretKey }}
+                  optional: true
             - name: APP_SERVICE_DEFAULT_RATE_LIMIT_RPM
               value: {{ .Values.env.appServiceDefaultRateLimitRpm | quote }}
             - name: HTML_SITE_DATA_DIR

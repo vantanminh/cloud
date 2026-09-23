@@ -206,8 +206,10 @@ VITE_API_BASE_URL=https://cloudapi.knotree.com/api/v1
 ```
 
 The API image is in `apps/api/Dockerfile`. The Helm chart in
-`deploy/helm/knotree-api` expects an existing secret containing `DATABASE_URL`,
-runs SQLx migrations as a pre-install/pre-upgrade hook, and exposes
+`deploy/helm/knotree-api` expects an existing secret containing `DATABASE_URL`.
+Its SQLx pre-install/pre-upgrade migration hook is disabled by default; enable it
+with `--set migrations.enabled=true` for schema-changing releases. The
+production `deploy/k3s-pull.sh` flow enables that hook. The chart exposes
 `cloudapi.knotree.com` plus the configured public App service wildcard through
 Traefik with a cert-manager `Certificate`.
 
@@ -220,6 +222,7 @@ kubectl create secret generic knotree-api-secrets `
   --namespace knotree
 helm upgrade --install knotree-api deploy/helm/knotree-api `
   --namespace knotree --create-namespace `
+  --set migrations.enabled=true `
   --set image.repository=ghcr.io/knotree/knotree-api `
   --set image.tag=0.1.0
 ```

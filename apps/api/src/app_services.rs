@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    fs,
+    path::PathBuf,
     process::{Output, Stdio},
     time::Instant,
 };
@@ -52,6 +54,7 @@ use crate::{
         UpdateAppServiceRequest,
     },
     html_pages::{self, IMAGE_SOURCE_HTML, IMAGE_SOURCE_HTML_GITHUB},
+    knotree_registry::{self, RegistryDockerCredentials},
     projects,
     public_access::{self, PublicAccessState, public_hostname, should_proxy_public_host},
     redis_resources, security,
@@ -60,6 +63,7 @@ use crate::{
 
 const IMAGE_SOURCE_PUBLIC: &str = "public";
 const IMAGE_SOURCE_GITHUB: &str = "github";
+const IMAGE_SOURCE_KNOTREE_REGISTRY: &str = "knotree_registry";
 const STATUS_READY: &str = "ready";
 const STATUS_PROVISIONING: &str = "provisioning";
 const STATUS_ERROR: &str = "error";
@@ -116,6 +120,7 @@ struct AppServiceRow {
     error_message: Option<String>,
     database_resource_id: Option<Uuid>,
     auto_deploy_enabled: bool,
+    registry_connection_id: Option<Uuid>,
     deployed_image_digest: Option<String>,
     auto_deploy_checked_at: Option<OffsetDateTime>,
     auto_deploy_error: Option<String>,
@@ -150,6 +155,34 @@ struct AutoDeployCandidate {
     html_repo: Option<String>,
     html_branch: Option<String>,
     html_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RegistryDeployCandidate {
+    job_id: Uuid,
+    app_service_id: Uuid,
+    project_id: Uuid,
+    image: String,
+    app_port: i32,
+    database_resource_id: Option<Uuid>,
+    registry_connection_id: Option<Uuid>,
+    image_digest: String,
+    immutable_image: String,
+    deployed_image_digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ClaimedRegistryDeployment {
+    job_id: Uuid,
+    app_service_id: Uuid,
+    project_id: Uuid,
+    connection_id: Uuid,
+    deployment_id: Uuid,
+    image: String,
+    image_digest: String,
+    app_port: u16,
+    database_resource_id: Option<Uuid>,
+    database: Option<DatabaseResourceRow>,
 }
 
 #[derive(Debug, Clone)]
@@ -187,7 +220,7 @@ pub struct AppServiceMetricsQuery {
     pub range: Option<String>,
 }
 
-const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, public_access_enabled, rate_limit_rpm, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error, html_repo, html_branch, html_sha";
+const APP_SERVICE_COLUMNS: &str = "id, public_subdomain, public_access_enabled, rate_limit_rpm, project_id, name, image, image_source, app_port, host, port, container_name, status, error_message, database_resource_id, auto_deploy_enabled, registry_connection_id, github_connection_user_id, deployed_image_digest, auto_deploy_checked_at, auto_deploy_error, html_repo, html_branch, html_sha";
 const APP_SERVICE_LOG_TAIL_LINES: &str = "200";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -1165,10 +1198,11 @@ pub async fn update_auto_deploy(
     if input.enabled
         && existing.image_source != IMAGE_SOURCE_GITHUB
         && existing.image_source != IMAGE_SOURCE_HTML_GITHUB
+        && existing.image_source != IMAGE_SOURCE_KNOTREE_REGISTRY
     {
         return Err(AppError::BadRequest {
-            code: "AUTO_DEPLOY_GITHUB_ONLY",
-            message: "Automatic deploys are available for GitHub images and HTML repositories.",
+            code: "AUTO_DEPLOY_SOURCE_UNSUPPORTED",
+            message: "Automatic deploys are not available for this image source.",
         });
     }
     if input.enabled && existing.status != STATUS_READY {
@@ -1177,17 +1211,47 @@ pub async fn update_auto_deploy(
             message: "The app service must be ready before automatic image deploys can be enabled.",
         });
     }
-    if input.enabled && github::docker_credentials(&state, user.id).await?.is_none() {
+    if input.enabled
+        && existing.image_source == IMAGE_SOURCE_KNOTREE_REGISTRY
+        && state.config.knotree_registry_webhook_secret.is_none()
+    {
+        return Err(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_WEBHOOK_NOT_CONFIGURED",
+            message: "Automatic Registry deploys are not configured on this Cloud installation yet.",
+        });
+    }
+    if input.enabled
+        && matches!(existing.image_source.as_str(), IMAGE_SOURCE_GITHUB | IMAGE_SOURCE_HTML_GITHUB)
+        && github::docker_credentials(&state, user.id).await?.is_none()
+    {
         return Err(AppError::Conflict {
             code: "GITHUB_CONNECTION_REQUIRED",
             message: "Connect GitHub before enabling automatic image deploys.",
         });
     }
+    if input.enabled && existing.image_source == IMAGE_SOURCE_KNOTREE_REGISTRY {
+        let connected = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1 FROM knotree_registry_connections
+                WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
+            )",
+        )
+        .bind(existing.registry_connection_id)
+        .bind(project_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !connected {
+            return Err(AppError::Conflict {
+                code: "KNOTREE_REGISTRY_CONNECTION_REQUIRED",
+                message: "Reconnect Knotree Registry before enabling automatic deploys.",
+            });
+        }
+    }
 
     let service = sqlx::query_as::<_, AppServiceRow>(&format!(
         "UPDATE project_app_services
          SET auto_deploy_enabled = $1,
-             github_connection_user_id = CASE WHEN $1 THEN $2 ELSE github_connection_user_id END,
+             github_connection_user_id = CASE WHEN $1 AND $4 THEN $2 ELSE github_connection_user_id END,
              auto_deploy_error = NULL,
              updated_at = now()
          WHERE id = $3
@@ -1196,8 +1260,20 @@ pub async fn update_auto_deploy(
     .bind(input.enabled)
     .bind(user.id)
     .bind(app_service_id)
+    .bind(matches!(existing.image_source.as_str(), IMAGE_SOURCE_GITHUB | IMAGE_SOURCE_HTML_GITHUB))
     .fetch_one(&mut *transaction)
     .await?;
+    if !input.enabled && existing.image_source == IMAGE_SOURCE_KNOTREE_REGISTRY {
+        sqlx::query(
+            "UPDATE knotree_registry_deploy_jobs
+             SET status = 'failed', locked_until = NULL,
+                 last_error = 'Automatic Registry deploys were disabled.', updated_at = now()
+             WHERE app_service_id = $1 AND status = 'pending'",
+        )
+        .bind(app_service_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
 
     let database =
@@ -1531,12 +1607,85 @@ pub async fn create_for_user(
     let name = validate_service_name(input.name.as_deref().unwrap_or("App service"))?;
     let image_source_raw = input.image_source.trim().to_ascii_lowercase();
     let is_html = html_pages::is_html_source(&image_source_raw);
-    let image = if is_html {
+    let mut image = if is_html {
         state.config.html_nginx_image.clone()
     } else {
         validate_image(input.image.as_deref().unwrap_or(""))?
     };
+    let mut deployment_image = image.clone();
     let image_source = validate_image_source(&input.image_source, &image)?;
+    let registry_image = if image_source == IMAGE_SOURCE_KNOTREE_REGISTRY {
+        image = knotree_registry::normalize_registry_image(&image).ok_or_else(|| {
+            validation_field_error(
+                "image",
+                "Knotree Registry images must use registry.knotree.com/repository:tag.",
+            )
+        })?;
+        knotree_registry::parse_registry_image(&image)
+    } else {
+        None
+    };
+    let registry_connection_id = if let Some(registry_image) = registry_image.as_ref() {
+        let connection_id = input.registry_connection_id.ok_or_else(|| {
+            validation_field_error(
+                "registryConnectionId",
+                "Connect Knotree Registry before deploying this private image.",
+            )
+        })?;
+        let connected_repository = sqlx::query_scalar::<_, String>(
+            "SELECT repository FROM knotree_registry_connections
+             WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(connection_id)
+        .bind(project_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_CONNECTION_REQUIRED",
+            message: "Connect Knotree Registry to this project before deploying the image.",
+        })?;
+        if connected_repository != registry_image.repository {
+            return Err(AppError::Conflict {
+                code: "KNOTREE_REGISTRY_REPOSITORY_MISMATCH",
+                message: "This Registry connection is scoped to a different repository.",
+            });
+        }
+        Some(connection_id)
+    } else {
+        if input.registry_connection_id.is_some() {
+            return Err(validation_field_error(
+                "registryConnectionId",
+                "Registry connections can only be attached to Knotree Registry images.",
+            ));
+        }
+        None
+    };
+    let registry_credentials = if let (Some(connection_id), Some(registry_image)) =
+        (registry_connection_id, registry_image.as_ref())
+    {
+        let credentials = knotree_registry::load_credentials(state, project_id, connection_id)
+            .await?
+            .ok_or(AppError::Conflict {
+                code: "KNOTREE_REGISTRY_CONNECTION_REVOKED",
+                message: "Reconnect Knotree Registry before deploying this image.",
+            })?;
+        let digest = knotree_registry::resolve_tag_digest(
+            &credentials.username,
+            &credentials.password,
+            &registry_image.repository,
+            &registry_image.tag,
+        )
+        .await
+        .ok_or(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_IMAGE_UNAVAILABLE",
+            message: "Knotree Registry could not read this image tag. Check the repository, tag, and pull token.",
+        })?;
+        deployment_image = knotree_registry::immutable_image(&registry_image.repository, &digest)
+            .expect("a validated repository and digest produce a valid immutable reference");
+        Some(credentials)
+    } else {
+        None
+    };
     let app_port = if is_html {
         html_pages::HTML_NGINX_PORT
     } else {
@@ -1545,8 +1694,18 @@ pub async fn create_for_user(
     let auto_deploy_enabled = match image_source.as_str() {
         IMAGE_SOURCE_GITHUB => input.auto_deploy.unwrap_or(true),
         IMAGE_SOURCE_HTML_GITHUB => input.auto_deploy.unwrap_or(true),
+        IMAGE_SOURCE_KNOTREE_REGISTRY => input.auto_deploy.unwrap_or(false),
         _ => false,
     };
+    if auto_deploy_enabled
+        && image_source == IMAGE_SOURCE_KNOTREE_REGISTRY
+        && state.config.knotree_registry_webhook_secret.is_none()
+    {
+        return Err(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_WEBHOOK_NOT_CONFIGURED",
+            message: "Automatic Registry deploys are not configured on this Cloud installation yet.",
+        });
+    }
     let github_connection_user_id =
         (image_source == IMAGE_SOURCE_GITHUB || image_source == IMAGE_SOURCE_HTML_GITHUB)
             .then_some(user_id);
@@ -1616,8 +1775,33 @@ pub async fn create_for_user(
             }
         }
 
+        if let Some(connection_id) = registry_connection_id {
+            let connected_repository = sqlx::query_scalar::<_, String>(
+                "SELECT repository FROM knotree_registry_connections
+                 WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
+                 FOR SHARE",
+            )
+            .bind(connection_id)
+            .bind(project_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(AppError::Conflict {
+                code: "KNOTREE_REGISTRY_CONNECTION_REVOKED",
+                message: "Reconnect Knotree Registry before deploying this image.",
+            })?;
+            if registry_image
+                .as_ref()
+                .is_none_or(|image| image.repository != connected_repository)
+            {
+                return Err(AppError::Conflict {
+                    code: "KNOTREE_REGISTRY_REPOSITORY_MISMATCH",
+                    message: "This Registry connection is scoped to a different repository.",
+                });
+            }
+        }
+
         let service = sqlx::query_as::<_, AppServiceRow>(&format!(
-            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, public_access_enabled, rate_limit_rpm, status, auto_deploy_enabled, github_connection_user_id, html_repo, html_branch) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING {APP_SERVICE_COLUMNS}"
+            "INSERT INTO project_app_services (id, project_id, name, image, image_source, app_port, public_subdomain, public_access_enabled, rate_limit_rpm, status, auto_deploy_enabled, registry_connection_id, github_connection_user_id, html_repo, html_branch) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING {APP_SERVICE_COLUMNS}"
         ))
         .bind(Uuid::new_v4())
         .bind(project_id)
@@ -1630,6 +1814,7 @@ pub async fn create_for_user(
         .bind(i32::try_from(state.config.default_rate_limit_rpm).unwrap_or(60))
         .bind(STATUS_PROVISIONING)
         .bind(auto_deploy_enabled)
+        .bind(registry_connection_id)
         .bind(github_connection_user_id)
         .bind(&html_repo)
         .bind(&html_branch)
@@ -1705,9 +1890,10 @@ pub async fn create_for_user(
             deployment_id,
             service.id,
             project_id,
-            image,
+            deployment_image,
             app_port,
             github_credentials,
+            registry_credentials,
             None,
             None,
             false,
@@ -1807,6 +1993,7 @@ pub async fn update_html_page(
             image,
             app_port,
             github_credentials,
+            None,
             None,
             None,
             false,
@@ -1928,14 +2115,17 @@ pub async fn update(
     } else {
         None
     };
+    let (registry_credentials, deployment_image) =
+        registry_deployment_target(&state, &service).await?;
 
     let provisioned = provision_docker(
         &state,
         project_id,
         service.id,
-        &service.image,
+        &deployment_image,
         app_port,
         github_credentials.as_ref(),
+        registry_credentials.as_ref(),
         database.as_ref(),
         true,
         previous_container_name.as_deref(),
@@ -2103,15 +2293,18 @@ pub async fn update_database_connection(
     } else {
         None
     };
+    let (registry_credentials, deployment_image) =
+        registry_deployment_target(&state, &service).await?;
 
     let provisioned = provision_docker(
         &state,
         project_id,
         service.id,
-        &service.image,
+        &deployment_image,
         u16::try_from(service.app_port)
             .map_err(|_| AppError::internal("invalid app service container port"))?,
         github_credentials.as_ref(),
+        registry_credentials.as_ref(),
         database.as_ref(),
         true,
         previous_container_name.as_deref(),
@@ -2168,6 +2361,55 @@ pub async fn update_database_connection(
     )?))
 }
 
+async fn registry_deployment_target(
+    state: &AppState,
+    service: &AppServiceRow,
+) -> Result<(Option<RegistryDockerCredentials>, String), AppError> {
+    if service.image_source != IMAGE_SOURCE_KNOTREE_REGISTRY {
+        return Ok((None, service.image.clone()));
+    }
+    let connection_id = service.registry_connection_id.ok_or(AppError::Conflict {
+        code: "KNOTREE_REGISTRY_CONNECTION_REQUIRED",
+        message: "Reconnect Knotree Registry before deploying this image.",
+    })?;
+    let credentials = knotree_registry::load_credentials(state, service.project_id, connection_id)
+        .await?
+        .ok_or(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_CONNECTION_REVOKED",
+            message: "Reconnect Knotree Registry before deploying this image.",
+        })?;
+    let target = knotree_registry::parse_registry_image(&service.image).ok_or_else(|| {
+        AppError::internal("the stored Knotree Registry image reference is invalid")
+    })?;
+    let digest = match service
+        .deployed_image_digest
+        .as_deref()
+        .filter(|digest| knotree_registry::is_valid_digest(digest))
+    {
+        Some(digest) => digest.to_owned(),
+        None => knotree_registry::resolve_tag_digest(
+            &credentials.username,
+            &credentials.password,
+            &target.repository,
+            &target.tag,
+        )
+        .await
+        .ok_or(AppError::Conflict {
+            code: "KNOTREE_REGISTRY_IMAGE_UNAVAILABLE",
+            message: "Knotree Registry could not read this image tag. Check the repository, tag, and pull token.",
+        })?,
+    };
+    let image = knotree_registry::immutable_image(&target.repository, &digest)
+        .expect("validated repository and digest produce an immutable image reference");
+    Ok((Some(credentials), image))
+}
+
+fn validation_field_error(field: &str, message: &str) -> AppError {
+    let mut fields = BTreeMap::new();
+    fields.insert(field.to_owned(), message.to_owned());
+    AppError::validation(fields)
+}
+
 fn validate_service_name(value: &str) -> Result<String, AppError> {
     let name = value.trim().to_owned();
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
@@ -2208,6 +2450,17 @@ fn validate_image_source(source: &str, image: &str) -> Result<String, AppError> 
     if normalized == IMAGE_SOURCE_HTML || normalized == IMAGE_SOURCE_HTML_GITHUB {
         return Ok(normalized);
     }
+    let uses_knotree_registry_host = image
+        .get(..(knotree_registry::REGISTRY_HOST.len() + 1))
+        .is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case(&format!("{}/", knotree_registry::REGISTRY_HOST))
+        });
+    if uses_knotree_registry_host && normalized != IMAGE_SOURCE_KNOTREE_REGISTRY {
+        return Err(validation_field_error(
+            "imageSource",
+            "Select Knotree Registry for images hosted on registry.knotree.com.",
+        ));
+    }
     if normalized == IMAGE_SOURCE_GITHUB
         && !image
             .get(.."ghcr.io/".len())
@@ -2220,11 +2473,24 @@ fn validate_image_source(source: &str, image: &str) -> Result<String, AppError> 
         );
         return Err(AppError::validation(fields));
     }
-    if normalized != IMAGE_SOURCE_PUBLIC && normalized != IMAGE_SOURCE_GITHUB {
+    if normalized == IMAGE_SOURCE_KNOTREE_REGISTRY
+        && knotree_registry::parse_registry_image(image).is_none()
+    {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "image".to_owned(),
+            "Knotree Registry images must use registry.knotree.com/repository:tag.".to_owned(),
+        );
+        return Err(AppError::validation(fields));
+    }
+    if normalized != IMAGE_SOURCE_PUBLIC
+        && normalized != IMAGE_SOURCE_GITHUB
+        && normalized != IMAGE_SOURCE_KNOTREE_REGISTRY
+    {
         let mut fields = BTreeMap::new();
         fields.insert(
             "imageSource".to_owned(),
-            "Choose a public image, a private GitHub image, or an HTML page.".to_owned(),
+            "Choose a public image, a private GitHub image, a Knotree Registry image, or an HTML page.".to_owned(),
         );
         return Err(AppError::validation(fields));
     }
@@ -2308,6 +2574,7 @@ fn app_service_response(
             .auto_deploy_checked_at
             .and_then(|value| value.format(&Rfc3339).ok()),
         auto_deploy_error: service.auto_deploy_error.clone(),
+        registry_connection_id: service.registry_connection_id,
         html_repo: service.html_repo.clone(),
         html_branch: service.html_branch.clone(),
         html_sha: service.html_sha.clone(),
@@ -2421,6 +2688,7 @@ async fn run_app_service_deployment(
     image: String,
     app_port: u16,
     github_credentials: Option<GithubDockerCredentials>,
+    registry_credentials: Option<RegistryDockerCredentials>,
     database: Option<DatabaseResourceRow>,
     database_resource_id: Option<Uuid>,
     honor_requested_port: bool,
@@ -2444,6 +2712,7 @@ async fn run_app_service_deployment(
                 &image,
                 app_port,
                 database.as_ref(),
+                registry_credentials.as_ref(),
                 Some(&logger),
             )
             .await?
@@ -2455,6 +2724,7 @@ async fn run_app_service_deployment(
                 &image,
                 app_port,
                 github_credentials.as_ref(),
+                registry_credentials.as_ref(),
                 database.as_ref(),
                 honor_requested_port,
                 None,
@@ -2626,16 +2896,406 @@ async fn prepare_html_site(
 
 pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(AUTO_DEPLOY_INTERVAL_SECONDS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut github_interval =
+            tokio::time::interval(Duration::from_secs(AUTO_DEPLOY_INTERVAL_SECONDS));
+        let mut registry_interval = tokio::time::interval(Duration::from_secs(3));
+        github_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        registry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
-            interval.tick().await;
-            if let Err(error) = poll_auto_deployments(&state).await {
-                tracing::warn!(error = %error, "could not enumerate automatic app service deployments");
+            tokio::select! {
+                _ = github_interval.tick() => {
+                    if let Err(error) = poll_auto_deployments(&state).await {
+                        tracing::warn!(error = %error, "could not enumerate automatic app service deployments");
+                    }
+                }
+                _ = registry_interval.tick() => {
+                    if let Err(error) = process_registry_deploy_jobs(&state).await {
+                        tracing::warn!(error = %error, "could not process Knotree Registry deployment jobs");
+                    }
+                }
             }
         }
     })
+}
+
+async fn process_registry_deploy_jobs(state: &AppState) -> Result<()> {
+    recover_registry_deploy_jobs(state).await?;
+    for _ in 0..8 {
+        let Some(job) = claim_registry_deploy_job(state).await? else {
+            break;
+        };
+        let state = state.clone();
+        tokio::spawn(async move {
+            execute_registry_deploy_job(state, job).await;
+        });
+    }
+    Ok(())
+}
+
+async fn recover_registry_deploy_jobs(state: &AppState) -> Result<()> {
+    sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs AS job
+         SET status = 'succeeded', locked_until = NULL,
+             last_error = NULL, updated_at = now()
+         FROM project_app_services AS service
+         WHERE job.app_service_id = service.id
+           AND job.status = 'running'
+           AND job.locked_until < now()
+           AND service.deployed_image_digest = job.image_digest",
+    )
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE app_service_deployments AS deployment
+         SET status = 'error', current_step = 'Recovered',
+             error_message = 'The Registry deployment worker restarted before finishing.',
+             updated_at = now()
+         FROM knotree_registry_deploy_jobs AS job
+         WHERE deployment.id = job.deployment_id
+           AND job.status = 'running'
+           AND job.locked_until < now()
+           AND deployment.status = 'provisioning'",
+    )
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE project_app_services AS service
+         SET status = CASE WHEN service.container_name IS NULL THEN 'error' ELSE 'ready' END,
+             error_message = CASE WHEN service.container_name IS NULL
+                 THEN 'The Registry deployment worker restarted before the first deployment completed.'
+                 ELSE NULL END,
+             auto_deploy_error = CASE WHEN service.container_name IS NULL
+                 THEN 'The Registry deployment worker restarted before the first deployment completed.'
+                 ELSE service.auto_deploy_error END,
+             updated_at = now()
+         FROM knotree_registry_deploy_jobs AS job
+         WHERE job.app_service_id = service.id
+           AND job.status = 'running'
+           AND job.locked_until < now()
+           AND service.deployed_image_digest IS DISTINCT FROM job.image_digest",
+    )
+    .execute(&state.db)
+    .await?;
+    sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs AS job
+         SET status = CASE WHEN service.container_name IS NULL THEN 'failed' ELSE 'pending' END,
+             locked_until = NULL, deployment_id = NULL,
+             last_error = CASE WHEN service.container_name IS NULL
+                 THEN 'The initial Registry deployment did not complete.' ELSE NULL END,
+             updated_at = now()
+         FROM project_app_services AS service
+         WHERE job.app_service_id = service.id
+           AND job.status = 'running'
+           AND job.locked_until < now()
+           AND service.deployed_image_digest IS DISTINCT FROM job.image_digest",
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn claim_registry_deploy_job(
+    state: &AppState,
+) -> Result<Option<ClaimedRegistryDeployment>> {
+    let mut transaction = state.db.begin().await?;
+    sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs AS older
+         SET status = 'succeeded', last_error = NULL,
+             updated_at = now()
+         WHERE older.status = 'pending'
+           AND EXISTS (
+               SELECT 1 FROM knotree_registry_deploy_jobs AS newer
+               WHERE newer.app_service_id = older.app_service_id
+                 AND newer.status = 'pending'
+                 AND (newer.created_at, newer.id) > (older.created_at, older.id)
+           )",
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    let candidate = sqlx::query_as::<_, RegistryDeployCandidate>(
+        "SELECT job.id AS job_id, job.app_service_id, service.project_id,
+                service.image, service.app_port, service.database_resource_id,
+                service.registry_connection_id, job.image_digest, job.immutable_image,
+                service.deployed_image_digest
+         FROM knotree_registry_deploy_jobs AS job
+         JOIN project_app_services AS service ON service.id = job.app_service_id
+         JOIN knotree_registry_connections AS connection
+           ON connection.id = service.registry_connection_id
+          AND connection.revoked_at IS NULL
+         WHERE job.status = 'pending'
+           AND service.image_source = $1
+           AND service.auto_deploy_enabled = TRUE
+           AND service.status = $2
+         ORDER BY job.created_at ASC, job.id ASC
+         LIMIT 1
+         FOR UPDATE OF job, service SKIP LOCKED",
+    )
+    .bind(IMAGE_SOURCE_KNOTREE_REGISTRY)
+    .bind(STATUS_READY)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(candidate) = candidate else {
+        transaction.commit().await?;
+        return Ok(None);
+    };
+    if candidate.deployed_image_digest.as_deref() == Some(candidate.image_digest.as_str()) {
+        sqlx::query(
+            "UPDATE knotree_registry_deploy_jobs
+             SET status = 'succeeded', locked_until = NULL, last_error = NULL, updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(candidate.job_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE project_app_services
+             SET auto_deploy_checked_at = now(), auto_deploy_error = NULL, updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(candidate.app_service_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        return Ok(None);
+    }
+    let expected_image = knotree_registry::immutable_reference_for(
+        &candidate.image,
+        &candidate.image_digest,
+    );
+    if expected_image.as_deref() != Some(candidate.immutable_image.as_str()) {
+        sqlx::query(
+            "UPDATE knotree_registry_deploy_jobs
+             SET status = 'failed', last_error = 'The Registry image reference no longer matches this service.',
+                 updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(candidate.job_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        return Ok(None);
+    }
+    let Some(connection_id) = candidate.registry_connection_id else {
+        sqlx::query(
+            "UPDATE knotree_registry_deploy_jobs
+             SET status = 'failed', last_error = 'The Registry connection is unavailable.',
+                 updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(candidate.job_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        return Ok(None);
+    };
+    let database = match candidate.database_resource_id {
+        Some(resource_id) => Some(
+            sqlx::query_as::<_, DatabaseResourceRow>(&format!(
+                "SELECT {DATABASE_RESOURCE_COLUMNS}
+                 FROM project_postgres_databases
+                 WHERE id = $1 AND project_id = $2 AND status = 'ready'"
+            ))
+            .bind(resource_id)
+            .bind(candidate.project_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .context("the attached database is no longer ready")?,
+        ),
+        None => None,
+    };
+    let app_port = u16::try_from(candidate.app_port)
+        .map_err(|_| anyhow::anyhow!("invalid app service container port"))?;
+    let deployment_id = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE project_app_services
+         SET status = $1, host = NULL, port = NULL, error_message = NULL,
+             auto_deploy_checked_at = now(), auto_deploy_error = NULL, updated_at = now()
+         WHERE id = $2",
+    )
+    .bind(STATUS_PROVISIONING)
+    .bind(candidate.app_service_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO app_service_deployments (id, app_service_id, status, current_step, logs)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(deployment_id)
+    .bind(candidate.app_service_id)
+    .bind(STATUS_PROVISIONING)
+    .bind("Queued")
+    .bind(format!(
+        "Knotree Registry webhook deploy queued for digest {}.",
+        short_image_digest(&candidate.image_digest)
+    ))
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs
+         SET status = 'running', locked_until = now() + interval '10 minutes',
+             attempt_count = attempt_count + 1, deployment_id = $2, last_error = NULL,
+             updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(candidate.job_id)
+    .bind(deployment_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some(ClaimedRegistryDeployment {
+        job_id: candidate.job_id,
+        app_service_id: candidate.app_service_id,
+        project_id: candidate.project_id,
+        connection_id,
+        deployment_id,
+        image: candidate.immutable_image,
+        image_digest: candidate.image_digest,
+        app_port,
+        database_resource_id: candidate.database_resource_id,
+        database,
+    }))
+}
+
+async fn execute_registry_deploy_job(state: AppState, job: ClaimedRegistryDeployment) {
+    let credentials = match knotree_registry::load_credentials(
+        &state,
+        job.project_id,
+        job.connection_id,
+    )
+    .await
+    {
+        Ok(Some(credentials)) => credentials,
+        Ok(None) | Err(_) => {
+            fail_registry_deploy_job(&state, &job, "The Registry connection is no longer available.")
+                .await;
+            return;
+        }
+    };
+    let ClaimedRegistryDeployment {
+        job_id,
+        app_service_id,
+        project_id,
+        deployment_id,
+        image,
+        image_digest,
+        app_port,
+        database_resource_id,
+        database,
+        ..
+    } = job;
+    let deployment = run_app_service_deployment(
+        state.clone(),
+        deployment_id,
+        app_service_id,
+        project_id,
+        image,
+        app_port,
+        None,
+        Some(credentials),
+        database,
+        database_resource_id,
+        false,
+        true,
+    );
+    tokio::pin!(deployment);
+    let mut lease_refresh = tokio::time::interval(Duration::from_secs(60));
+    lease_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = lease_refresh.tick() => {
+                if let Err(error) = refresh_registry_deploy_job_lease(&state, job_id).await {
+                    tracing::warn!(
+                        registry_job_id = %job_id,
+                        error = %error,
+                        "could not refresh Knotree Registry deploy job lease"
+                    );
+                }
+            }
+            _ = &mut deployment => break,
+        }
+    }
+    let deployed_digest = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT deployed_image_digest FROM project_app_services WHERE id = $1",
+    )
+    .bind(app_service_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .flatten();
+    let succeeded = deployed_digest.as_deref() == Some(image_digest.as_str());
+    if let Err(error) = sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs
+         SET status = $1, locked_until = NULL,
+             last_error = CASE WHEN $1 = 'succeeded' THEN NULL ELSE 'Registry image deployment failed.' END,
+             updated_at = now()
+         WHERE id = $2",
+    )
+    .bind(if succeeded { "succeeded" } else { "failed" })
+    .bind(job_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(
+            registry_job_id = %job_id,
+            error = %error,
+            "could not finish Knotree Registry deploy job"
+        );
+    }
+}
+
+async fn refresh_registry_deploy_job_lease(state: &AppState, job_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs
+         SET locked_until = now() + interval '10 minutes', updated_at = now()
+         WHERE id = $1 AND status = 'running'",
+    )
+    .bind(job_id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn fail_registry_deploy_job(
+    state: &AppState,
+    job: &ClaimedRegistryDeployment,
+    message: &str,
+) {
+    let logger = DeploymentLogger {
+        db: state.db.clone(),
+        deployment_id: job.deployment_id,
+    };
+    if let Err(error) = logger.finish(STATUS_ERROR, "Failed", Some(message)).await {
+        tracing::warn!(error = %error, "could not persist failed Registry deployment state");
+    }
+    if let Err(error) = sqlx::query(
+        "UPDATE project_app_services
+         SET status = $1, error_message = $2, auto_deploy_error = $2, updated_at = now()
+         WHERE id = $3",
+    )
+    .bind(STATUS_ERROR)
+    .bind(message)
+    .bind(job.app_service_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(error = %error, "could not mark Registry app service as failed");
+    }
+    if let Err(error) = sqlx::query(
+        "UPDATE knotree_registry_deploy_jobs
+         SET status = 'failed', locked_until = NULL, last_error = $1, updated_at = now()
+         WHERE id = $2",
+    )
+    .bind(message)
+    .bind(job.job_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(error = %error, "could not mark Registry deployment job as failed");
+    }
 }
 
 async fn poll_auto_deployments(state: &AppState) -> std::result::Result<(), sqlx::Error> {
@@ -2723,6 +3383,7 @@ async fn check_auto_deploy_candidate(
                 queued.image,
                 queued.app_port,
                 credentials,
+                None,
                 queued.database,
                 queued.database_resource_id,
                 false,
@@ -2821,6 +3482,7 @@ async fn check_html_repo_auto_deploy(
                 queued.image,
                 queued.app_port,
                 credentials,
+                None,
                 queued.database,
                 queued.database_resource_id,
                 false,
@@ -3303,6 +3965,7 @@ async fn provision_docker(
     image: &str,
     app_port: u16,
     github_credentials: Option<&GithubDockerCredentials>,
+    registry_credentials: Option<&RegistryDockerCredentials>,
     database: Option<&DatabaseResourceRow>,
     honor_requested_port: bool,
     previous_container_name: Option<&str>,
@@ -3320,15 +3983,25 @@ async fn provision_docker(
 
     let is_ghcr = image
         .get(.."ghcr.io/".len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ghcr.io/"));
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ghcr.io/"));
+    let is_knotree_registry = image
+        .get(..(knotree_registry::REGISTRY_HOST.len() + 1))
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("{}/", knotree_registry::REGISTRY_HOST)));
     if is_ghcr {
         let credentials = github_credentials.context("Connect GitHub before pulling a private ghcr.io image")?;
         pull_github_image(state, credentials, image, logger).await?;
+    } else if is_knotree_registry {
+        let credentials = registry_credentials
+            .context("Connect Knotree Registry before pulling a private registry.knotree.com image")?;
+        pull_registry_image(state, credentials, image, logger).await?;
     } else {
         docker_pull(state, image, logger).await?;
     }
 
-    let image_digest = docker_image_digest(state, image, logger).await?;
+    let image_digest = match knotree_registry::digest_from_image_reference(image) {
+        Some(digest) => Some(digest),
+        None => docker_image_digest(state, image, logger).await?,
+    };
     let html_root = html_pages::site_dir(&state.config.html_site_data_dir, service_id);
     let is_html_site = html_root.join("html").join("index.html").exists();
     let declared_volumes = if is_html_site {
@@ -3453,6 +4126,7 @@ async fn provision_kubernetes(
     image: &str,
     app_port: u16,
     database: Option<&DatabaseResourceRow>,
+    registry_credentials: Option<&RegistryDockerCredentials>,
     logger: Option<&DeploymentLogger>,
 ) -> Result<ProvisionedAppService> {
     log_deployment(logger, "Prepare", "Preparing the Kubernetes deployment.").await?;
@@ -3476,12 +4150,15 @@ async fn provision_kubernetes(
         ),
     )
     .await?;
+    let image_pull_secret = registry_credentials
+        .map(|_| cluster_kubernetes::app_image_pull_secret_name(service_id));
     let provisioned = cluster_kubernetes::provision_app(
         &state.config,
         &AppWorkloadSpec {
             project_id,
             service_id,
             image: image.to_owned(),
+            image_pull_secret,
             app_port,
             env,
             html_site_host_path: html_pages::site_dir(
@@ -3496,6 +4173,9 @@ async fn provision_kubernetes(
                     .into_owned()
             }),
         },
+        registry_credentials.map(|credentials| {
+            (credentials.username.as_str(), credentials.password.as_str())
+        }),
     )
     .await?;
     log_deployment(
@@ -3509,7 +4189,7 @@ async fn provision_kubernetes(
         port: provisioned.port,
         app_port,
         container_name: provisioned.name,
-        image_digest: None,
+        image_digest: knotree_registry::digest_from_image_reference(image),
     })
 }
 
@@ -3621,6 +4301,78 @@ async fn docker_pull(
         vec!["pull".to_owned(), image.to_owned()],
     )
     .await
+}
+
+struct TemporaryDockerConfig(PathBuf);
+
+impl TemporaryDockerConfig {
+    fn new(credentials: &RegistryDockerCredentials) -> Result<Self> {
+        let directory = std::env::temp_dir().join(format!("knotree-docker-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).context("could not create isolated Docker config directory")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        }
+        let config = knotree_registry::docker_config_json(
+            &credentials.username,
+            &credentials.password,
+        )?;
+        let config_path = directory.join("config.json");
+        if let Err(error) = fs::write(&config_path, config.to_string()) {
+            let _ = fs::remove_dir_all(&directory);
+            return Err(error).context("could not write isolated Docker registry credentials");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)) {
+                let _ = fs::remove_dir_all(&directory);
+                return Err(error).context("could not restrict isolated Docker credential permissions");
+            }
+        }
+        Ok(Self(directory))
+    }
+
+    fn directory(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TemporaryDockerConfig {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.0) {
+            tracing::warn!(error = %error, "could not remove isolated Docker registry credentials");
+        }
+    }
+}
+
+async fn pull_registry_image(
+    state: &AppState,
+    credentials: &RegistryDockerCredentials,
+    image: &str,
+    logger: Option<&DeploymentLogger>,
+) -> Result<()> {
+    let docker_config = TemporaryDockerConfig::new(credentials)?;
+    log_deployment(
+        logger,
+        "Pull image",
+        &format!("Pulling private Knotree Registry image {image}."),
+    )
+    .await?;
+    let args = vec![
+        "--config".to_owned(),
+        docker_config.directory().to_string_lossy().into_owned(),
+        "pull".to_owned(),
+        image.to_owned(),
+    ];
+    if let Some(logger) = logger {
+        run_docker_streaming(state, logger, "Pull image", args)
+            .await
+            .map(|_| ())
+    } else {
+        run_docker(state, args).await.map(|_| ())
+    }
 }
 
 async fn pull_github_image(
@@ -4153,6 +4905,10 @@ pub async fn mcp_deploy(
             .get("githubBranch")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned),
+        registry_connection_id: arguments
+            .get("registryConnectionId")
+            .and_then(|value| value.as_str())
+            .and_then(|value| Uuid::parse_str(value).ok()),
     };
     let service = create_for_user(state, user_id, workspace_id, project_slug, input).await?;
     serde_json::to_value(service).map_err(AppError::internal)
@@ -4198,13 +4954,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_public_and_github_images() {
+    fn validates_public_github_and_knotree_registry_images() {
         assert_eq!(validate_image(" nginx:alpine ").unwrap(), "nginx:alpine");
         assert!(validate_image("https://docker.io/nginx").is_err());
         assert!(validate_image("nginx; echo leaked").is_err());
         assert!(validate_image_source("public", "nginx:alpine").is_ok());
         assert!(validate_image_source("github", "ghcr.io/acme/app:latest").is_ok());
         assert!(validate_image_source("github", "nginx:latest").is_err());
+        assert!(validate_image_source(
+            IMAGE_SOURCE_KNOTREE_REGISTRY,
+            "registry.knotree.com/team/api:production"
+        )
+        .is_ok());
+        assert!(validate_image_source(
+            IMAGE_SOURCE_KNOTREE_REGISTRY,
+            "registry.knotree.com/team/api"
+        )
+        .is_err());
+        assert!(validate_image_source("public", "registry.knotree.com/team/api:prod").is_err());
     }
 
     #[test]
@@ -4401,6 +5168,7 @@ mod tests {
             error_message: None,
             database_resource_id: None,
             auto_deploy_enabled: false,
+            registry_connection_id: None,
             deployed_image_digest: None,
             auto_deploy_checked_at: None,
             auto_deploy_error: None,

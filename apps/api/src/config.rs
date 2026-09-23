@@ -56,6 +56,7 @@ pub struct Config {
     pub mcp_refresh_ttl_seconds: i64,
     pub redis_cluster_image: String,
     pub app_service_image_pull_secret: Option<String>,
+    pub knotree_registry_webhook_secret: Option<String>,
     pub default_rate_limit_rpm: u32,
     pub html_site_data_dir: String,
     pub html_nginx_image: String,
@@ -209,6 +210,13 @@ impl Config {
             env::var("REDIS_CLUSTER_IMAGE").unwrap_or_else(|_| "redis:7-alpine".to_owned());
         validate_non_empty_token("REDIS_CLUSTER_IMAGE", &redis_cluster_image)?;
         let app_service_image_pull_secret = optional_env("APP_SERVICE_IMAGE_PULL_SECRET");
+        let knotree_registry_webhook_secret = optional_env("KNOTREE_REGISTRY_WEBHOOK_SECRET");
+        if knotree_registry_webhook_secret
+            .as_ref()
+            .is_some_and(|secret| secret.len() < 32)
+        {
+            bail!("KNOTREE_REGISTRY_WEBHOOK_SECRET must be at least 32 bytes");
+        }
         let default_rate_limit_rpm = env_u32("APP_SERVICE_DEFAULT_RATE_LIMIT_RPM", 60)?;
         let html_site_data_dir = env::var("HTML_SITE_DATA_DIR")
             .ok()
@@ -265,6 +273,7 @@ impl Config {
             mcp_refresh_ttl_seconds: env_i64("MCP_REFRESH_TTL_SECONDS", 2_592_000)?,
             redis_cluster_image,
             app_service_image_pull_secret,
+            knotree_registry_webhook_secret,
             default_rate_limit_rpm,
             html_site_data_dir,
             html_nginx_image,
@@ -579,6 +588,7 @@ impl Config {
             mcp_refresh_ttl_seconds: 2_592_000,
             redis_cluster_image: "redis:7-alpine".to_owned(),
             app_service_image_pull_secret: None,
+            knotree_registry_webhook_secret: None,
             default_rate_limit_rpm: 60,
             html_site_data_dir: "/tmp/knotree-html-sites".to_owned(),
             html_nginx_image: "nginxinc/nginx-unprivileged:1.27-alpine".to_owned(),
