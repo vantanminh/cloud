@@ -2,18 +2,17 @@
 
 ## Status and scope
 
-This document is the implementation plan for connecting Knotree Cloud App
-services to private images in Knotree Registry. It records a cross-repository
-contract and is not evidence that the integration has been implemented.
-
-The inspected Cloud source was commit `9a6207d` (`main`). The inspected
-Registry worktree was `master` at `6892ce5`, five commits ahead of
-`origin/master`; its signed image webhook work must be present in the deployed
-Registry before Cloud can consume it. Confirm the deployed Registry release
-before beginning the webhook slice.
-
-The Harness work is tracked by intake `IN-041` and stories `US-043` through
+The Cloud-side implementation is in place in this repository. It adds a
+project-scoped Registry connection, private Docker/Kubernetes pulls, immutable
+digest deployments, and a signed webhook-to-durable-job auto-deploy path. The
+Harness work is tracked by intake `IN-041` and stories `US-043` through
 `US-045`.
+
+This is not a production release record. The API migration must be applied,
+the platform webhook secret must be provisioned, and a staging push-to-deploy
+smoke test must pass before enabling this for production users. The Registry
+must be running the signed `tag_updated` webhook contract documented in
+`knotree-registry/docs/DEPLOYMENT_NOTIFICATIONS.md`.
 
 ## Product goal
 
@@ -23,36 +22,36 @@ redeployment when that tag receives a new image. Registry push events cause
 Cloud to deploy the exact digest published by the event. Registry credentials
 remain server-side and never enter the user's container.
 
-The initial scope is images hosted by `registry.knotree.com`. The connection
-does not grant push, delete, or administrator access. Cloud does not build or
-publish images as part of this feature.
+The initial scope is images hosted by `registry.knotree.com`. Cloud uses the
+credential only to request pull-scoped access and never builds or publishes
+images. Users must create a pull-only PAT: Cloud cannot inspect or reduce
+broader grants already attached to an opaque PAT.
 
 ## Verified current state
 
 ### Knotree Cloud
 
-- App service sources are constrained to `public`, `github`, `html`, and
-  `html_github`. Image source validation and create/update behavior live in
-  `apps/api/src/app_services.rs`; request and response types are in
-  `apps/api/src/models.rs`; the browser union is in
+- App services accept the `knotree_registry` image source. Image source
+  validation, digest deployment, and durable job processing live in
+  `apps/api/src/app_services.rs`; connection and webhook endpoints live in
+  `apps/api/src/knotree_registry.rs`; browser types are in
   `apps/web/src/lib/types.ts`.
 - `github_connections` stores an encrypted per-user GitHub package token.
   Docker deployments use that token for `ghcr.io` pulls. The auto-deployer
   checks GHCR image identity once a minute and reuses the normal deployment
   path when the image changes (`apps/api/src/app_services.rs`,
   `apps/api/src/github.rs`).
-- The app service database migrations currently allow only the four sources
-  above. A future migration must extend the source constraint and persist a
-  Registry connection reference.
-- Docker deployment has credential-aware pull helpers. Kubernetes app
-  workloads currently take only the globally configured
-  `APP_SERVICE_IMAGE_PULL_SECRET`; `AppWorkloadSpec` has no per-service pull
-  credential. A user connection cannot safely be implemented by only calling
-  `docker login` in the API process.
-- `apps/api/src/lib.rs` has a public GitHub HTML push hook, but no Knotree
-  Registry event receiver. `html_pages::github_push_webhook` is a useful
-  example for raw-body HMAC verification; it is not the Registry signature
-  format.
+- Migration `0018_knotree_registry.sql` adds project-bound connection records,
+  the per-service connection reference, and idempotent delivery/deploy-job
+  records.
+- Docker pulls use a short-lived private Docker config rather than shared
+  `docker login` state. Kubernetes workloads use a per-service
+  `kubernetes.io/dockerconfigjson` Secret instead of the global
+  `APP_SERVICE_IMAGE_PULL_SECRET`.
+- `/api/v1/public/webhooks/knotree-registry` validates signed Registry events
+  and stores matching jobs before acknowledging them. The worker processes
+  durable jobs, coalesces stale pending digests, and renews its lease during
+  long deployments.
 
 ### Knotree Registry
 
@@ -73,49 +72,56 @@ publish images as part of this feature.
   in the sibling checkout. Use the deployed Registry's actual contract as the
   authority if it differs from that local document.
 
-## Recommended first release
+## Implemented architecture
 
 Use a pull-only PAT created by the Registry user and entered into Cloud once.
-The **Connect Knotree Registry** action should open an in-product connection
-wizard, explain the required repository scope, validate the credentials, and
-save them encrypted. Do not ask for or store the Registry account password.
+The **Connect Knotree Registry** action opens an in-product connection flow,
+explains the required repository scope, validates pull access, and saves the
+PAT encrypted. Cloud does not ask for or store the Registry account password.
 
 Install one `tag_updated` webhook at the Registry platform level, pointing to
 Cloud's public webhook receiver. Store the one-time webhook secret in Cloud's
-secret manager as `KNOTREE_REGISTRY_WEBHOOK_SECRET`. This is a one-time
-operator setup because the current Registry webhook API is global and
-admin-only; a Cloud tenant user must not receive Registry administrator access.
+secret manager as `KNOTREE_REGISTRY_WEBHOOK_SECRET`. This is an operator setup
+because the current Registry webhook API is global and admin-only; a Cloud
+tenant user must not receive Registry administrator access. Cloud reports
+auto-deploy readiness only when this secret is configured.
 Cloud receives Registry tag events and only schedules deployments for an
 active Cloud service whose configured Registry host, repository, and tag match
 the event exactly.
 
 The platform-level webhook currently sends metadata for all tagged pushes to
-Cloud. Cloud should avoid persisting unmatched events and should document this
-data flow for the platform operator. If repository-level event isolation is a
-release requirement, add filtered, user-authorized subscriptions to Registry
-before enabling the feature for tenants. Do not simulate per-user webhook
-ownership in Cloud while Registry only offers a global endpoint.
+Cloud. Cloud stores only a minimal delivery ID/event-kind record for an
+unmatched signed event and does not retain its body or repository metadata;
+document this data flow for the platform operator. If repository-level event
+isolation is a release requirement, add filtered, user-authorized subscriptions
+to Registry before enabling the feature for tenants. Do not simulate per-user
+webhook ownership in Cloud while Registry only offers a global endpoint.
 
-This first release uses the existing credential model, so connecting requires
-the user to paste a pull-only PAT. A future no-copy flow would require a
-Registry authorization-code/OAuth grant and repository-scoped webhook
+Connecting requires the user to paste a PAT created with only
+`repository:<repo>:pull`. Cloud requests a pull-scoped bearer token and uses
+the saved PAT only for Registry token exchange. The Registry does not expose
+an API here for Cloud to inspect all grants on a PAT, so the Cloud form's
+pull-only instruction is important; secret storage and all pull codepaths must
+continue to treat it as a pull credential. A future no-copy flow would require
+a Registry authorization-code/OAuth grant and repository-scoped webhook
 subscriptions; neither contract exists today.
 
 ## User and service flow
 
 1. The user chooses a Registry image such as
-   `registry.knotree.com/team/api:production` in the App service create or edit
-   flow and selects **Connect Knotree Registry**.
+   `registry.knotree.com/team/api:production` in the App service create flow
+   and selects **Connect Knotree Registry**.
 2. Cloud shows the exact repository scope to create in the Registry dashboard:
-   `repository:team/api:pull`. The user enters their Registry username and the
-   one-time-revealed PAT. Cloud never accepts a push-capable scope for a pull
-   connection.
+   `repository:team/api:pull`. The user enters their Registry username and a
+   PAT created with only that pull grant. Cloud can confirm pull access, but
+   the Registry API does not let Cloud inspect whether the PAT has broader
+   grants, so this must be checked when the PAT is created.
 3. The Cloud API validates the Registry origin and credentials by requesting
    pull authorization for that repository and checking the selected manifest.
    The API stores the PAT encrypted and returns connection metadata only.
-4. Cloud creates or updates the App service, verifies that the image's host and
-   repository match the connection, pulls the image, resolves its digest, and
-   completes the normal deployment path.
+4. Cloud creates the App service, verifies that the image's host and
+   repository match the connection, resolves its digest, and completes the
+   normal deployment path using the immutable digest reference.
 5. The Registry sends `tag_updated` to the platform webhook endpoint. Cloud
    validates the raw-body signature, records the delivery and any matching
    deployment jobs transactionally, and acknowledges only after the database
@@ -128,14 +134,11 @@ subscriptions; neither contract exists today.
    disconnect/revoke action. Disconnect prevents future pulls and deployments;
    it does not stop an already-running service.
 
-## Cloud data model plan
+## Cloud data model
 
-Add an image source value such as `knotree_registry` through a new migration;
-do not overload the `github` source. Extend the Cloud UI/API union types in the
-same slice.
-
-Add a `registry_connections` table scoped to a Cloud user. The initial schema
-should contain:
+Migration `0018_knotree_registry.sql` adds the `knotree_registry` source; it
+does not overload `github`. Connection records are project-scoped and retain
+the user who created them:
 
 | Field | Purpose |
 | --- | --- |
@@ -147,55 +150,49 @@ should contain:
 | `credential_ciphertext` | AES-256-GCM ciphertext using the existing Cloud credential key. |
 | `verified_at`, `revoked_at`, timestamps | Connection health and lifecycle. |
 
-Add `registry_connection_id` to `project_app_services` for Registry-sourced
-services. A connection should be reusable for multiple tags/services in the
-same repository, but the database and authorization layer must prevent a
-service from referencing another Cloud user's connection. If the selected PAT
-has access to multiple repositories, keep the first release's connection
-record bound to the one repository being verified; broader grants are not
-needed for this feature.
+`registry_connection_id` links a service to a connection for its exact
+repository. A project connection can be reused by services in that project;
+management queries verify workspace/project access, and service creation
+checks repository equality. Connections are not shared across projects.
 
-Add durable webhook delivery/deployment-job records. Store a unique Registry
-delivery ID and the minimal matched event data needed to retry work. Avoid
-retaining full unmatched webhook bodies. Jobs need a stable state transition
-(`pending`, `running`, `succeeded`, `failed`) and a unique relation to the
-delivery/service pair so duplicate Registry retries cannot create duplicate
-deployments.
+Webhook delivery IDs are unique. The API stores only the event kind and
+receive time for a delivery, plus matching service jobs with a validated
+digest/reference and state (`pending`, `running`, `succeeded`, `failed`). It
+does not retain the raw body or unmatched payload. The unique
+delivery/service relation makes Registry retries idempotent.
 
 Use Cloud's existing `DATABASE_CREDENTIALS_ENCRYPTION_KEY` and
 `security::encrypt_secret`/`decrypt_secret` boundary. Never return ciphertext or
 plaintext in list APIs, app service responses, deployment logs, error messages,
 or environment variables injected into tenant containers.
 
-## Cloud API plan
+## Cloud API
 
-Keep cookie-authenticated, CSRF-protected management routes under `/api/v1`.
-Use project/workspace authorization before attaching a connection to a service.
-Suggested route shapes (final names may follow existing conventions):
+Management routes are cookie-authenticated and CSRF-protected, and authorize
+the workspace/project before reading or mutating a connection:
 
 | Route | Behavior |
 | --- | --- |
-| `POST /workspaces/{workspace}/projects/{project}/registry-connections` | Validate username, PAT, fixed Registry host, and repository; encrypt and create connection. Return only connection metadata. |
-| `GET /workspaces/{workspace}/projects/{project}/registry-connections` | List non-secret metadata for connections visible to this project/user. |
-| `DELETE /workspaces/{workspace}/projects/{project}/registry-connections/{id}` | Revoke the Cloud connection and stop future automatic deploys that depend on it. |
-| `POST /api/v1/public/webhooks/knotree-registry` | Receive Registry delivery with no browser cookie; authenticate it with the configured HMAC secret. |
+| `POST /api/v1/workspaces/{workspace}/projects/{project}/registry-connections` | Accept `{ username, token, repository }`; verify pull access to the fixed Registry host, encrypt the PAT, and return metadata only. |
+| `GET /api/v1/workspaces/{workspace}/projects/{project}/registry-connections` | List non-secret metadata plus `autoDeployReady` for that project's connections. |
+| `PATCH /api/v1/workspaces/{workspace}/projects/{project}/registry-connections/{id}` | Verify and rotate the PAT; update per-service Kubernetes pull secrets before replacing the encrypted credential. |
+| `DELETE /api/v1/workspaces/{workspace}/projects/{project}/registry-connections/{id}` | Revoke the Cloud connection, disable dependent auto-deploy services, detach the connection, fail pending jobs, and attempt to delete per-service Kubernetes pull secrets. Cleanup errors are logged. Running services are left online. This does not revoke the PAT at Registry. |
+| `POST /api/v1/public/webhooks/knotree-registry` | Receive a Registry delivery without a browser cookie; authenticate with the configured HMAC secret. Body limit is 64 KiB. |
 
-The App service create/update API must accept `imageSource: "knotree_registry"`
-and a connection ID. Reject the image if the fixed host, repository, tag, or
-connection owner does not match. Auto-deploy settings must accept this source
-only when a verified connection exists and the platform webhook receiver is
-configured.
+The App service create API accepts `imageSource: "knotree_registry"` and
+`registryConnectionId`. It rejects arbitrary hosts, untagged images,
+repository/connection mismatches, and unverified pull access. Enabling
+auto-deploy requires an active connection and configured webhook secret.
 
-The public webhook handler must cap request size, retain the exact raw body
-until signature validation completes, and return generic errors. Do not log
-the webhook secret, PAT, Authorization header, or signed body.
+The public webhook handler caps request size at 64 KiB, retains the exact raw
+body until signature validation completes, and returns generic errors. It does
+not log the webhook secret, PAT, Authorization header, or signed body.
 
 ## Private pull implementation
 
-Define one pull-auth abstraction shared by image sources, for example
-`ImagePullCredentials` with Registry host, username, and decrypted password.
-Keep GitHub OAuth details inside the GitHub connector and translate them at
-the deployment boundary.
+Registry and GitHub have separate source credential types. Credentials are
+loaded only at the deployment boundary; Registry PATs are never returned in
+the service response or passed into the app container.
 
 For Docker deployments:
 
@@ -216,9 +213,10 @@ For Kubernetes deployments:
   workload image to the resolved digest so a mutable local tag cannot select a
   different image. Preserve the configured tag separately for watching.
 - Rotate/update the Kubernetes Secret when the Registry credential changes and
-  remove it when the connection or App service is deleted. Ensure the app pod
-  never receives Kubernetes API credentials; the current manifest disables
-  service-account token mounting and should keep doing so.
+  remove it when the Cloud connection is disconnected. Disconnect cleanup is
+  best-effort and failures are logged. Ensure the app pod never receives
+  Kubernetes API credentials; the manifest disables service-account token
+  mounting.
 
 The normal App service deploy path, progress logs, runtime limits, routing,
 attached database variables, and failure behavior remain the deployment
@@ -227,8 +225,7 @@ container/workload untouched where the existing rollout mechanism permits.
 
 ## Signed event handling and deployment queue
 
-The Registry sends a JSON event with `schema_version: 1`. The Cloud receiver
-must:
+The Registry sends a JSON event with `schema_version: 1`. The Cloud receiver:
 
 1. Require `X-Knotree-Event`, `X-Knotree-Delivery`, `X-Knotree-Timestamp`, and
    `X-Knotree-Signature`; parse the raw request body only after preserving its
@@ -253,9 +250,9 @@ must:
    restart. If several tag updates arrive while a service is deploying, keep
    the newest desired digest queued rather than acknowledging and dropping it.
 7. Before rollout, compare against the currently deployed digest and skip a
-   no-op. Pull/deploy by the immutable `metadata.immutable_image` reference (or
-   resolve the configured tag again if a later event superseded the queued
-   target), then store the digest with normal deployment status/logs.
+   no-op. Construct the immutable reference from the validated repository and
+   digest fields (rather than trusting a webhook-supplied URL), deploy by that
+   reference, then store the digest with normal deployment status/logs.
 
 The Registry contract is at-least-once, not exactly-once. Its current worker
 retries transient failures a bounded number of times, so durable acceptance in
@@ -285,62 +282,100 @@ This registration is a platform operation, not a user action. The Cloud
 **Connect Knotree Registry** button must not ask for a Registry admin session or
 secret.
 
-## UI plan
+## Cloud deployment configuration
 
-- Add Knotree Registry as a source in the App service create/edit flow.
-- Provide **Connect Knotree Registry** in the account Integrations view and a
-  contextual CTA in the App service form when no matching connection exists.
-- Explain how to create a PAT with `repository:<repo>:pull`; collect username
-  and PAT in a password-style field. Clear the field after successful save.
-- Show the normalized image reference and verify status; do not show any part
-  of the PAT except an optional non-secret prefix.
-- In service Settings, show the connection, watched tag, deployed digest,
-  automatic-deploy toggle, last Registry event/deployment, and safe error
-  details. Disconnect/revoke should clearly explain that future private pulls
-  and auto-deploy stop while a running service remains online.
+- Migration `0018_knotree_registry.sql` is applied by the Helm
+  pre-upgrade/pre-install migration Job when `migrations.enabled=true`. The
+  production `deploy/k3s-pull.sh` flow enables this hook. Confirm the Job
+  succeeds before relying on the new API routes.
+- For local development, set `KNOTREE_REGISTRY_WEBHOOK_SECRET` in the API
+  environment file after creating a test Registry webhook. It may be empty
+  when testing pulls without auto-deploy. If set, it must be at least 32 bytes;
+  a shorter value prevents the API from starting.
+- In Kubernetes, provision that value out-of-band in the chart's existing
+  Secret (default `knotree-api-secrets`) under the key configured by
+  `secrets.knotreeRegistryWebhookSecretKey` (default
+  `KNOTREE_REGISTRY_WEBHOOK_SECRET`). Do not put its plaintext into Helm
+  values, Git, or tenant settings. When the key is absent, the API remains
+  available for manual pulls but reports `autoDeployReady: false` and rejects
+  attempts to enable Registry auto-deploy.
+- Expose `POST /api/v1/public/webhooks/knotree-registry` through the API HTTPS
+  ingress. It is intentionally unauthenticated at the browser/session layer;
+  the HMAC is its authentication boundary. Ensure proxies preserve the
+  `X-Knotree-*` headers and raw request body.
 
-## Harness implementation sequence
+## UI behavior implemented
 
-1. **US-043 — connection and private pulls.** Add the migration and scoped
-   credential API, encryption, source validation, and per-provider pull support
-   in both Docker and Kubernetes paths. Confirm a private image can be created,
-   manually redeployed, rotated, and disconnected.
-2. **US-044 — signed events and durable deploy jobs.** Add the public receiver,
-   HMAC/replay/idempotency checks, event-to-service matching, persistent job
-   worker, digest-pinned deployment, and recovery/concurrency behavior. Confirm
-   the production Registry release delivers the documented headers and event
-   shape.
-3. **US-045 — UI and lifecycle.** Add the connect wizard, image source,
-   Settings state, auto-deploy control, and revoke/disconnect behavior. Show a
-   useful unconfigured-webhook state rather than silently promising automatic
-   deploys.
-4. Configure the platform webhook and secret through production secret
-   management; verify the Cloud API ingress accepts Registry callbacks.
-5. Run a staging end-to-end flow: create a pull-only PAT, connect a test repo,
-   deploy `:staging`, push a new tag digest, observe one accepted delivery and
-   one digest-pinned deployment, then replay the same delivery and observe no
-   duplicate deployment.
+- Knotree Registry is selectable as a source in the App service create flow.
+- The form loads project-scoped connections and offers **Connect Knotree
+  Registry** when none matches the selected repository. It explains the exact
+  required pull scope and collects username/PAT in an input that is not sent
+  to the service environment.
+- The create action verifies/saves the connection before creating the service;
+  the API response never includes the token. Automatic deploy is disabled in
+  the form when `autoDeployReady` is false.
+- Settings shows the configured image/tag, connected/disconnected state,
+  deployed digest, and Registry auto-deploy control. It supports token
+  rotation and disconnect. Rotation requires a fresh PAT. Disconnect revokes
+  only Cloud's saved connection; the PAT itself must also be revoked in the
+  Registry dashboard if it should no longer be usable. After disconnect, the
+  existing service remains running, but must be recreated with a new
+  connection to resume Registry pulls.
 
-## Planned verification
+## Implementation and release status
 
-- Rust unit coverage for Registry origin/image parsing, repository scope
-  matching, secret encryption/decryption, and credential ownership.
-- API integration coverage for token validation, CSRF/tenant authorization,
-  connection revocation, Docker pull failure, and Kubernetes pull Secret
-  creation/update/deletion.
-- Webhook handler coverage for valid HMAC, wrong secret, malformed headers,
-  stale/future timestamp, body tampering, duplicate delivery, unmatched tag,
-  invalid digest, and database failure before acknowledgement.
-- Deployment coverage for no-op digest, successful digest rollout, failed pull
-  preserving the existing service, multiple events during provisioning, and
-  pending-job recovery after restart.
-- Browser coverage for connect, invalid credential, repository mismatch,
-  initial private deployment, auto-deploy toggle, webhook-not-configured state,
-  disconnect, and mobile layout.
-- Platform smoke: push a new image to a staging repository on
-  `registry.knotree.com`; confirm the Registry emits `tag_updated`, Cloud
-  returns 2xx after durable acceptance, and the App workload runs the published
-  digest.
+1. **US-043 — connection/private pulls:** implemented in the Cloud API and
+   Docker/Kubernetes deployment paths.
+2. **US-044 — signed events/durable jobs:** implemented with replay-bounded
+   HMAC validation, idempotent delivery storage, a persistent worker, digest
+   pinning, push coalescing, and restart recovery.
+3. **US-045 — UI/lifecycle:** implemented in the service create and Settings
+   views, including token rotation, auto-deploy readiness, and disconnect.
+4. **Still required before release:** enable and confirm the migration Job,
+   provision `KNOTREE_REGISTRY_WEBHOOK_SECRET`, register the platform-level
+   Registry webhook, and verify ingress reaches this API.
+5. **Still required before release:** run the staging flow below against the
+   deployed Registry/Cloud versions. No production push or deployment is
+   part of this code change.
+
+## Verification
+
+- Rust unit tests cover fixed Registry image/tag validation, digest
+  references, Docker auth-config generation, and exact HMAC inputs.
+- Rust unit tests cover per-service Kubernetes image pull Secret generation
+  and workload wiring; frontend tests cover connecting before service
+  creation.
+- Verified locally: `pnpm typecheck:web`, `pnpm test:web`, `pnpm build:web`,
+  `cargo check --manifest-path apps/api/Cargo.toml`,
+  `cargo test --manifest-path apps/api/Cargo.toml`, `helm lint
+  deploy/helm/knotree-api`, targeted ESLint, and `rustfmt --check` for the new
+  `knotree_registry.rs` module.
+- Workspace `pnpm lint:web` remains red on two `react-hooks/set-state-in-effect`
+  violations in unchanged `apps/web/src/components/html-page-workspace.tsx`
+  lines 34 and 165. Workspace-wide `cargo fmt --check` reports formatting
+  diffs across existing crate modules; the new Registry module passes its
+  individual formatter check.
+- API/database integration, real private image pulls, webhook delivery/replay,
+  and end-to-end deployment require the target services and remain staging
+  release checks; they are not proven by unit tests.
+- Browser-based visual QA was not available in this environment (no Browser
+  plugin and no installed Playwright CLI); the create and Settings interactions
+  are covered by Vitest component tests instead.
+
+Staging smoke checklist:
+
+1. Create a new PAT scoped only to `repository:<repo>:pull`; connect it to a
+   Cloud test project and deploy a test tag.
+2. Confirm the service reports the resolved SHA-256 digest, the workload uses
+   the digest reference, and no Registry credential appears in service
+   variables, responses, or logs.
+3. Push a new digest to the watched tag. Confirm Registry emits
+   `tag_updated`, Cloud responds 202 after database persistence, and one
+   digest-pinned deployment completes.
+4. Replay the same delivery and confirm it does not create a second deploy.
+   Push a different tag/repository and confirm the Cloud service is untouched.
+5. Rotate the PAT, verify pulls continue, then disconnect and confirm the
+   existing workload remains online while future Registry deploys stop.
 
 ## Explicitly deferred
 

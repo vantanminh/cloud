@@ -748,6 +748,31 @@
   line-height: 1.4;
 }
 
+.project-registry-auto-deploy {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.75rem 0;
+  color: var(--foreground);
+}
+
+.project-registry-auto-deploy input {
+  flex: 0 0 auto;
+  margin-top: 0.2rem;
+  accent-color: var(--ring);
+}
+
+.project-registry-auto-deploy span {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.project-registry-auto-deploy small {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .project-dialog-actions {
   display: flex;
   justify-content: flex-end;

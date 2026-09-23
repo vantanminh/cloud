@@ -11,6 +11,8 @@ import type {
   AppServiceMetrics,
   AppServiceLogs,
   GithubConnectionStatus,
+  KnotreeRegistryConnection,
+  KnotreeRegistryConnectionList,
   HtmlAnalyticsSummary,
   PostgresResource,
   RedisResource,
@@ -23,13 +25,20 @@ export type CreatePostgresResourceInput = {
 export type CreateAppServiceInput = {
   name: string
   image?: string
-  imageSource: "public" | "github" | "html" | "html_github"
+  imageSource: "public" | "github" | "html" | "html_github" | "knotree_registry"
   appPort?: number
   autoDeploy?: boolean
   pageSlug?: string
   indexHtml?: string
   githubRepo?: string
   githubBranch?: string
+  registryConnectionId?: string
+}
+
+export type CreateKnotreeRegistryConnectionInput = {
+  username: string
+  token: string
+  repository: string
 }
 
 export type UpdateAppServiceInput = {
@@ -84,6 +93,53 @@ function resourcesPath(workspaceId: string, projectSlug: string) {
 
 function appServicesPath(workspaceId: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/app-services`
+}
+
+function knotreeRegistryConnectionsPath(workspaceId: string, projectSlug: string) {
+  return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/registry-connections`
+}
+
+export function listKnotreeRegistryConnections(
+  workspaceId: string,
+  projectSlug: string
+) {
+  return apiRequest<KnotreeRegistryConnectionList>(
+    knotreeRegistryConnectionsPath(workspaceId, projectSlug)
+  )
+}
+
+export function createKnotreeRegistryConnection(
+  workspaceId: string,
+  projectSlug: string,
+  input: CreateKnotreeRegistryConnectionInput
+) {
+  return apiRequest<KnotreeRegistryConnection>(
+    knotreeRegistryConnectionsPath(workspaceId, projectSlug),
+    { method: "POST", body: input }
+  )
+}
+
+export function updateKnotreeRegistryConnection(
+  workspaceId: string,
+  projectSlug: string,
+  connectionId: string,
+  token: string
+) {
+  return apiRequest<KnotreeRegistryConnection>(
+    `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/${encodeURIComponent(connectionId)}`,
+    { method: "PATCH", body: { token } }
+  )
+}
+
+export function deleteKnotreeRegistryConnection(
+  workspaceId: string,
+  projectSlug: string,
+  connectionId: string
+) {
+  return apiRequest<void>(
+    `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/${encodeURIComponent(connectionId)}`,
+    { method: "DELETE" }
+  )
 }
 
 export function appServiceDeploymentEventsUrl(

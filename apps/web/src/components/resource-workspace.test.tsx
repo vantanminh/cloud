@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   getHtmlPageAnalytics: vi.fn(),
   getHtmlPageIndex: vi.fn(),
   updateHtmlPage: vi.fn(),
+  deleteKnotreeRegistryConnection: vi.fn(),
+  listAppServices: vi.fn(),
   listDatabaseTables: vi.fn(),
   listPostgresResources: vi.fn(),
   retryPostgresResource: vi.fn(),
@@ -29,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   updateAppServiceAutoDeploy: vi.fn(),
   updateAppServiceDatabase: vi.fn(),
   updateAppServicePublicAccess: vi.fn(),
+  updateKnotreeRegistryConnection: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -689,6 +692,118 @@ describe("ResourceWorkspace settings pane", () => {
     )
     expect(onToast).toHaveBeenCalledWith(
       "Automatic GitHub image deploys disabled."
+    )
+  })
+
+  it("controls Knotree Registry auto-deploy, rotates its token, and disconnects safely", async () => {
+    const user = userEvent.setup()
+    const onAppServiceUpdated = vi.fn()
+    const onToast = vi.fn()
+    const disconnectedService = {
+      id: "app-resource-id",
+      name: "App service",
+      resourceType: "app" as const,
+      status: "ready" as const,
+      image: "registry.knotree.com/team/api:production",
+      imageSource: "knotree_registry" as const,
+      appPort: 3000,
+      host: "localhost",
+      port: 59601,
+      serviceUrl: "http://localhost:59601",
+      containerName: "knotree-app-app-resource-id",
+      autoDeployEnabled: false,
+      deployedImageDigest: "sha256:0123456789abcdef",
+      autoDeployCheckedAt: "2026-09-23T09:00:00Z",
+      registryConnectionId: null,
+    }
+    mocks.updateAppServiceAutoDeploy.mockResolvedValue({
+      ...disconnectedService,
+      autoDeployEnabled: true,
+      registryConnectionId: "registry-connection-1",
+    })
+    mocks.updateKnotreeRegistryConnection.mockResolvedValue({
+      id: "registry-connection-1",
+      registryHost: "registry.knotree.com",
+      username: "service-user",
+      repository: "team/api",
+      verifiedAt: "2026-09-23T09:10:00Z",
+    })
+    mocks.deleteKnotreeRegistryConnection.mockResolvedValue(undefined)
+    mocks.listAppServices.mockResolvedValue([disconnectedService])
+
+    render(
+      <ResourceWorkspace
+        node={{
+          id: "app:app-resource-id",
+          title: "App service",
+          type: "Docker app service",
+          volume: "app-service",
+          status: "ACTIVE",
+          resource: {
+            ...disconnectedService,
+            registryConnectionId: "registry-connection-1",
+          },
+        }}
+        environment="development"
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
+        projectSlug="test-2"
+        onClose={vi.fn()}
+        onCopyConnectionString={vi.fn()}
+        copiedConnectionString={false}
+        onToast={onToast}
+        onOpenLogs={vi.fn()}
+        onAppServiceUpdated={onAppServiceUpdated}
+      />
+    )
+
+    const dialog = screen.getByRole("dialog")
+    await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
+    expect(within(dialog).getByText("sha256:0123456789abcdef")).toBeInTheDocument()
+    const toggle = within(dialog).getByRole("checkbox", {
+      name: "Auto deploy new Knotree Registry images",
+    })
+    await user.click(toggle)
+    await waitFor(() => {
+      expect(mocks.updateAppServiceAutoDeploy).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "test-2",
+        "app-resource-id",
+        { enabled: true }
+      )
+    })
+
+    await user.type(
+      within(dialog).getByLabelText("Replace pull token"),
+      "replacement-pull-pat"
+    )
+    await user.click(within(dialog).getByRole("button", { name: "Update token" }))
+    await waitFor(() => {
+      expect(mocks.updateKnotreeRegistryConnection).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "test-2",
+        "registry-connection-1",
+        "replacement-pull-pat"
+      )
+    })
+    expect(within(dialog).getByLabelText("Replace pull token")).toHaveValue("")
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Disconnect Knotree Registry" })
+    )
+    await waitFor(() => {
+      expect(mocks.deleteKnotreeRegistryConnection).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "test-2",
+        "registry-connection-1"
+      )
+      expect(mocks.listAppServices).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "test-2"
+      )
+    })
+    expect(onAppServiceUpdated).toHaveBeenCalledWith(disconnectedService)
+    expect(onToast).toHaveBeenCalledWith(
+      "Cloud connection removed. Revoke the PAT in Knotree Registry too if you no longer need it. The running service stays up; future Cloud pulls and auto-deploys are stopped."
     )
   })
 

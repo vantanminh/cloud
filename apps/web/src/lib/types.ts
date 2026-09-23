@@ -69,7 +69,8 @@ export type AppService = {
   resourceType: "app"
   status: AppServiceStatus
   image: string
-  imageSource: "public" | "github" | "html" | "html_github"
+  imageSource: "public" | "github" | "html" | "html_github" | "knotree_registry"
+  registryConnectionId?: string | null
   appPort: number
   htmlRepo?: string | null
   htmlBranch?: string | null
@@ -112,6 +113,19 @@ export type RedisResource = {
 export type GithubConnectionStatus = {
   connected: boolean
   login: string | null
+}
+
+export type KnotreeRegistryConnection = {
+  id: string
+  registryHost: string
+  username: string
+  repository: string
+  verifiedAt: string
+}
+
+export type KnotreeRegistryConnectionList = {
+  connections: KnotreeRegistryConnection[]
+  autoDeployReady: boolean
 }
 
 export type DatabaseTable = {

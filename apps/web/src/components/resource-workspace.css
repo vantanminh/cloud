@@ -2099,6 +2099,39 @@
   font-size: 12px;
 }
 
+.resource-workspace-registry-connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.resource-workspace-registry-connection-actions form {
+  display: grid;
+  flex: 1 1 360px;
+  gap: 6px;
+  color: var(--project-muted);
+  font-size: 13px;
+}
+
+.resource-workspace-registry-connection-actions form > div {
+  display: flex;
+  gap: 8px;
+}
+
+.resource-workspace-registry-connection-actions small {
+  color: var(--project-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .resource-workspace-registry-connection-actions form > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .resource-workspace-attachment-field {
   display: grid;
   max-width: 420px;

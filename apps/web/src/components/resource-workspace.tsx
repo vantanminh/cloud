@@ -34,19 +34,23 @@ import {
 } from "@/components/html-page-workspace"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { ApiError } from "@/lib/api"
 import {
   createDatabaseTable,
   executeDatabaseQuery,
+  deleteKnotreeRegistryConnection,
   getAppServiceMetrics,
   getDatabaseConfig,
   getDatabaseMetrics,
   getDatabaseStats,
   getDatabaseTableData,
   listDatabaseTables,
+  listAppServices,
   listPostgresResources,
   retryPostgresResource,
+  updateKnotreeRegistryConnection,
   updateAppService,
   updateAppServiceAutoDeploy,
   updateAppServiceDatabase,
@@ -2678,8 +2682,12 @@ function AutoDeployEditor({
   const isGithubImage =
     appService.imageSource === "github" ||
     appService.imageSource === "html_github"
+  const isKnotreeRegistryImage = appService.imageSource === "knotree_registry"
   const [enabled, setEnabled] = useState(appService.autoDeployEnabled ?? false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [isRotatingToken, setIsRotatingToken] = useState(false)
+  const [replacementRegistryToken, setReplacementRegistryToken] = useState("")
   const [error, setError] = useState<string | null>(null)
   const isBusy = isSaving || appService.status === "provisioning"
 
@@ -2698,13 +2706,17 @@ function AutoDeployEditor({
       setEnabled(resource.autoDeployEnabled ?? nextEnabled)
       onAppServiceUpdated?.(resource)
       onToast(
-        nextEnabled
-          ? appService.imageSource === "html_github"
-            ? "Automatic GitHub HTML deploys enabled."
-            : "Automatic GitHub image deploys enabled."
-          : appService.imageSource === "html_github"
-            ? "Automatic GitHub HTML deploys disabled."
-            : "Automatic GitHub image deploys disabled."
+        isKnotreeRegistryImage
+          ? nextEnabled
+            ? "Automatic Knotree Registry deploys enabled."
+            : "Automatic Knotree Registry deploys disabled."
+          : nextEnabled
+            ? appService.imageSource === "html_github"
+              ? "Automatic GitHub HTML deploys enabled."
+              : "Automatic GitHub image deploys enabled."
+            : appService.imageSource === "html_github"
+              ? "Automatic GitHub HTML deploys disabled."
+              : "Automatic GitHub image deploys disabled."
       )
     } catch (caught) {
       setEnabled(appService.autoDeployEnabled ?? false)
@@ -2718,6 +2730,60 @@ function AutoDeployEditor({
     }
   }
 
+  async function disconnectRegistry() {
+    const connectionId = appService.registryConnectionId
+    if (!connectionId) return
+    setIsDisconnecting(true)
+    setError(null)
+    try {
+      await deleteKnotreeRegistryConnection(
+        workspaceId,
+        projectSlug,
+        connectionId
+      )
+      const services = await listAppServices(workspaceId, projectSlug)
+      const updated = services.find((service) => service.id === appService.id)
+      if (updated) onAppServiceUpdated?.(updated)
+      onToast(
+        "Cloud connection removed. Revoke the PAT in Knotree Registry too if you no longer need it. The running service stays up; future Cloud pulls and auto-deploys are stopped."
+      )
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "The Knotree Registry connection could not be disconnected."
+      )
+    } finally {
+      setIsDisconnecting(false)
+    }
+  }
+
+  async function rotateRegistryToken(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const connectionId = appService.registryConnectionId
+    if (!connectionId || !replacementRegistryToken.trim()) return
+    setIsRotatingToken(true)
+    setError(null)
+    try {
+      await updateKnotreeRegistryConnection(
+        workspaceId,
+        projectSlug,
+        connectionId,
+        replacementRegistryToken.trim()
+      )
+      setReplacementRegistryToken("")
+      onToast("Knotree Registry token updated for this project connection.")
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "The Knotree Registry token could not be updated."
+      )
+    } finally {
+      setIsRotatingToken(false)
+    }
+  }
+
   return (
     <div className="resource-workspace-auto-deploy">
       <div className="resource-workspace-auto-deploy-row">
@@ -2728,23 +2794,33 @@ function AutoDeployEditor({
               : "Deploy new image digests"}
           </strong>
           <p className="resource-workspace-muted">
-            {isGithubImage
+            {isKnotreeRegistryImage
+              ? appService.registryConnectionId
+                ? "Knotree Registry sends signed tag updates. Cloud deploys the exact new digest for this configured repository and tag."
+                : "Registry access has been disconnected. The current service continues running, but it cannot pull new images until you create a service with a new connection."
+              : isGithubImage
               ? appService.imageSource === "html_github"
                 ? "Knotree checks the GitHub HTML repo every minute and redeploys when a new commit is pushed."
                 : "Knotree checks this GHCR tag every minute and redeploys only when the image changes."
-              : "Automatic deploys are available for GitHub images and HTML repositories."}
+              : "Automatic deploys are available for GitHub and Knotree Registry images."}
           </p>
         </div>
         <label className="resource-workspace-auto-deploy-toggle">
           <input
             type="checkbox"
             aria-label={
-              appService.imageSource === "html_github"
+              isKnotreeRegistryImage
+                ? "Auto deploy new Knotree Registry images"
+                : appService.imageSource === "html_github"
                 ? "Auto deploy new GitHub HTML commits"
                 : "Auto deploy new GitHub images"
             }
             checked={enabled}
-            disabled={!isGithubImage || isBusy}
+            disabled={
+              (!isGithubImage &&
+                !(isKnotreeRegistryImage && Boolean(appService.registryConnectionId))) ||
+              isBusy
+            }
             onChange={(event) => void handleChange(event)}
           />
           <span>{isSaving ? "Saving…" : enabled ? "Enabled" : "Disabled"}</span>
@@ -2758,9 +2834,23 @@ function AutoDeployEditor({
               ? "GitHub HTML repository"
               : isGithubImage
                 ? "GitHub Container Registry"
-                : "Docker registry"}
+                : isKnotreeRegistryImage
+                  ? "Knotree Registry"
+                  : "Docker registry"}
           </dd>
         </div>
+        {isKnotreeRegistryImage ? (
+          <div>
+            <dt>Connection</dt>
+            <dd>{appService.registryConnectionId ? "Connected" : "Disconnected"}</dd>
+          </div>
+        ) : null}
+        {isKnotreeRegistryImage ? (
+          <div>
+            <dt>Configured image</dt>
+            <dd><code>{appService.image}</code></dd>
+          </div>
+        ) : null}
         <div>
           <dt>Deployed digest</dt>
           <dd>
@@ -2768,7 +2858,7 @@ function AutoDeployEditor({
           </dd>
         </div>
         <div>
-          <dt>Last check</dt>
+          <dt>{isKnotreeRegistryImage ? "Last Registry event" : "Last check"}</dt>
           <dd>
             {appService.autoDeployCheckedAt
               ? new Date(appService.autoDeployCheckedAt).toLocaleString()
@@ -2776,6 +2866,53 @@ function AutoDeployEditor({
           </dd>
         </div>
       </dl>
+      {isKnotreeRegistryImage && appService.registryConnectionId ? (
+        <div className="resource-workspace-registry-connection-actions">
+          <form onSubmit={rotateRegistryToken}>
+            <label htmlFor="replacementRegistryToken">Replace pull token</label>
+            <div>
+              <Input
+                id="replacementRegistryToken"
+                type="password"
+                autoComplete="new-password"
+                value={replacementRegistryToken}
+                onChange={(event) =>
+                  setReplacementRegistryToken(event.target.value)
+                }
+                placeholder="Paste a new pull-only token"
+              />
+              <Button
+                type="submit"
+                variant="outline"
+                size="sm"
+                disabled={
+                  isRotatingToken ||
+                  isBusy ||
+                  replacementRegistryToken.trim().length === 0
+                }
+              >
+                {isRotatingToken ? <Spinner data-icon="inline-start" /> : null}
+                {isRotatingToken ? "Updating…" : "Update token"}
+              </Button>
+            </div>
+            <small>
+              The replacement is verified for this repository and remains
+              encrypted. Disconnecting removes Cloud&apos;s saved connection;
+              revoke the PAT in Knotree Registry separately if needed.
+            </small>
+          </form>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={isDisconnecting || isRotatingToken || isBusy}
+            onClick={() => void disconnectRegistry()}
+          >
+            {isDisconnecting ? <Spinner data-icon="inline-start" /> : null}
+            {isDisconnecting ? "Disconnecting…" : "Disconnect Knotree Registry"}
+          </Button>
+        </div>
+      ) : null}
       {appService.autoDeployError ? (
         <p className="resource-workspace-app-port-error" role="alert">
           {appService.autoDeployError}
@@ -3155,15 +3292,18 @@ function SettingsPane({
     },
     ...(appService &&
     (appService.imageSource === "github" ||
-      appService.imageSource === "html_github")
+      appService.imageSource === "html_github" ||
+      appService.imageSource === "knotree_registry")
       ? [
           {
             id: "auto-deploy",
             title: "Auto updates",
             description:
-              appService.imageSource === "html_github"
-                ? "Watch the connected GitHub HTML repository and deploy when a new commit is pushed."
-                : "Watch the GitHub Container Registry tag and queue a deployment when its image digest changes.",
+              appService.imageSource === "knotree_registry"
+                ? "Watch the connected Knotree Registry tag and queue a deployment when a signed event publishes a new image digest."
+                : appService.imageSource === "html_github"
+                  ? "Watch the connected GitHub HTML repository and deploy when a new commit is pushed."
+                  : "Watch the GitHub Container Registry tag and queue a deployment when its image digest changes.",
             rows: [
               ["Image", appService.image],
               [

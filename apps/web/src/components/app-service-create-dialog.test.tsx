@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -6,6 +6,8 @@ import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 
 const mocks = vi.hoisted(() => ({
   createAppService: vi.fn(),
+  createKnotreeRegistryConnection: vi.fn(),
+  listKnotreeRegistryConnections: vi.fn(),
   getGithubConnectionStatus: vi.fn(),
   getGithubAuthorizationUrl: vi.fn(),
   listAppServices: vi.fn(),
@@ -13,9 +15,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/resources", () => ({
   createAppService: mocks.createAppService,
+  createKnotreeRegistryConnection: mocks.createKnotreeRegistryConnection,
   getGithubConnectionStatus: mocks.getGithubConnectionStatus,
   getGithubAuthorizationUrl: mocks.getGithubAuthorizationUrl,
   listAppServices: mocks.listAppServices,
+  listKnotreeRegistryConnections: mocks.listKnotreeRegistryConnections,
   appServiceDeploymentEventsUrl: () => "/events",
 }))
 
@@ -137,6 +141,78 @@ describe("AppServiceCreateDialog HTML pages", () => {
       githubRepo: "acme/site",
       githubBranch: undefined,
       autoDeploy: true,
+    })
+  })
+
+  it("connects a pull-only Knotree Registry token before creating a service", async () => {
+    const user = userEvent.setup()
+    mocks.listKnotreeRegistryConnections.mockResolvedValue({
+      connections: [],
+      autoDeployReady: false,
+    })
+    mocks.createKnotreeRegistryConnection.mockResolvedValue({
+      id: "registry-connection-1",
+      registryHost: "registry.knotree.com",
+      username: "service-user",
+      repository: "team/api",
+      verifiedAt: "2026-09-23T09:00:00Z",
+    })
+
+    render(
+      <AppServiceCreateDialog
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
+        projectSlug="proj"
+        open
+        onOpenChange={vi.fn()}
+        onCreated={vi.fn()}
+      />
+    )
+
+    await user.type(
+      screen.getByLabelText("Docker image"),
+      "registry.knotree.com/team/api:production"
+    )
+    await user.selectOptions(
+      screen.getByLabelText("Image access"),
+      "knotree_registry"
+    )
+    await waitFor(() => {
+      expect(mocks.listKnotreeRegistryConnections).toHaveBeenCalled()
+    })
+    expect(
+      screen.getByRole("checkbox", { name: /Auto-deploy new image digests/ })
+    ).toBeDisabled()
+    await user.type(screen.getByLabelText("Registry username"), "service-user")
+    await user.type(screen.getByLabelText("Pull-only access token"), "pull-pat")
+    expect(
+      screen.getByText("repository:team/api:pull", { exact: false })
+    ).toBeInTheDocument()
+    await user.click(
+      screen.getByRole("button", { name: "Connect Knotree Registry & deploy" })
+    )
+
+    await waitFor(() => {
+      expect(mocks.createKnotreeRegistryConnection).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "proj",
+        {
+          username: "service-user",
+          token: "pull-pat",
+          repository: "team/api",
+        }
+      )
+      expect(mocks.createAppService).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "proj",
+        {
+          name: "App service",
+          image: "registry.knotree.com/team/api:production",
+          imageSource: "knotree_registry",
+          appPort: 3000,
+          registryConnectionId: "registry-connection-1",
+          autoDeploy: false,
+        }
+      )
     })
   })
 })
