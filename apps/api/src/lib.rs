@@ -7,8 +7,8 @@ pub mod database;
 pub mod error;
 pub mod github;
 pub mod html_pages;
-pub mod kong;
 pub mod knotree_registry;
+pub mod kong;
 pub mod limits;
 pub mod mcp;
 pub mod metrics;
@@ -18,6 +18,7 @@ pub mod public_access;
 pub mod redis_resources;
 pub mod resources;
 pub mod security;
+pub mod sso;
 pub mod state;
 pub mod workspaces;
 
@@ -43,6 +44,9 @@ struct HealthResponse {
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
+        .route("/auth/sso/config", get(sso::configuration))
+        .route("/auth/sso/start", get(sso::start))
+        .route("/auth/sso/callback", get(sso::callback))
         .route("/auth/csrf", get(auth::csrf))
         .route("/auth/me", get(auth::me))
         .route("/auth/register", post(auth::register))
@@ -202,7 +206,9 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             app_services::public_domain_router,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+            tracing::info_span!("http", method = %request.method(), path = request.uri().path())
+        }))
         .layer(state.config.cors_layer())
         // Outer so page-* origins can POST analytics without opening credentialed dashboard CORS.
         .layer(middleware::from_fn(html_pages::public_cors))

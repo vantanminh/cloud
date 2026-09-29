@@ -15,6 +15,7 @@ const DEFAULT_APP_SERVICE_PUBLIC_DOMAIN: &str = "knotree.org";
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub sso: Option<crate::sso::SsoConfig>,
     pub database_url: String,
     pub bind_addr: SocketAddr,
     pub app_env: String,
@@ -228,6 +229,7 @@ impl Config {
             .unwrap_or_else(|| crate::html_pages::HTML_NGINX_IMAGE.to_owned());
 
         Ok(Self {
+            sso: crate::sso::SsoConfig::from_env(&app_env)?,
             database_url,
             bind_addr,
             cookie_secure: env_bool("COOKIE_SECURE", app_env == "production")?,
@@ -546,6 +548,7 @@ impl Config {
 impl Config {
     pub fn test_fixture() -> Self {
         Self {
+            sso: None,
             database_url: "postgres://postgres:postgres@localhost:5432/knotree_cloud".to_owned(),
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             app_env: "test".to_owned(),

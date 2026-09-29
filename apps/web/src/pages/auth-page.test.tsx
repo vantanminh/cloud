@@ -33,15 +33,27 @@ const mocks = vi.hoisted(() => {
 vi.mock("@/lib/api", () => ({
   ApiError: mocks.MockApiError,
   apiRequest: mocks.apiRequest,
+  apiUrl: (path: string) => `http://localhost:8080/api/v1${path}`,
   getCsrfToken: mocks.getCsrfToken,
   resetCsrfToken: mocks.resetCsrfToken,
 }))
 
 describe("AuthPage", () => {
+  it("offers central sign-in when configured", async () => {
+    const original = mocks.apiRequest.getMockImplementation()!
+    mocks.apiRequest.mockImplementation((path: string, options?: { method?: string }) =>
+      path === "/auth/sso/config" ? Promise.resolve({ enabled: true }) : original(path, options)
+    )
+    render(<MemoryRouter><AuthProvider><AuthPage mode="login" /></AuthProvider></MemoryRouter>)
+    const link = await screen.findByRole("link", { name: "Continue with Knotree" })
+    expect(link).toHaveAttribute("href", "http://localhost:8080/api/v1/auth/sso/start")
+  })
+
   beforeEach(() => {
     mocks.getCsrfToken.mockResolvedValue("csrf-token")
     mocks.apiRequest.mockImplementation(
       (path: string, options?: { method?: string }) => {
+        if (path === "/auth/sso/config") return Promise.resolve({ enabled: false })
         if (path === "/auth/me") {
           return Promise.reject(
             new mocks.MockApiError(

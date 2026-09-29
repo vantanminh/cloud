@@ -90,6 +90,11 @@ env:
   appEnv: production
   corsAllowedOrigins: https://cloud.knotree.com
   cookieSecure: "true"
+  ssoEnabled: "false"
+  ssoIssuer: https://accounts.knotree.com
+  ssoClientId: knotree-cloud
+  ssoRedirectUri: https://cloud.knotree.com/api/v1/auth/sso/callback
+  ssoFrontendUrl: https://cloud.knotree.com
   authRequireEmailVerification: "true"
   sessionTtlDays: "30"
   databaseMaxConnections: "10"

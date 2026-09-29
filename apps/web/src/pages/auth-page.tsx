@@ -1,11 +1,11 @@
-import { useState, type FormEvent } from "react"
+import { useEffect, useState, type FormEvent } from "react"
 import { Link, useNavigate } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { AuthShell } from "@/components/auth-shell"
 import { PasswordField } from "@/components/password-field"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Field,
   FieldError,
@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
-import { ApiError } from "@/lib/api"
+import { ApiError, apiRequest, apiUrl } from "@/lib/api"
 import type { AuthResponse } from "@/lib/types"
 
 type AuthMode = "login" | "register"
@@ -29,6 +29,16 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [errors, setErrors] = useState<FormErrors>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const [ssoEnabled, setSsoEnabled] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    apiRequest<{ enabled: boolean }>("/auth/sso/config")
+      .then((config) => { if (active) setSsoEnabled(config.enabled === true) })
+      .catch(() => { if (active) setSsoEnabled(false) })
+    return () => { active = false }
+  }, [])
 
   const isRegister = mode === "register"
 
@@ -72,6 +82,15 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
               : "Sign in to your workspace"}
           </p>
         </div>
+
+        {ssoEnabled && (
+          <a
+            href={apiUrl("/auth/sso/start")}
+            className={buttonVariants({ variant: "outline", size: "lg", className: "w-full" })}
+          >
+            Continue with Knotree
+          </a>
+        )}
 
         {submitError && (
           <Alert variant="destructive">

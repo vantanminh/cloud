@@ -294,7 +294,7 @@ async fn fetch_workspace(
     }))
 }
 
-async fn insert_session(
+pub(crate) async fn insert_session(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     state: &AppState,
@@ -373,7 +373,7 @@ fn validate_identity(
     }
 }
 
-fn validate_email(email: &str) -> Result<String, &'static str> {
+pub(crate) fn validate_email(email: &str) -> Result<String, &'static str> {
     let normalized = email.trim().to_lowercase();
     let Some((local, domain)) = normalized.split_once('@') else {
         return Err("Enter a valid email address.");

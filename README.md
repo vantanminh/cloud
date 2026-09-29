@@ -231,3 +231,22 @@ Use `deploy/helm/knotree-api/values-dev.yaml` with local or non-TLS clusters;
 it keeps email verification disabled and provisions project databases through
 the Kubernetes provider. For host-local development, use the `.env` Docker
 settings above instead of running the API inside Kubernetes.
+
+## Knotree Accounts sign-in
+
+Configure `SSO_ENABLED=true`, `SSO_ISSUER` (the trusted Accounts HTTPS
+origin), `SSO_CLIENT_ID=knotree-cloud`, `SSO_REDIRECT_URI` and
+`SSO_FRONTEND_URL` after Accounts is deployed. Register the exact callback
+`https://cloud.knotree.com/api/v1/auth/sso/callback` on the Accounts public
+OAuth client. The Helm chart exposes corresponding `env.sso*` settings.
+Until enabled, the existing password sign-in remains available.
+
+The login screen shows **Continue with Knotree** when the API reports SSO
+configured. The API uses authorization code and S256 PKCE, a short-lived
+browser-bound state, and the trusted Accounts userinfo endpoint to create a
+Cloud session. Access tokens are used only during sign-in. Cloud maps users
+by issuer and subject, requires verified email, and never silently attaches
+an existing account based on email. A collision requires an explicit account
+linking flow (not yet implemented). New SSO users cannot log in using a Cloud
+password. This integration is not enabled in production until Accounts and
+its exact OAuth callback registration are ready.
