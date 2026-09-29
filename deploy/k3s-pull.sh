@@ -9,22 +9,17 @@ NS=knotree-cloud
 RELEASE=knotree-cloud
 
 export PATH="/usr/local/bin:/usr/bin:$PATH"
+export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 cd "$ROOT"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n "$NS" delete limitrange --all --ignore-not-found
-kubectl -n "$NS" delete pod --field-selector=status.phase=Pending --ignore-not-found || true
-if [ -n "${GHCR_TOKEN:-}" ]; then
-  kubectl -n "$NS" create secret docker-registry ghcr-cred \
-    --docker-server=ghcr.io \
-    --docker-username="${GHCR_USERNAME:-vantanminh}" \
-    --docker-password="${GHCR_TOKEN}" \
-    --dry-run=client -o yaml | kubectl apply -f -
-elif kubectl -n knotree-system get secret ghcr-cred >/dev/null 2>&1; then
-  kubectl get secret ghcr-cred -n knotree-system -o json \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"ghcr-cred","namespace":"knotree-cloud"}; d.pop("resourceVersion",None); d.pop("uid",None); d.pop("creationTimestamp",None); print(json.dumps(d))' \
-    | kubectl apply -f -
-fi
+# Copy a durable read-only pull credential. A workflow GITHUB_TOKEN expires
+# after the run and cannot authenticate later rescheduling on this node.
+PULL_SECRET_NAMESPACE="${PULL_SECRET_NAMESPACE:-knotree}"
+PULL_SECRET_NAME="${PULL_SECRET_NAME:-registry-credentials}"
+kubectl -n "$PULL_SECRET_NAMESPACE" get secret "$PULL_SECRET_NAME" -o json \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("type")=="kubernetes.io/dockerconfigjson"; assert ".dockerconfigjson" in d.get("data",{}); d["metadata"]={"name":"ghcr-cred","namespace":"knotree-cloud"}; d.pop("immutable",None); print(json.dumps(d))' \
+  | kubectl apply -f -
 if kubectl -n knotree-system get secret knotree-landing-tls >/dev/null 2>&1; then
   kubectl get secret knotree-landing-tls -n knotree-system -o json \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); d["metadata"]={"name":"knotree-landing-tls","namespace":"knotree-cloud"}; d.pop("resourceVersion",None); d.pop("uid",None); d.pop("creationTimestamp",None); print(json.dumps(d))' \

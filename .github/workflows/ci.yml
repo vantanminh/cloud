@@ -115,20 +115,18 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
           ssh-keyscan -H "$SSH_HOST" >> "$HOME/.ssh/known_hosts"
-          ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes "${SSH_USER}@${SSH_HOST}" \
+          ssh -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${SSH_USER}@${SSH_HOST}" \
             "export PATH=/usr/local/bin:/usr/bin:\$PATH
              cd /home/code/cloud
              git fetch origin
              git checkout -B main ${{ github.sha }}
              chmod +x deploy/k3s-pull.sh
-             GHCR_TOKEN=\"$GHCR_TOKEN\" GHCR_USERNAME='${{ github.actor }}' \
-               KNOTREE_PROBE_DIR=/tmp/knotree-probes \
+             KNOTREE_PROBE_DIR=/tmp/knotree-probes \
                ./deploy/k3s-pull.sh ${{ github.sha }} ${API_IMAGE} ${WEB_IMAGE}"
           mkdir -p probes
           scp -i "$HOME/.ssh/id_ed25519" -o IdentitiesOnly=yes \
