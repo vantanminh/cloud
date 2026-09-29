@@ -106,6 +106,18 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+          {{- if .Values.runtime.enabled }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.runtime.configMap }}
+            - secretRef:
+                name: {{ .Values.secrets.existingSecret }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- else }}
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -236,6 +248,7 @@ spec:
                   optional: true
             - name: RUST_LOG
               value: {{ .Values.env.rustLog | quote }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz

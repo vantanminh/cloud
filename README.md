@@ -260,3 +260,7 @@ The request endpoint is `POST /api/v1/workspaces/{workspace_id}/projects/{projec
 Migration `0020_registry_consent.sql` stores one-use attempts with a hashed state/session and encrypted verifier, and adds delegated credential ID/expiry metadata. Deploy Registry's matching consent endpoints first, then Cloud through GitHub CI. Requests/codes awaiting consent on Registry are ephemeral and expire after ten/two minutes respectively; a Registry restart requires starting consent again. No Registry token is minted before successful code exchange. Production API requests use the Cloud UI origin so host-only session cookies reach the callback; the CI bundle already sets this URL explicitly.
 
 This implementation is prepared locally; Registry/Cloud consent backend CI and live end-to-end validation remain required before claiming the flow works in production.
+
+### Production settings through GitHub Actions
+
+Production configuration is now managed exclusively by GitHub Actions. Follow [the CI configuration guide](deploy/ci/README.md) and its JSON examples; previous server bootstrap/secret-copy instructions are superseded. A missing required setting fails deploy preflight before production changes.

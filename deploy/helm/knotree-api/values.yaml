@@ -4,6 +4,7 @@ image:
   repository: ghcr.io/vantanminh/cloud/api
   pullPolicy: IfNotPresent
   tag: ""
+  digest: ""
 
 web:
   enabled: true
@@ -12,6 +13,7 @@ web:
     repository: ghcr.io/vantanminh/cloud/web
     pullPolicy: IfNotPresent
     tag: ""
+    digest: ""
   service:
     port: 8080
   ingress:
@@ -143,3 +145,8 @@ affinity: {}
 migrations:
   enabled: false
   backoffLimit: 4
+
+# Production CI always enables runtime envFrom; local chart use is separate.
+runtime:
+  enabled: false
+  configMap: knotree-cloud-runtime

@@ -1,0 +1,160 @@
+{
+  "namespace": "knotree-cloud",
+  "configmap": "knotree-cloud-runtime",
+  "runtime_secret": "knotree-api-secrets",
+  "pull_secret": "ghcr-cred",
+  "config": [
+    "APP_ENV",
+    "RUST_LOG",
+    "CORS_ALLOWED_ORIGINS",
+    "SSO_ENABLED",
+    "SSO_ISSUER",
+    "SSO_CLIENT_ID",
+    "SSO_REDIRECT_URI",
+    "SSO_FRONTEND_URL",
+    "COOKIE_SECURE",
+    "AUTH_REQUIRE_EMAIL_VERIFICATION",
+    "SESSION_TTL_DAYS",
+    "DATABASE_MAX_CONNECTIONS",
+    "DATABASE_PROVISIONING_ENABLED",
+    "DATABASE_RESOURCE_HOST",
+    "DATABASE_RESOURCE_PORT",
+    "DATABASE_RESOURCE_PUBLIC_HOST",
+    "DATABASE_RESOURCE_PUBLIC_PORT",
+    "DATABASE_CLUSTER_PROVIDER",
+    "DATABASE_CLUSTER_IMAGE",
+    "DATABASE_CLUSTER_NAMESPACE",
+    "DATABASE_CLUSTER_SERVICE_TYPE",
+    "DATABASE_CLUSTER_STORAGE_SIZE",
+    "DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS",
+    "DATABASE_QUERY_TIMEOUT_MS",
+    "DATABASE_QUERY_MAX_ROWS",
+    "APP_SERVICE_PROVISIONING_ENABLED",
+    "APP_SERVICE_PUBLIC_HOST",
+    "APP_SERVICE_PUBLIC_DOMAIN",
+    "APP_SERVICE_PUBLIC_SCHEME",
+    "APP_SERVICE_BIND_ADDRESS",
+    "GITHUB_OAUTH_REDIRECT_URI",
+    "MCP_PUBLIC_BASE_URL",
+    "MCP_ACCESS_TTL_SECONDS",
+    "MCP_REFRESH_TTL_SECONDS",
+    "REDIS_CLUSTER_IMAGE",
+    "APP_SERVICE_IMAGE_PULL_SECRET",
+    "APP_SERVICE_DEFAULT_RATE_LIMIT_RPM",
+    "HTML_SITE_DATA_DIR",
+    "HTML_NGINX_IMAGE",
+    "BIND_ADDR",
+    "KONG_ADMIN_URL",
+    "KONG_TRAFFIC_LOG_ENDPOINT",
+    "KNOTREE_DOCS_DIR",
+    "PUBLIC_UI_URL",
+    "PUBLIC_API_URL",
+    "VITE_API_BASE_URL",
+    "POSTGRES_USER",
+    "POSTGRES_DB",
+    "DATABASE_CLUSTER_DOCKER_BINARY",
+    "DATABASE_CLUSTER_BIND_ADDRESS"
+  ],
+  "secrets": [
+    "DATABASE_URL",
+    "POSTGRES_PASSWORD",
+    "DATABASE_CREDENTIALS_ENCRYPTION_KEY",
+    "KONG_TRAFFIC_LOG_TOKEN",
+    "KNOTREE_REGISTRY_WEBHOOK_SECRET",
+    "GHCR_USERNAME",
+    "GHCR_TOKEN"
+  ],
+  "optional_secrets": [
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET"
+  ],
+  "secret_groups": [
+    [
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET"
+    ]
+  ],
+  "allow_empty": [
+    "DATABASE_RESOURCE_HOST",
+    "DATABASE_RESOURCE_PUBLIC_HOST",
+    "DATABASE_RESOURCE_PUBLIC_PORT",
+    "APP_SERVICE_PUBLIC_HOST"
+  ],
+  "fixed": {
+    "APP_ENV": "production",
+    "COOKIE_SECURE": "true",
+    "SSO_ENABLED": "true",
+    "BIND_ADDR": "0.0.0.0:8080",
+    "DATABASE_CLUSTER_PROVIDER": "kubernetes",
+    "DATABASE_CLUSTER_NAMESPACE": "knotree-cloud"
+  },
+  "https": [
+    "PUBLIC_UI_URL",
+    "PUBLIC_API_URL",
+    "VITE_API_BASE_URL",
+    "SSO_ISSUER",
+    "SSO_REDIRECT_URI",
+    "SSO_FRONTEND_URL"
+  ],
+  "auxiliary_secrets": [
+    "GHCR_USERNAME",
+    "GHCR_TOKEN"
+  ],
+  "extra_secrets": [],
+  "preserve": {
+    "knotree-api-secrets": [
+      "DATABASE_URL",
+      "POSTGRES_PASSWORD",
+      "DATABASE_CREDENTIALS_ENCRYPTION_KEY"
+    ]
+  },
+  "helm_env": {
+    "APP_ENV": "appEnv",
+    "RUST_LOG": "rustLog",
+    "CORS_ALLOWED_ORIGINS": "corsAllowedOrigins",
+    "SSO_ENABLED": "ssoEnabled",
+    "SSO_ISSUER": "ssoIssuer",
+    "SSO_CLIENT_ID": "ssoClientId",
+    "SSO_REDIRECT_URI": "ssoRedirectUri",
+    "SSO_FRONTEND_URL": "ssoFrontendUrl",
+    "COOKIE_SECURE": "cookieSecure",
+    "AUTH_REQUIRE_EMAIL_VERIFICATION": "authRequireEmailVerification",
+    "SESSION_TTL_DAYS": "sessionTtlDays",
+    "DATABASE_MAX_CONNECTIONS": "databaseMaxConnections",
+    "DATABASE_PROVISIONING_ENABLED": "databaseProvisioningEnabled",
+    "DATABASE_RESOURCE_HOST": "databaseResourceHost",
+    "DATABASE_RESOURCE_PORT": "databaseResourcePort",
+    "DATABASE_RESOURCE_PUBLIC_HOST": "databaseResourcePublicHost",
+    "DATABASE_RESOURCE_PUBLIC_PORT": "databaseResourcePublicPort",
+    "DATABASE_CLUSTER_PROVIDER": "databaseClusterProvider",
+    "DATABASE_CLUSTER_IMAGE": "databaseClusterImage",
+    "DATABASE_CLUSTER_NAMESPACE": "databaseClusterNamespace",
+    "DATABASE_CLUSTER_SERVICE_TYPE": "databaseClusterServiceType",
+    "DATABASE_CLUSTER_STORAGE_SIZE": "databaseClusterStorageSize",
+    "DATABASE_CLUSTER_STARTUP_TIMEOUT_SECONDS": "databaseClusterStartupTimeoutSeconds",
+    "DATABASE_QUERY_TIMEOUT_MS": "databaseQueryTimeoutMs",
+    "DATABASE_QUERY_MAX_ROWS": "databaseQueryMaxRows",
+    "APP_SERVICE_PROVISIONING_ENABLED": "appServiceProvisioningEnabled",
+    "APP_SERVICE_PUBLIC_HOST": "appServicePublicHost",
+    "APP_SERVICE_PUBLIC_DOMAIN": "appServicePublicDomain",
+    "APP_SERVICE_PUBLIC_SCHEME": "appServicePublicScheme",
+    "APP_SERVICE_BIND_ADDRESS": "appServiceBindAddress",
+    "GITHUB_OAUTH_REDIRECT_URI": "githubOAuthRedirectUri",
+    "MCP_PUBLIC_BASE_URL": "mcpPublicBaseUrl",
+    "MCP_ACCESS_TTL_SECONDS": "mcpAccessTtlSeconds",
+    "MCP_REFRESH_TTL_SECONDS": "mcpRefreshTtlSeconds",
+    "REDIS_CLUSTER_IMAGE": "redisClusterImage",
+    "APP_SERVICE_IMAGE_PULL_SECRET": "appServiceImagePullSecret",
+    "APP_SERVICE_DEFAULT_RATE_LIMIT_RPM": "appServiceDefaultRateLimitRpm",
+    "HTML_SITE_DATA_DIR": "htmlSiteDataDir",
+    "HTML_NGINX_IMAGE": "htmlNginxImage",
+    "KONG_ADMIN_URL": "kongAdminUrl"
+  },
+  "min_length": {
+    "KNOTREE_REGISTRY_WEBHOOK_SECRET": 32,
+    "KONG_TRAFFIC_LOG_TOKEN": 32
+  },
+  "external_secrets": [
+    "KNOTREE_REGISTRY_WEBHOOK_SECRET"
+  ]
+}
