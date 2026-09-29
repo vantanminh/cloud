@@ -100,7 +100,7 @@
     "database": "POSTGRES_DB"
   },
   "preserve_statefulset_env": {
-    "name": "knotree-cloud-pg",
+    "name": "knotree-cloud-knotree-api-pg",
     "container": "postgres",
     "required": false,
     "values": {
