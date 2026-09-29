@@ -37,7 +37,7 @@ class DeploymentContractTests(unittest.TestCase):
         if not self.contract.get("external_secrets"):
             return
         supplied = {k: v for k, v in self.secrets.items() if k not in self.contract["external_secrets"]}
-        env = {"SSH_HOST": "example.com", "SSH_USER": "deploy", "SSH_PRIVATE_KEY": "test", "SSH_KNOWN_HOSTS": "test", "K8S_CONFIG_JSON": json.dumps(self.config), "K8S_SECRETS_JSON": json.dumps(supplied)}
+        env = {"KUBE_CONFIG": "server: https://15.235.210.66:6443\ntoken: test\n", "K8S_CONFIG_JSON": json.dumps(self.config), "K8S_SECRETS_JSON": json.dumps(supplied)}
         with patch.dict(os.environ, env, clear=True), patch("sys.argv", ["runtime.py", "prepare", "/tmp/must-not-be-created"]):
             with self.assertRaisesRegex(runtime.Invalid, "KNOTREE_REGISTRY_WEBHOOK_SECRET"):
                 runtime.main()

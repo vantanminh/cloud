@@ -123,7 +123,8 @@ def manifests(contract, config, secrets):
 
 
 def kube(args, data=None, absent=False):
-    result = subprocess.run(["k3s", "kubectl", *args], input=data, text=True, capture_output=True)
+    command = ["kubectl"] if os.environ.get("KUBECONFIG") else ["k3s", "kubectl"]
+    result = subprocess.run([*command, *args], input=data, text=True, capture_output=True)
     if result.returncode:
         # kubectl errors may embed submitted secret data. Never forward stderr.
         raise Invalid("Kubernetes operation failed (details withheld to protect secrets)")
@@ -182,12 +183,12 @@ def main():
     contract = json.loads(Path(__file__).with_name("contract.json").read_text())
     command = sys.argv[1]
     if command == "prepare":
-        missing = [k for k in ["SSH_HOST", "SSH_USER", "SSH_PRIVATE_KEY", "SSH_KNOWN_HOSTS", "K8S_CONFIG_JSON", "K8S_SECRETS_JSON", *contract.get("external_secrets", [])] if not os.environ.get(k, "").strip()]
+        missing = [k for k in ["KUBE_CONFIG", "K8S_CONFIG_JSON", "K8S_SECRETS_JSON", *contract.get("external_secrets", [])] if not os.environ.get(k, "").strip()]
         if missing:
             raise Invalid("Missing GitHub Actions Secrets/Variables: " + ", ".join(missing))
-        for key in ["SSH_HOST", "SSH_USER"]:
-            if not re.fullmatch(r"[A-Za-z0-9_.:-]+", os.environ[key]) or os.environ[key].startswith("-"):
-                raise Invalid("Invalid SSH setting: " + key)
+        kubeconfig = os.environ["KUBE_CONFIG"]
+        if "https://15.235.210.66:6443" not in kubeconfig or not any(marker in kubeconfig for marker in ("token:", "client-certificate-data:")):
+            raise Invalid("KUBE_CONFIG must target the production k3s API")
         supplied = decode(os.environ["K8S_SECRETS_JSON"], "K8S_SECRETS_JSON")
         for key in contract.get("external_secrets", []):
             if key in supplied:

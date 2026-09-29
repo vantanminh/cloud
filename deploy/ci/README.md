@@ -8,16 +8,13 @@ Set these under **Settings → Secrets and variables → Actions** (or organizat
 | --- | --- | --- |
 | Variable | `K8S_CONFIG_JSON` | Complete JSON from `deploy/ci/config.example.json`; all values are strings. Review domains and feature flags. |
 | Secret | `K8S_SECRETS_JSON` | Complete JSON from `deploy/ci/secrets.example.json`, with every required empty placeholder filled. |
-| Secret | `SSH_HOST` | VPS hostname/IP. |
-| Secret | `SSH_USER` | Deploy user with the required k3s access. |
-| Secret | `SSH_PRIVATE_KEY` | SSH private key. |
-| Secret | `SSH_KNOWN_HOSTS` | Pinned SSH host public key entry. |
+| Secret | `KUBE_CONFIG` | Production kubeconfig whose API server is `https://15.235.210.66:6443`. Same secret used by the other app workflows. |
 
 `GHCR_USERNAME` and `GHCR_TOKEN` inside the secret JSON must be persistent credentials with package read access; the short-lived Actions `GITHUB_TOKEN` is used to publish images only. They are not copied from another server namespace.
 
-`deploy/ci/contract.json` is the authoritative required/optional key list. Missing JSON, missing keys, blank required values, duplicate JSON keys, unknown keys, unsafe production settings and incomplete optional feature secret groups fail the **deploy-preflight** job before image publication or SSH. PR checks use synthetic fixtures and never require production secrets. The production workflow runs automatically on the default branch; Accounts no longer silently skips deploy when `K3S_DEPLOY_ENABLED` is unset.
+`deploy/ci/contract.json` is the authoritative required/optional key list. Missing JSON, missing keys, blank required values, duplicate JSON keys, unknown keys, unsafe production settings and incomplete optional feature secret groups fail the **deploy-preflight** job before image publication or any Kubernetes write. PR checks use synthetic fixtures and never require production secrets. The production workflow runs automatically on the default branch; Accounts no longer silently skips deploy when `K3S_DEPLOY_ENABLED` is unset.
 
-GitHub CI transfers configuration over pinned SSH stdin into a temporary directory, applies only the target namespace's ConfigMap/Secrets, and removes the temporary directory on exit. Values are never passed as shell command arguments, sourced, printed, or uploaded as artifacts. Runtime checksums trigger only the affected application rollout when configuration changes. The target workload's existing PVC/data is preserved.
+GitHub CI applies only the target namespace's ConfigMap/Secrets with kubectl and the `KUBE_CONFIG` secret, then removes the temporary kubeconfig on exit. Values are never passed as shell command arguments, sourced, printed, or uploaded as artifacts. Runtime checksums trigger only the affected application rollout when configuration changes. The target workload's existing PVC/data is preserved.
 
 For an existing installation, seed GitHub with the exact current database password/URL and encryption keys. The deploy compares protected live credentials before any Kubernetes write and fails if they differ; updating a Secret is not a PostgreSQL password rotation or data re-encryption. Use a separate reviewed rotation flow for these changes. The deploy never silently reuses server values when a GitHub value is missing.
 

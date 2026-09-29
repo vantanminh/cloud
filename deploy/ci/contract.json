@@ -83,7 +83,6 @@
   "fixed": {
     "APP_ENV": "production",
     "COOKIE_SECURE": "true",
-    "SSO_ENABLED": "true",
     "BIND_ADDR": "0.0.0.0:8080",
     "DATABASE_CLUSTER_PROVIDER": "kubernetes",
     "DATABASE_CLUSTER_NAMESPACE": "knotree-cloud"
