@@ -17,6 +17,7 @@ use crate::{auth, error::AppError, security, state::AppState};
 #[derive(Clone, Debug)]
 pub struct SsoConfig {
     pub issuer: String,
+    pub service_origin: String,
     pub client_id: String,
     pub redirect_uri: String,
     pub frontend_url: String,
@@ -29,9 +30,11 @@ impl SsoConfig {
             return Ok(None);
         }
         anyhow::ensure!(enabled == "true", "SSO_ENABLED must be true or false");
+        let issuer = std::env::var("SSO_ISSUER")
+            .unwrap_or_else(|_| "https://accounts.knotree.com".into());
         let config = Self {
-            issuer: std::env::var("SSO_ISSUER")
-                .unwrap_or_else(|_| "https://accounts.knotree.com".into()),
+            service_origin: accounts_service_origin(&issuer)?,
+            issuer,
             client_id: std::env::var("SSO_CLIENT_ID").unwrap_or_else(|_| "knotree-cloud".into()),
             redirect_uri: std::env::var("SSO_REDIRECT_URI")
                 .unwrap_or_else(|_| "https://cloud.knotree.com/api/v1/auth/sso/callback".into()),
@@ -70,6 +73,26 @@ impl SsoConfig {
         );
         Ok(())
     }
+}
+
+fn accounts_service_origin(issuer: &str) -> anyhow::Result<String> {
+    let value = std::env::var("SSO_SERVICE_ORIGIN").unwrap_or_default();
+    if value.is_empty() {
+        return Ok(issuer.to_string());
+    }
+    let url = Url::parse(&value)?;
+    anyhow::ensure!(
+        url.scheme() == "http"
+            && url.host_str() == Some("knotree-accounts.knotree-accounts.svc.cluster.local")
+            && url.port().unwrap_or(80) == 80
+            && matches!(url.path(), "" | "/")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "SSO_SERVICE_ORIGIN must be the in-cluster Accounts service"
+    );
+    Ok(value)
 }
 
 fn configured(state: &AppState) -> Result<&SsoConfig, AppError> {
@@ -188,7 +211,7 @@ pub async fn callback(
         .build()
         .map_err(|_| invalid_login())?;
     let tokens = client
-        .post(format!("{}/oauth/token", config.issuer))
+        .post(format!("{}/oauth/token", config.service_origin))
         .form(&[
             ("grant_type", "authorization_code"),
             ("client_id", &config.client_id),
@@ -206,7 +229,7 @@ pub async fn callback(
     // Identity comes from the pinned Accounts userinfo endpoint, which checks
     // the live access grant. Unvalidated ID-token claims are never trusted.
     let profile = client
-        .get(format!("{}/oauth/userinfo", config.issuer))
+        .get(format!("{}/oauth/userinfo", config.service_origin))
         .bearer_auth(&tokens.access_token)
         .send()
         .await
@@ -347,6 +370,7 @@ mod tests {
     fn configuration_rejects_insecure_or_ambiguous_endpoints() {
         let mut config = SsoConfig {
             issuer: "https://accounts.knotree.com".into(),
+            service_origin: "https://accounts.knotree.com".into(),
             client_id: "knotree-cloud".into(),
             redirect_uri: "https://cloud.knotree.com/api/v1/auth/sso/callback".into(),
             frontend_url: "https://cloud.knotree.com".into(),
@@ -417,6 +441,7 @@ mod tests {
         let Some(state) = crate::test_support::test_app_state_configured(|config| {
             config.sso = Some(SsoConfig {
                 issuer: issuer.clone(),
+                service_origin: issuer.clone(),
                 client_id: "knotree-cloud".into(),
                 redirect_uri: "http://localhost:8080/api/v1/auth/sso/callback".into(),
                 frontend_url: "http://localhost:5173".into(),
@@ -551,6 +576,7 @@ mod tests {
         let Some(state) = crate::test_support::test_app_state_configured(|config| {
             config.sso = Some(SsoConfig {
                 issuer: "https://accounts.knotree.com".into(),
+                service_origin: "https://accounts.knotree.com".into(),
                 client_id: "knotree-cloud".into(),
                 redirect_uri: "https://cloud.knotree.com/api/v1/auth/sso/callback".into(),
                 frontend_url: "https://cloud.knotree.com".into(),

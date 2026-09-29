@@ -305,6 +305,7 @@ mod tests {
         let Some(state) = test_app_state_configured(|config| {
             config.sso = Some(crate::sso::SsoConfig {
                 issuer: "https://accounts.knotree.com".into(),
+                service_origin: "https://accounts.knotree.com".into(),
                 client_id: CLIENT.into(),
                 redirect_uri: "https://cloud.knotree.com/api/v1/auth/sso/callback".into(),
                 frontend_url: "https://cloud.knotree.com".into(),
