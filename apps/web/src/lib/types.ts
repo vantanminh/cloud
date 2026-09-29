@@ -126,6 +126,7 @@ export type KnotreeRegistryConnection = {
 export type KnotreeRegistryConnectionList = {
   connections: KnotreeRegistryConnection[]
   autoDeployReady: boolean
+  consentReady?: boolean
 }
 
 export type DatabaseTable = {

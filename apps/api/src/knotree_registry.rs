@@ -47,6 +47,7 @@ struct RegistryConnectionResponse {
 struct RegistryConnectionListResponse {
     connections: Vec<RegistryConnectionResponse>,
     auto_deploy_ready: bool,
+    consent_ready: bool,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +115,7 @@ pub async fn list_connections(
         "SELECT id, registry_username, repository, verified_at
          FROM knotree_registry_connections
          WHERE project_id = $1 AND revoked_at IS NULL
+           AND (credential_expires_at IS NULL OR credential_expires_at > now())
          ORDER BY created_at DESC, id ASC",
     )
     .bind(project_id)
@@ -137,6 +139,7 @@ pub async fn list_connections(
     Ok(Json(RegistryConnectionListResponse {
         connections,
         auto_deploy_ready: state.config.knotree_registry_webhook_secret.is_some(),
+        consent_ready: state.config.sso.is_some(),
     }))
 }
 
@@ -259,7 +262,8 @@ pub async fn update_connection(
         security::encrypt_secret(token, &state.config.database_credentials_encryption_key)?;
     let row = sqlx::query_as::<_, RegistryConnectionRow>(
         "UPDATE knotree_registry_connections
-         SET credential_ciphertext = $1, verified_at = now(), updated_at = now()
+         SET credential_ciphertext = $1, verified_at = now(), updated_at = now(),
+             delegated_credential_id = NULL, credential_expires_at = NULL
          WHERE id = $2 AND project_id = $3 AND revoked_at IS NULL
          RETURNING id, registry_username, repository, verified_at",
     )
@@ -375,7 +379,8 @@ pub(crate) async fn load_credentials(
     let row = sqlx::query_as::<_, (String, String)>(
         "SELECT registry_username, credential_ciphertext
          FROM knotree_registry_connections
-         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL",
+         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
+           AND (credential_expires_at IS NULL OR credential_expires_at > now())",
     )
     .bind(connection_id)
     .bind(project_id)
@@ -445,7 +450,7 @@ pub(crate) fn digest_from_image_reference(image: &str) -> Option<String> {
         .then(|| digest.to_owned())
 }
 
-fn validate_registry_repository(value: &str) -> Result<String, AppError> {
+pub(crate) fn validate_registry_repository(value: &str) -> Result<String, AppError> {
     let repository = value.trim();
     if !is_valid_repository(repository) {
         return Err(validation_error(
@@ -456,7 +461,7 @@ fn validate_registry_repository(value: &str) -> Result<String, AppError> {
     Ok(repository.to_owned())
 }
 
-fn validate_registry_username(value: &str) -> Result<String, AppError> {
+pub(crate) fn validate_registry_username(value: &str) -> Result<String, AppError> {
     let username = value.trim();
     if username.is_empty()
         || username.len() > 128
@@ -499,7 +504,7 @@ fn is_valid_tag(tag: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
 }
 
-async fn verify_pull_access(username: &str, password: &str, repository: &str) -> bool {
+pub(crate) async fn verify_pull_access(username: &str, password: &str, repository: &str) -> bool {
     request_registry_bearer(username, password, repository)
         .await
         .is_some()
@@ -738,6 +743,7 @@ async fn persist_registry_event(
            AND status IN ('ready', 'provisioning')
            AND registry_connection_id IN (
                SELECT id FROM knotree_registry_connections WHERE revoked_at IS NULL
+                   AND (credential_expires_at IS NULL OR credential_expires_at > now())
            )",
     )
     .fetch_all(&mut *transaction)

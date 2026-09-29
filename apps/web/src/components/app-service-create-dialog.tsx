@@ -20,6 +20,7 @@ import {
   type CreateAppServiceInput,
   createAppService,
   createKnotreeRegistryConnection,
+  startKnotreeRegistryConsent,
   appServiceDeploymentEventsUrl,
   listKnotreeRegistryConnections,
   getGithubAuthorizationUrl,
@@ -87,6 +88,8 @@ export function AppServiceCreateDialog({
   const [registryConnectionChoice, setRegistryConnectionChoice] = useState(
     NEW_REGISTRY_CONNECTION
   )
+  const [registryConsentReady, setRegistryConsentReady] = useState(false)
+  const [registryConsentBusy, setRegistryConsentBusy] = useState(false)
   const [registryAutoDeployReady, setRegistryAutoDeployReady] = useState(false)
   const [registryAutoDeploy, setRegistryAutoDeploy] = useState(false)
   const [registryConnectionsProjectKey, setRegistryConnectionsProjectKey] =
@@ -107,7 +110,9 @@ export function AppServiceCreateDialog({
   const registryStatusLoading =
     needsKnotreeRegistry && registryConnectionsProjectKey !== registryProjectKey
   const currentRegistryConnections =
-    registryConnectionsProjectKey === registryProjectKey ? registryConnections : []
+    registryConnectionsProjectKey === registryProjectKey
+      ? registryConnections
+      : []
   const registryRepository = needsKnotreeRegistry
     ? registryRepositoryFromImage(image)
     : ""
@@ -162,6 +167,7 @@ export function AppServiceCreateDialog({
       .then((result) => {
         if (active) {
           setRegistryConnections(result.connections)
+          setRegistryConsentReady(result.consentReady === true)
           setRegistryAutoDeployReady(result.autoDeployReady)
           if (!result.autoDeployReady) setRegistryAutoDeploy(false)
           setRegistryConnectionsProjectKey(registryProjectKey)
@@ -171,6 +177,7 @@ export function AppServiceCreateDialog({
       .catch(() => {
         if (active) {
           setRegistryConnections([])
+          setRegistryConsentReady(false)
           setRegistryStatusError(
             "Saved Registry connections could not be loaded. You can still connect a new repository."
           )
@@ -277,7 +284,11 @@ export function AppServiceCreateDialog({
         nextErrors.image = "Paste a Docker image reference."
       }
       const parsedPort = Number(appPort)
-      if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      if (
+        !Number.isInteger(parsedPort) ||
+        parsedPort < 1 ||
+        parsedPort > 65535
+      ) {
         nextErrors.appPort = "Use a container port between 1 and 65535."
       }
       if (needsKnotreeRegistry) {
@@ -320,10 +331,16 @@ export function AppServiceCreateDialog({
       return
     }
     if (needsGithub && !githubStatus?.connected) {
-      setSubmitError("Connect GitHub before deploying from a GitHub repository.")
+      setSubmitError(
+        "Connect GitHub before deploying from a GitHub repository."
+      )
       return
     }
-    if (needsKnotreeRegistry && registryAutoDeploy && !registryAutoDeployReady) {
+    if (
+      needsKnotreeRegistry &&
+      registryAutoDeploy &&
+      !registryAutoDeployReady
+    ) {
       setSubmitError(
         "Automatic Registry deploys are not configured on this Cloud installation yet."
       )
@@ -337,14 +354,15 @@ export function AppServiceCreateDialog({
     setIsSubmitting(true)
     setStreamError(null)
     try {
-      let dockerInput: CreateAppServiceInput | undefined = kind === "docker"
-        ? {
-            name: name.trim(),
-            image: image.trim(),
-            imageSource,
-            appPort: Number(appPort),
-          }
-        : undefined
+      let dockerInput: CreateAppServiceInput | undefined =
+        kind === "docker"
+          ? {
+              name: name.trim(),
+              image: image.trim(),
+              imageSource,
+              appPort: Number(appPort),
+            }
+          : undefined
       if (needsKnotreeRegistry) {
         let registryConnectionId = registryChoice
         if (registryChoice === NEW_REGISTRY_CONNECTION) {
@@ -379,7 +397,8 @@ export function AppServiceCreateDialog({
               imageSource: htmlSource === "github" ? "html_github" : "html",
               pageSlug: htmlPageSlug(pageSlug || name),
               indexHtml: htmlSource === "paste" ? indexHtml : undefined,
-              githubRepo: htmlSource === "github" ? githubRepo.trim() : undefined,
+              githubRepo:
+                htmlSource === "github" ? githubRepo.trim() : undefined,
               githubBranch:
                 htmlSource === "github" && githubBranch.trim()
                   ? githubBranch.trim()
@@ -537,7 +556,9 @@ export function AppServiceCreateDialog({
                         <FieldDescription>
                           Include the tag when you need a specific version.
                         </FieldDescription>
-                        {errors.image && <FieldError>{errors.image}</FieldError>}
+                        {errors.image && (
+                          <FieldError>{errors.image}</FieldError>
+                        )}
                       </Field>
                       <Field data-invalid={Boolean(errors.imageSource)}>
                         <FieldLabel htmlFor="appServiceImageSource">
@@ -560,7 +581,9 @@ export function AppServiceCreateDialog({
                         >
                           <option value="public">Public Docker image</option>
                           <option value="github">Private GitHub image</option>
-                          <option value="knotree_registry">Knotree Registry</option>
+                          <option value="knotree_registry">
+                            Knotree Registry
+                          </option>
                         </select>
                         {errors.imageSource && (
                           <FieldError>{errors.imageSource}</FieldError>
@@ -579,7 +602,9 @@ export function AppServiceCreateDialog({
                               name="knotreeRegistryConnection"
                               className="project-dialog-select"
                               value={registryChoice}
-                              aria-invalid={Boolean(errors.registryConnectionId)}
+                              aria-invalid={Boolean(
+                                errors.registryConnectionId
+                              )}
                               onChange={(event) =>
                                 setRegistryConnectionChoice(event.target.value)
                               }
@@ -588,8 +613,13 @@ export function AppServiceCreateDialog({
                                 Connect Knotree Registry
                               </option>
                               {matchingRegistryConnections.map((connection) => (
-                                <option key={connection.id} value={connection.id}>
-                                  {connection.registryHost}/{connection.repository} · @{connection.username}
+                                <option
+                                  key={connection.id}
+                                  value={connection.id}
+                                >
+                                  {connection.registryHost}/
+                                  {connection.repository} · @
+                                  {connection.username}
                                 </option>
                               ))}
                             </select>
@@ -601,9 +631,71 @@ export function AppServiceCreateDialog({
                                   : "Enter a tagged image above to select or create a repository connection."}
                             </FieldDescription>
                             {errors.registryConnectionId && (
-                              <FieldError>{errors.registryConnectionId}</FieldError>
+                              <FieldError>
+                                {errors.registryConnectionId}
+                              </FieldError>
                             )}
                           </Field>
+                          {registryConsentReady &&
+                            registryChoice === NEW_REGISTRY_CONNECTION && (
+                              <Field>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={
+                                    !registryRepository ||
+                                    registryConsentBusy ||
+                                    isSubmitting
+                                  }
+                                  onClick={async () => {
+                                    setRegistryConsentBusy(true)
+                                    setSubmitError(null)
+                                    try {
+                                      const result =
+                                        await startKnotreeRegistryConsent(
+                                          workspaceId,
+                                          projectSlug,
+                                          registryRepository
+                                        )
+                                      const target = new URL(
+                                        result.authorizationUrl
+                                      )
+                                      if (
+                                        target.origin !==
+                                          "https://registry.knotree.com" ||
+                                        !/^\/cloud\/authorize\/[0-9a-f-]{36}$/.test(
+                                          target.pathname
+                                        ) ||
+                                        target.search ||
+                                        target.hash ||
+                                        target.username ||
+                                        target.password
+                                      ) {
+                                        throw new Error(
+                                          "Registry returned an invalid authorization URL."
+                                        )
+                                      }
+                                      window.location.assign(target.href)
+                                    } catch (reason) {
+                                      setSubmitError(
+                                        reason instanceof Error
+                                          ? reason.message
+                                          : "Registry authorization failed."
+                                      )
+                                      setRegistryConsentBusy(false)
+                                    }
+                                  }}
+                                >
+                                  {registryConsentBusy
+                                    ? "Connecting…"
+                                    : "Authorize Registry pull access"}
+                                </Button>
+                                <FieldDescription>
+                                  Review access on Registry, then return to this
+                                  project to select the saved connection.
+                                </FieldDescription>
+                              </Field>
+                            )}
                           {registryChoice === NEW_REGISTRY_CONNECTION && (
                             <>
                               <Field data-invalid={Boolean(errors.username)}>
@@ -640,7 +732,9 @@ export function AppServiceCreateDialog({
                                   }
                                 />
                                 <FieldDescription>
-                                  Create a token with only pull permission for this repository. Cloud encrypts it; it is never passed to your container.
+                                  Create a token with only pull permission for
+                                  this repository. Cloud encrypts it; it is
+                                  never passed to your container.
                                 </FieldDescription>
                                 {errors.token && (
                                   <FieldError>{errors.token}</FieldError>
@@ -649,7 +743,10 @@ export function AppServiceCreateDialog({
                             </>
                           )}
                           {registryStatusError && (
-                            <p className="project-dialog-description" role="status">
+                            <p
+                              className="project-dialog-description"
+                              role="status"
+                            >
                               {registryStatusError}
                             </p>
                           )}
@@ -724,8 +821,9 @@ export function AppServiceCreateDialog({
                           <option value="github">GitHub HTML repository</option>
                         </select>
                         <FieldDescription>
-                          Repositories are published like GitHub Pages: index.html
-                          is the root, and CSS, JS, and folders are included.
+                          Repositories are published like GitHub Pages:
+                          index.html is the root, and CSS, JS, and folders are
+                          included.
                         </FieldDescription>
                       </Field>
                       <Field data-invalid={Boolean(errors.pageSlug)}>
@@ -764,7 +862,9 @@ export function AppServiceCreateDialog({
                             spellCheck={false}
                             aria-invalid={Boolean(errors.indexHtml)}
                             placeholder="<!doctype html>..."
-                            onChange={(event) => setIndexHtml(event.target.value)}
+                            onChange={(event) =>
+                              setIndexHtml(event.target.value)
+                            }
                           />
                           {errors.indexHtml && (
                             <FieldError>{errors.indexHtml}</FieldError>
@@ -808,7 +908,8 @@ export function AppServiceCreateDialog({
                               }
                             />
                             <FieldDescription>
-                              New pushes to this branch are deployed automatically.
+                              New pushes to this branch are deployed
+                              automatically.
                             </FieldDescription>
                           </Field>
                         </>

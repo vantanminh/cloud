@@ -250,3 +250,13 @@ an existing account based on email. A collision requires an explicit account
 linking flow (not yet implemented). New SSO users cannot log in using a Cloud
 password. This integration is not enabled in production until Accounts and
 its exact OAuth callback registration are ready.
+
+### Registry consent connection
+
+When Accounts SSO is enabled, the App service dialog offers **Authorize Registry pull access** for the tagged image repository. Registry asks the same Accounts identity to allow or deny pull access, then returns a single-use code to `https://cloud.knotree.com/api/v1/auth/knotree-registry/callback`. Cloud exchanges it on the server using S256 PKCE; the browser never receives the Registry credential. The callback requires the initiating live Cloud session, exact Accounts issuer/subject and repository, and current project membership. Credentials are encrypted at rest, expire after 30 days, and are excluded from new deployments after expiry. Reconnect to renew; revocation is available in Registry Access Tokens. Disconnecting in Cloud removes its connection and disables its watchers; it does not revoke the Registry token itself.
+
+The request endpoint is `POST /api/v1/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/authorize`, with `{"repository":"<registry-username>/app"}` and the normal Cloud CSRF header. The result contains `authorizationUrl`. Accounts must be provisioned and enabled on both services, and the Cloud account must have an Accounts identity. Existing password accounts need explicit account linking; email collisions are not automatically linked. Manual token connections remain available while that migration is pending.
+
+Migration `0020_registry_consent.sql` stores one-use attempts with a hashed state/session and encrypted verifier, and adds delegated credential ID/expiry metadata. Deploy Registry's matching consent endpoints first, then Cloud through GitHub CI. Requests/codes awaiting consent on Registry are ephemeral and expire after ten/two minutes respectively; a Registry restart requires starting consent again. No Registry token is minted before successful code exchange. Production API requests use the Cloud UI origin so host-only session cookies reach the callback; the CI bundle already sets this URL explicitly.
+
+This implementation is prepared locally; Registry/Cloud consent backend CI and live end-to-end validation remain required before claiming the flow works in production.

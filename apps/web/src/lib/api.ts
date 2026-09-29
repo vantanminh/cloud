@@ -3,7 +3,7 @@ import type { ApiErrorPayload } from "@/lib/types"
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ??
   (import.meta.env.PROD
-    ? "https://cloudapi.knotree.com/api/v1"
+    ? `${window.location.origin}/api/v1`
     : "http://localhost:8080/api/v1")
 ).replace(/\/$/, "")
 

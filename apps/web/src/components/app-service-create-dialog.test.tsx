@@ -7,6 +7,7 @@ import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 const mocks = vi.hoisted(() => ({
   createAppService: vi.fn(),
   createKnotreeRegistryConnection: vi.fn(),
+  startKnotreeRegistryConsent: vi.fn(),
   listKnotreeRegistryConnections: vi.fn(),
   getGithubConnectionStatus: vi.fn(),
   getGithubAuthorizationUrl: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/resources", () => ({
   createAppService: mocks.createAppService,
   createKnotreeRegistryConnection: mocks.createKnotreeRegistryConnection,
+  startKnotreeRegistryConsent: mocks.startKnotreeRegistryConsent,
   getGithubConnectionStatus: mocks.getGithubConnectionStatus,
   getGithubAuthorizationUrl: mocks.getGithubAuthorizationUrl,
   listAppServices: mocks.listAppServices,
@@ -68,14 +70,15 @@ describe("AppServiceCreateDialog HTML pages", () => {
       "de305d54-75b4-431b-adb2-eb6b9e546014",
       "proj",
       {
-      name: "Docs",
-      imageSource: "html",
-      pageSlug: "docs",
-      indexHtml: "<html><body>hi</body></html>",
-      githubRepo: undefined,
-      githubBranch: undefined,
-      autoDeploy: false,
-    })
+        name: "Docs",
+        imageSource: "html",
+        pageSlug: "docs",
+        indexHtml: "<html><body>hi</body></html>",
+        githubRepo: undefined,
+        githubBranch: undefined,
+        autoDeploy: false,
+      }
+    )
   })
 
   it("derives a unique page- suffix from the service name", async () => {
@@ -134,14 +137,60 @@ describe("AppServiceCreateDialog HTML pages", () => {
       "de305d54-75b4-431b-adb2-eb6b9e546014",
       "proj",
       {
-      name: "Docs",
-      imageSource: "html_github",
-      pageSlug: "docs",
-      indexHtml: undefined,
-      githubRepo: "acme/site",
-      githubBranch: undefined,
-      autoDeploy: true,
+        name: "Docs",
+        imageSource: "html_github",
+        pageSlug: "docs",
+        indexHtml: undefined,
+        githubRepo: "acme/site",
+        githubBranch: undefined,
+        autoDeploy: true,
+      }
+    )
+  })
+
+  it("starts repository consent and rejects an external authorization destination", async () => {
+    const user = userEvent.setup()
+    mocks.listKnotreeRegistryConnections.mockResolvedValue({
+      connections: [],
+      autoDeployReady: false,
+      consentReady: true,
     })
+    mocks.startKnotreeRegistryConsent.mockResolvedValue({
+      authorizationUrl: "https://attacker.example/cloud/authorize/123",
+    })
+    render(
+      <AppServiceCreateDialog
+        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
+        projectSlug="proj"
+        open
+        onOpenChange={vi.fn()}
+        onCreated={vi.fn()}
+      />
+    )
+    await user.type(
+      screen.getByLabelText("Docker image"),
+      "registry.knotree.com/kt-owner/app:production"
+    )
+    await user.selectOptions(
+      screen.getByLabelText("Image access"),
+      "knotree_registry"
+    )
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Authorize Registry pull access",
+      })
+    )
+    await waitFor(() =>
+      expect(mocks.startKnotreeRegistryConsent).toHaveBeenCalledWith(
+        "de305d54-75b4-431b-adb2-eb6b9e546014",
+        "proj",
+        "kt-owner/app"
+      )
+    )
+    expect(
+      await screen.findByText("Registry returned an invalid authorization URL.")
+    ).toBeInTheDocument()
+    expect(mocks.createKnotreeRegistryConnection).not.toHaveBeenCalled()
   })
 
   it("connects a pull-only Knotree Registry token before creating a service", async () => {

@@ -16,6 +16,7 @@ pub mod models;
 pub mod projects;
 pub mod public_access;
 pub mod redis_resources;
+pub mod registry_consent;
 pub mod resources;
 pub mod security;
 pub mod sso;
@@ -44,6 +45,8 @@ struct HealthResponse {
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
+        .route("/auth/knotree-registry/callback", get(registry_consent::callback))
+        .route("/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/authorize", post(registry_consent::start))
         .route("/auth/sso/config", get(sso::configuration))
         .route("/auth/sso/start", get(sso::start))
         .route("/auth/sso/callback", get(sso::callback))

@@ -95,7 +95,10 @@ function appServicesPath(workspaceId: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/app-services`
 }
 
-function knotreeRegistryConnectionsPath(workspaceId: string, projectSlug: string) {
+function knotreeRegistryConnectionsPath(
+  workspaceId: string,
+  projectSlug: string
+) {
   return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/registry-connections`
 }
 
@@ -186,9 +189,7 @@ export function listPostgresResources(
   workspaceId: string,
   projectSlug: string
 ) {
-  return apiRequest<PostgresResource[]>(
-    resourcesPath(workspaceId, projectSlug)
-  )
+  return apiRequest<PostgresResource[]>(resourcesPath(workspaceId, projectSlug))
 }
 
 export function createPostgresResource(
@@ -196,13 +197,10 @@ export function createPostgresResource(
   projectSlug: string,
   input: CreatePostgresResourceInput
 ) {
-  return apiRequest<PostgresResource>(
-    resourcesPath(workspaceId, projectSlug),
-    {
-      method: "POST",
-      body: { resourceType: "postgres", name: input.name },
-    }
-  )
+  return apiRequest<PostgresResource>(resourcesPath(workspaceId, projectSlug), {
+    method: "POST",
+    body: { resourceType: "postgres", name: input.name },
+  })
 }
 
 export function retryPostgresResource(
@@ -220,10 +218,7 @@ function redisPath(workspaceId: string, projectSlug: string) {
   return `/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectSlug)}/redis`
 }
 
-export function listRedisResources(
-  workspaceId: string,
-  projectSlug: string
-) {
+export function listRedisResources(workspaceId: string, projectSlug: string) {
   return apiRequest<RedisResource[]>(redisPath(workspaceId, projectSlug))
 }
 
@@ -455,5 +450,16 @@ export function executeDatabaseQuery(
   return apiRequest<DatabaseQueryResult>(
     databasePath(workspaceId, projectSlug, resourceId, "query"),
     { method: "POST", body: { sql } }
+  )
+}
+
+export function startKnotreeRegistryConsent(
+  workspaceId: string,
+  projectSlug: string,
+  repository: string
+) {
+  return apiRequest<{ authorizationUrl: string }>(
+    `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/authorize`,
+    { method: "POST", body: { repository } }
   )
 }
