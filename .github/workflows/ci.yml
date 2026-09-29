@@ -133,6 +133,10 @@ jobs:
         K8S_CONFIG_JSON: ${{ vars.K8S_CONFIG_JSON }}
         K8S_SECRETS_JSON: ${{ secrets.K8S_SECRETS_JSON }}
         KNOTREE_REGISTRY_WEBHOOK_SECRET: ${{ secrets.KNOTREE_REGISTRY_WEBHOOK_SECRET }}
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_HOST: ${{ secrets.SSH_HOST }}
+        SSH_USER: ${{ secrets.SSH_USER }}
+        SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         API_DIGEST: ${{ needs.build.outputs.api_digest }}
         WEB_DIGEST: ${{ needs.build.outputs.web_digest }}
       run: bash deploy/ci/deliver.sh "${API_IMAGE}@${API_DIGEST}" "${WEB_IMAGE}@${WEB_DIGEST}"

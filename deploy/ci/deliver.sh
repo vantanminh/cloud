@@ -5,28 +5,34 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 task_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/github-deploy.XXXXXX")"
 trap 'rm -rf "$task_dir"' EXIT
 
-# Runs on the GitHub runner. kubectl uses the existing production kubeconfig
-# secret; no SSH hop and no node-admin kubeconfig.
+# Validate on the runner. The k3s API port is not reachable from GitHub-hosted
+# runners, so kubectl runs on the VPS over the SSH credentials already stored
+# for this repository.
 python3 "$script_dir/runtime.py" prepare "$task_dir"
-install -m 600 /dev/null "$task_dir/kubeconfig"
-printf '%s\n' "$KUBE_CONFIG" > "$task_dir/kubeconfig"
-export KUBECONFIG="$task_dir/kubeconfig"
-server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
-[[ "$server" == "https://15.235.210.66:6443" ]] || {
-  echo 'Deploy failed: kubeconfig must target the production k3s API' >&2
-  exit 1
-}
-kubectl --request-timeout=20s get --raw=/readyz >/dev/null
+for key in SSH_PRIVATE_KEY SSH_HOST SSH_USER; do
+  [[ -n "${!key:-}" ]] || { echo "Deploy failed: missing ${key}" >&2; exit 1; }
+done
+install -m 600 /dev/null "$task_dir/id_ed25519"
+printf '%s\n' "$SSH_PRIVATE_KEY" > "$task_dir/id_ed25519"
+if [[ -n "${SSH_KNOWN_HOSTS:-}" ]]; then
+  printf '%s\n' "$SSH_KNOWN_HOSTS" > "$task_dir/known_hosts"
+else
+  ssh-keyscan -H "$SSH_HOST" > "$task_dir/known_hosts"
+fi
+cp -R "$script_dir/.." "$task_dir/deploy"
 
-k3s() {
-  if [[ "${1:-}" == "kubectl" ]]; then
-    shift
-    command kubectl "$@"
-  else
-    echo 'Deploy failed: node-local k3s commands are not used from GitHub runners' >&2
+remote_args=""
+for image in "$@"; do
+  [[ "$image" =~ ^[a-z0-9./_-]+(:[a-f0-9]{40}|@sha256:[a-f0-9]{64})$ ]] || {
+    echo 'Deploy failed: expected a CI image SHA/digest' >&2
     exit 1
-  fi
-}
-export -f k3s
-
-bash "$script_dir/remote.sh" "$task_dir/runtime.json" "$@"
+  }
+  remote_args+=" $image"
+done
+[[ -n "$remote_args" ]] || { echo 'Deploy failed: missing image' >&2; exit 1; }
+tar -czf - -C "$task_dir" deploy runtime.json | ssh \
+  -i "$task_dir/id_ed25519" -o UserKnownHostsFile="$task_dir/known_hosts" \
+  -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+  "${SSH_USER}@${SSH_HOST}" \
+  "set -eu; task_dir=\$(mktemp -d /tmp/github-deploy.XXXXXX); chmod 700 \"\$task_dir\"; trap 'rm -rf \"\$task_dir\"' EXIT; tar -xzf - -C \"\$task_dir\"; bash \"\$task_dir/deploy/ci/remote.sh\" \"\$task_dir/runtime.json\"$remote_args"
