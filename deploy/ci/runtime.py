@@ -15,6 +15,9 @@ class Invalid(Exception):
     pass
 
 
+POSTGRES_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
+
 def unique(pairs):
     result = {}
     for key, value in pairs:
@@ -66,6 +69,17 @@ def validate(contract, config, secrets):
         url = urlsplit(secrets["DATABASE_URL"])
         if url.scheme not in ("postgres", "postgresql") or unquote(url.password or "") != secrets["POSTGRES_PASSWORD"]:
             raise Invalid("DATABASE_URL must use POSTGRES_PASSWORD")
+    identity = contract.get("database_identity")
+    if identity:
+        user = config[identity["user"]]
+        database = config[identity["database"]]
+        if not POSTGRES_IDENTIFIER.fullmatch(user) or not POSTGRES_IDENTIFIER.fullmatch(database):
+            raise Invalid("PostgreSQL user/database must be simple identifiers")
+        url = urlsplit(secrets["DATABASE_URL"])
+        if (url.scheme not in ("postgres", "postgresql")
+                or unquote(url.username or "") != user
+                or unquote(url.path.removeprefix("/")) != database):
+            raise Invalid("DATABASE_URL must use POSTGRES_USER and POSTGRES_DB")
     for group in contract.get("secret_groups", []):
         if any(secrets.get(k) for k in group) and not all(secrets.get(k) for k in group):
             raise Invalid("Incomplete secret group: " + ", ".join(group))
@@ -121,6 +135,26 @@ def kube(args, data=None, absent=False):
 def apply(contract, config, secrets):
     objects = manifests(contract, config, secrets)
     ns = contract["namespace"]
+    preserve_env = contract.get("preserve_statefulset_env")
+    if preserve_env:
+        namespace = kube(["get", "namespace", ns, "--ignore-not-found", "-o", "name"], absent=True)
+        if namespace:
+            current = kube(["get", "statefulset", preserve_env["name"], "-n", ns,
+                            "--ignore-not-found", "-o", "json"], absent=True)
+            if not current:
+                if preserve_env.get("required"):
+                    raise Invalid("Existing PostgreSQL StatefulSet is required before runtime update")
+                pvc_json = kube(["get", "pvc", "-n", ns, "-o", "json"])
+                if json.loads(pvc_json).get("items"):
+                    raise Invalid("PostgreSQL StatefulSet is missing while PVC data remains")
+            else:
+                statefulset = json.loads(current)
+                container = next((item for item in statefulset.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+                                  if item.get("name") == preserve_env["container"]), None)
+                actual = {item.get("name"): item.get("value") for item in (container or {}).get("env", [])}
+                for env_name, config_key in preserve_env["values"].items():
+                    if actual.get(env_name) != config[config_key]:
+                        raise Invalid("Refusing implicit PostgreSQL identity change: " + env_name)
     # Validate all immutable credentials BEFORE any mutation. Changing a Secret
     # does not rotate a live PostgreSQL password or re-encrypt stored data.
     for name, keys in contract["preserve"].items():

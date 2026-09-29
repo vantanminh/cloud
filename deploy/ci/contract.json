@@ -96,6 +96,19 @@
     "SSO_REDIRECT_URI",
     "SSO_FRONTEND_URL"
   ],
+  "database_identity": {
+    "user": "POSTGRES_USER",
+    "database": "POSTGRES_DB"
+  },
+  "preserve_statefulset_env": {
+    "name": "knotree-cloud-pg",
+    "container": "postgres",
+    "required": false,
+    "values": {
+      "POSTGRES_USER": "POSTGRES_USER",
+      "POSTGRES_DB": "POSTGRES_DB"
+    }
+  },
   "auxiliary_secrets": [
     "GHCR_USERNAME",
     "GHCR_TOKEN"
