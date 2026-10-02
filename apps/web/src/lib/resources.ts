@@ -14,6 +14,7 @@ import type {
   KnotreeRegistryConnection,
   KnotreeRegistryConnectionList,
   HtmlAnalyticsSummary,
+  RegistryDeployHistory,
   PostgresResource,
   RedisResource,
 } from "@/lib/types"
@@ -142,6 +143,28 @@ export function deleteKnotreeRegistryConnection(
   return apiRequest<void>(
     `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/${encodeURIComponent(connectionId)}`,
     { method: "DELETE" }
+  )
+}
+
+export function attachAppServiceRegistryConnection(
+  workspaceId: string,
+  projectSlug: string,
+  appServiceId: string,
+  connectionId: string
+) {
+  return apiRequest<AppService>(
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/registry-connection`,
+    { method: "PATCH", body: { connectionId } }
+  )
+}
+
+export function listRegistryDeploys(
+  workspaceId: string,
+  projectSlug: string,
+  appServiceId: string
+) {
+  return apiRequest<RegistryDeployHistory>(
+    `${appServicesPath(workspaceId, projectSlug)}/${encodeURIComponent(appServiceId)}/registry-deploys`
   )
 }
 

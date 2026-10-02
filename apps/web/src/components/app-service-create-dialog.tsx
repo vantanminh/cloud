@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
+import { registryAuthorizationTarget } from "@/lib/registry-consent"
 import {
   type CreateAppServiceInput,
   createAppService,
@@ -657,25 +658,11 @@ export function AppServiceCreateDialog({
                                           projectSlug,
                                           registryRepository
                                         )
-                                      const target = new URL(
-                                        result.authorizationUrl
-                                      )
-                                      if (
-                                        target.origin !==
-                                          "https://registry.knotree.com" ||
-                                        !/^\/cloud\/authorize\/[0-9a-f-]{36}$/.test(
-                                          target.pathname
-                                        ) ||
-                                        target.search ||
-                                        target.hash ||
-                                        target.username ||
-                                        target.password
-                                      ) {
-                                        throw new Error(
-                                          "Registry returned an invalid authorization URL."
+                                      window.location.assign(
+                                        registryAuthorizationTarget(
+                                          result.authorizationUrl
                                         )
-                                      }
-                                      window.location.assign(target.href)
+                                      )
                                     } catch (reason) {
                                       setSubmitError(
                                         reason instanceof Error

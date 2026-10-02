@@ -176,6 +176,8 @@ the workspace/project before reading or mutating a connection:
 | `POST /api/v1/workspaces/{workspace}/projects/{project}/registry-connections` | Accept `{ username, token, repository }`; verify pull access to the fixed Registry host, encrypt the PAT, and return metadata only. |
 | `GET /api/v1/workspaces/{workspace}/projects/{project}/registry-connections` | List non-secret metadata plus `autoDeployReady` for that project's connections. |
 | `PATCH /api/v1/workspaces/{workspace}/projects/{project}/registry-connections/{id}` | Verify and rotate the PAT; update per-service Kubernetes pull secrets before replacing the encrypted credential. |
+| `PATCH /api/v1/workspaces/{workspace}/projects/{project}/app-services/{service}/registry-connection` | Accept `{ connectionId }`; attach an active project connection for the service's exact repository to an existing Registry service, refresh its Kubernetes pull secret, and clear the disconnect error. |
+| `GET /api/v1/workspaces/{workspace}/projects/{project}/app-services/{service}/registry-deploys` | Return `autoDeployReady` and the service's 10 most recent Registry deploy jobs (digest, status, attempts, user-safe error, timestamps). |
 | `DELETE /api/v1/workspaces/{workspace}/projects/{project}/registry-connections/{id}` | Revoke the Cloud connection, disable dependent auto-deploy services, detach the connection, fail pending jobs, and attempt to delete per-service Kubernetes pull secrets. Cleanup errors are logged. Running services are left online. This does not revoke the PAT at Registry. |
 | `POST /api/v1/public/webhooks/knotree-registry` | Receive a Registry delivery without a browser cookie; authenticate with the configured HMAC secret. Body limit is 64 KiB. |
 
@@ -314,13 +316,19 @@ secret.
 - The create action verifies/saves the connection before creating the service;
   the API response never includes the token. Automatic deploy is disabled in
   the form when `autoDeployReady` is false.
-- Settings shows the configured image/tag, connected/disconnected state,
-  deployed digest, and Registry auto-deploy control. It supports token
-  rotation and disconnect. Rotation requires a fresh PAT. Disconnect revokes
-  only Cloud's saved connection; the PAT itself must also be revoked in the
-  Registry dashboard if it should no longer be usable. After disconnect, the
-  existing service remains running, but must be recreated with a new
-  connection to resume Registry pulls.
+- Settings shows a Registry connection panel: a Live / Paused / Unavailable /
+  Disconnected status, the push → signed event → deploy flow, the watched
+  repository and tag, deployed digest, last Registry event, the auto-deploy
+  control, and the last 10 pushes with their outcome (Queued, Deploying,
+  Deployed, Skipped when the digest was already running or superseded, Failed
+  with its error). It supports token rotation and disconnect. Rotation
+  requires a fresh PAT. Disconnect revokes only Cloud's saved connection; the
+  PAT itself must also be revoked in the Registry dashboard if it should no
+  longer be usable. After disconnect, the existing service remains running and
+  can be reconnected in place: pick a saved project connection for the same
+  repository, authorize on Registry, or paste a new pull-only PAT. The service
+  keeps its URL, variables and database; auto deploy stays off until the user
+  turns it back on.
 
 ## Implementation and release status
 

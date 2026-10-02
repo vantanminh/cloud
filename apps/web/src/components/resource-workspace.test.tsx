@@ -32,6 +32,11 @@ const mocks = vi.hoisted(() => ({
   updateAppServiceDatabase: vi.fn(),
   updateAppServicePublicAccess: vi.fn(),
   updateKnotreeRegistryConnection: vi.fn(),
+  attachAppServiceRegistryConnection: vi.fn(),
+  createKnotreeRegistryConnection: vi.fn(),
+  listKnotreeRegistryConnections: vi.fn(),
+  listRegistryDeploys: vi.fn(),
+  startKnotreeRegistryConsent: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -730,6 +735,15 @@ describe("ResourceWorkspace settings pane", () => {
     })
     mocks.deleteKnotreeRegistryConnection.mockResolvedValue(undefined)
     mocks.listAppServices.mockResolvedValue([disconnectedService])
+    mocks.listRegistryDeploys.mockResolvedValue({
+      appServiceId: "app-resource-id",
+      autoDeployReady: true,
+      jobs: [],
+    })
+    mocks.listKnotreeRegistryConnections.mockResolvedValue({
+      connections: [],
+      autoDeployReady: true,
+    })
 
     render(
       <ResourceWorkspace
@@ -758,7 +772,9 @@ describe("ResourceWorkspace settings pane", () => {
 
     const dialog = screen.getByRole("dialog")
     await user.click(within(dialog).getByRole("tab", { name: "Settings" }))
-    expect(within(dialog).getByText("sha256:0123456789abcdef")).toBeInTheDocument()
+    expect(
+      within(dialog).getByText("sha256:0123456789abcdef")
+    ).toBeInTheDocument()
     const toggle = within(dialog).getByRole("checkbox", {
       name: "Auto deploy new Knotree Registry images",
     })
@@ -776,7 +792,9 @@ describe("ResourceWorkspace settings pane", () => {
       within(dialog).getByLabelText("Replace pull token"),
       "replacement-pull-pat"
     )
-    await user.click(within(dialog).getByRole("button", { name: "Update token" }))
+    await user.click(
+      within(dialog).getByRole("button", { name: "Update token" })
+    )
     await waitFor(() => {
       expect(mocks.updateKnotreeRegistryConnection).toHaveBeenCalledWith(
         "de305d54-75b4-431b-adb2-eb6b9e546014",
@@ -788,7 +806,9 @@ describe("ResourceWorkspace settings pane", () => {
     expect(within(dialog).getByLabelText("Replace pull token")).toHaveValue("")
 
     await user.click(
-      within(dialog).getByRole("button", { name: "Disconnect Knotree Registry" })
+      within(dialog).getByRole("button", {
+        name: "Disconnect Knotree Registry",
+      })
     )
     await waitFor(() => {
       expect(mocks.deleteKnotreeRegistryConnection).toHaveBeenCalledWith(
@@ -1089,7 +1109,9 @@ describe("ResourceWorkspace settings pane", () => {
       within(dialog).queryByRole("tab", { name: "Database" })
     ).not.toBeInTheDocument()
     await user.click(within(dialog).getByRole("tab", { name: "Analytics" }))
-    expect(await within(dialog).findByRole("heading", { name: "Page analytics" })).toBeInTheDocument()
+    expect(
+      await within(dialog).findByRole("heading", { name: "Page analytics" })
+    ).toBeInTheDocument()
     expect(within(dialog).getByText("Pageviews")).toBeInTheDocument()
     expect(within(dialog).getByText("Chrome")).toBeInTheDocument()
     expect(mocks.getHtmlPageAnalytics).toHaveBeenCalledWith(

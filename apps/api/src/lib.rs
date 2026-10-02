@@ -120,6 +120,14 @@ pub fn router(state: AppState) -> Router {
             patch(app_services::update_auto_deploy),
         )
         .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/registry-connection",
+            patch(app_services::update_registry_connection),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/registry-deploys",
+            get(app_services::registry_deploys),
+        )
+        .route(
             "/workspaces/{workspace_id}/projects/{project_slug}/app-services/{app_service_id}/database",
             patch(app_services::update_database_connection),
         )

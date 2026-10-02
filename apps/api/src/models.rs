@@ -218,6 +218,33 @@ pub struct UpdateAppServiceAutoDeployRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateAppServiceRegistryConnectionRequest {
+    pub connection_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryDeployJobResponse {
+    pub id: Uuid,
+    pub image_digest: String,
+    pub status: String,
+    pub attempt_count: i32,
+    pub last_error: Option<String>,
+    pub deployment_id: Option<Uuid>,
+    pub received_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryDeployHistoryResponse {
+    pub app_service_id: Uuid,
+    pub auto_deploy_ready: bool,
+    pub jobs: Vec<RegistryDeployJobResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateAppServiceDatabaseRequest {
     pub database_resource_id: Option<Uuid>,
 }
