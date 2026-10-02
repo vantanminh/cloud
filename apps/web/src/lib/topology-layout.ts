@@ -52,6 +52,10 @@ export function defaultRedisPosition(hasPostgres: boolean): NodePosition {
   return { left: hasPostgres ? 78 : 50, top: 12 }
 }
 
+export function defaultImagePosition(index: number): NodePosition {
+  return { left: 18 + (index % 4) * 20, top: 72 }
+}
+
 export function defaultServicePosition(
   index: number,
   count: number,

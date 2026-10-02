@@ -15,6 +15,7 @@ import {
   FileTextIcon,
   GitBranchIcon,
   HardDriveIcon,
+  ImageIcon,
   Maximize2Icon,
   NetworkIcon,
   SearchIcon,
@@ -30,6 +31,8 @@ import { useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
 import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
+import { ImageStoreCreateDialog } from "@/components/image-store-create-dialog"
+import { ImageStoreWorkspace } from "@/components/image-store-workspace"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
 import { PostgresCreateDialog } from "@/components/postgres-create-dialog"
 import { RedisCreateDialog } from "@/components/redis-create-dialog"
@@ -41,10 +44,12 @@ import { getProject } from "@/lib/projects"
 import {
   appServiceDeploymentEventsUrl,
   listAppServices,
+  listImageStores,
   listPostgresResources,
   listRedisResources,
 } from "@/lib/resources"
 import {
+  defaultImagePosition,
   defaultPostgresPosition,
   defaultRedisPosition,
   defaultServicePosition,
@@ -57,6 +62,7 @@ import type {
   AppService,
   AppServiceDeployment,
   AppServiceStatus,
+  ImageStore,
   PostgresResource,
   PostgresResourceStatus,
   Project,
@@ -80,8 +86,16 @@ type TopologyNode = {
   type: string
   volume: string
   status: string
-  resource?: PostgresResource | AppService | RedisResource
+  resource?: PostgresResource | AppService | RedisResource | ImageStore
   position: { left: number; top: number }
+}
+
+function isInfrastructureNode(
+  node: TopologyNode
+): node is TopologyNode & {
+  resource?: PostgresResource | AppService | RedisResource
+} {
+  return node.resource?.resourceType !== "images"
 }
 
 type PersistedDashboardState = {
@@ -196,12 +210,14 @@ function TopologyDashboard({
   const [postgresResource, setPostgresResource] =
     useState<PostgresResource | null>(null)
   const [redisResource, setRedisResource] = useState<RedisResource | null>(null)
+  const [imageStores, setImageStores] = useState<ImageStore[]>([])
   const [appServices, setAppServices] = useState<AppService[]>([])
   const [resourcesLoading, setResourcesLoading] = useState(true)
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [postgresDialogOpen, setPostgresDialogOpen] = useState(false)
   const [redisDialogOpen, setRedisDialogOpen] = useState(false)
   const [appServiceDialogOpen, setAppServiceDialogOpen] = useState(false)
+  const [imageDialogOpen, setImageDialogOpen] = useState(false)
   const [copiedConnectionString, setCopiedConnectionString] = useState(false)
   const [theme, setTheme] = useState<Theme>(() =>
     readStoredTheme("project-topology-dashboard-theme")
@@ -251,12 +267,27 @@ function TopologyDashboard({
     if (redisNode) {
       defaults.redis = redisNode.position
     }
+    const imageNodes = imageStores.map((store, index) => {
+      const id = imageStoreNodeId(store.id)
+      const position = defaultImagePosition(index)
+      defaults[id] = position
+      return {
+        id,
+        title: store.name,
+        subtitle: store.compressionMode,
+        type: "Image store",
+        volume: store.publicBaseUrl,
+        status: "Ready",
+        resource: store,
+        position,
+      }
+    })
     const serviceNodes = appServices.map((service, index) => {
       const id = appServiceNodeId(service.id)
       const position = defaultServicePosition(
         index,
         appServices.length,
-        Boolean(postgresResource || redisResource)
+        Boolean(postgresResource || redisResource || imageStores.length > 0)
       )
       defaults[id] = position
       return {
@@ -286,7 +317,7 @@ function TopologyDashboard({
       }
     })
     const merged = mergePositions(defaults, positions)
-    const placed = [databaseNode, redisNode, ...serviceNodes].filter(
+    const placed = [databaseNode, redisNode, ...imageNodes, ...serviceNodes].filter(
       (node): node is TopologyNode => Boolean(node)
     )
     if (placed.length > 0) {
@@ -307,6 +338,7 @@ function TopologyDashboard({
     return [emptyServiceNode]
   }, [
     appServices,
+    imageStores,
     positions,
     postgresResource,
     project.name,
@@ -330,14 +362,16 @@ function TopologyDashboard({
       listPostgresResources(workspaceId, projectSlug),
       listRedisResources(workspaceId, projectSlug),
       listAppServices(workspaceId, projectSlug),
+      listImageStores(workspaceId, projectSlug),
     ])
-      .then(([postgresResources, redisResources, appServices]) => {
+      .then(([postgresResources, redisResources, appServices, imageStores]) => {
         if (!active) {
           return
         }
         setPostgresResource(postgresResources[0] ?? null)
         setRedisResource(redisResources[0] ?? null)
         setAppServices(appServices)
+        setImageStores(imageStores)
         setResourcesLoading(false)
       })
       .catch((error: unknown) => {
@@ -581,6 +615,23 @@ function TopologyDashboard({
     dragRef.current = null
   }
 
+  function handleImagesAdd() {
+    setAddMenuOpen(false)
+    setImageDialogOpen(true)
+  }
+
+  function handleImageStoreCreated(store: ImageStore) {
+    setImageStores((current) => [...current, store])
+    setResourceError(null)
+    setImageDialogOpen(false)
+    selectNode(imageStoreNodeId(store.id))
+  }
+
+  async function refreshImageStores() {
+    const stores = await listImageStores(workspaceId, projectSlug)
+    setImageStores(stores)
+  }
+
   function handleAppServiceAdd() {
     setAddMenuOpen(false)
     if (appServices.length >= 6) {
@@ -728,6 +779,11 @@ function TopologyDashboard({
                   redisResource?.status === "ready" ? "Redis (ready)" : "Redis"
                 }
                 onClick={handleRedisAdd}
+              />
+              <ProjectAddOption
+                mark="I"
+                label="Images"
+                onClick={handleImagesAdd}
               />
               <ProjectAddOption
                 mark="S"
@@ -1090,7 +1146,17 @@ function TopologyDashboard({
         )}
       </main>
 
-      {selectedNodeData && (
+      {selectedNodeData?.resource?.resourceType === "images" ? (
+        <ImageStoreWorkspace
+          store={selectedNodeData.resource}
+          workspaceId={workspaceId}
+          projectSlug={projectSlug}
+          onClose={closeResourceWorkspace}
+          onChanged={() => {
+            void refreshImageStores()
+          }}
+        />
+      ) : selectedNodeData && isInfrastructureNode(selectedNodeData) ? (
         <ResourceWorkspace
           key={`${selectedNodeData.id}:${resourceWorkspaceInitialTab}`}
           node={selectedNodeData}
@@ -1118,7 +1184,7 @@ function TopologyDashboard({
             setResourceError(null)
           }}
         />
-      )}
+      ) : null}
 
       <PostgresCreateDialog
         key={
@@ -1138,6 +1204,15 @@ function TopologyDashboard({
         open={redisDialogOpen}
         onOpenChange={setRedisDialogOpen}
         onCreated={handleRedisCreated}
+      />
+
+      <ImageStoreCreateDialog
+        key={imageDialogOpen ? "image-dialog-open" : "image-dialog-closed"}
+        workspaceId={workspaceId}
+        projectSlug={projectSlug}
+        open={imageDialogOpen}
+        onOpenChange={setImageDialogOpen}
+        onCreated={handleImageStoreCreated}
       />
 
       <AppServiceCreateDialog
@@ -1211,7 +1286,8 @@ function ResourcesWorkspace({
   const filteredNodes = nodes.filter((node) => {
     const isDataStore =
       node.resource?.resourceType === "postgres" ||
-      node.resource?.resourceType === "redis"
+      node.resource?.resourceType === "redis" ||
+      node.resource?.resourceType === "images"
     const matchesFilter =
       filter === "all" || (filter === "data" ? isDataStore : !isDataStore)
     const matchesSearch =
@@ -1286,8 +1362,8 @@ function ResourcesWorkspace({
           </span>
           <h2>No resources yet</h2>
           <p>
-            Add an app service, HTML page, PostgreSQL database, or Redis store
-            to get started.
+            Add an app service, HTML page, PostgreSQL database, Redis store, or
+            image store to get started.
           </p>
           <Button type="button" onClick={onAddResource}>
             Add resource
@@ -1477,6 +1553,9 @@ function MetricsWorkspace({
 function ResourceIcon({ node }: { node: TopologyNode }) {
   if (node.type === "HTML page") {
     return <FileTextIcon aria-hidden="true" />
+  }
+  if (node.resource?.resourceType === "images") {
+    return <ImageIcon aria-hidden="true" />
   }
   if (node.resource?.resourceType === "app") {
     return <BoxIcon aria-hidden="true" />
@@ -1683,6 +1762,10 @@ function NodeIcon({ nodeId }: { nodeId: TopologyNodeId }) {
 
 function appServiceNodeId(serviceId: string) {
   return `app:${serviceId}`
+}
+
+function imageStoreNodeId(storeId: string) {
+  return `images:${storeId}`
 }
 
 function appServiceDatabaseConnectorId(serviceId: string) {

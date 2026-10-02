@@ -1,0 +1,22 @@
+{
+  "name": "@knotree/images",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Knotree Cloud image client for Node.js, Next.js, and React.",
+  "exports": {
+    ".": "./src/client.js",
+    "./react": "./src/react.js"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test src/client.test.js src/react.test.js"
+  }
+}

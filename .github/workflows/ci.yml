@@ -49,11 +49,19 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.22"
     - name: API tests
       env:
         DATABASE_URL: postgres://knotree:knotree@localhost:5432/knotree
         CI: true
       run: cargo test --manifest-path apps/api/Cargo.toml --locked
+    - name: Rust image client
+      run: cargo test --manifest-path sdks/images/rust/Cargo.toml --locked
+    - name: Go image client
+      working-directory: sdks/images/go
+      run: go test ./...
   test-web:
     runs-on: ubuntu-latest
     steps:
@@ -67,6 +75,8 @@ jobs:
       run: |
         pnpm install --frozen-lockfile
         pnpm test:web
+        node --test sdks/images/node/src/client.test.js sdks/images/node/src/react.test.js
+        node --test deploy/cloudflare/html-page-cache/src/index.test.js
   build:
     needs:
     - test-api

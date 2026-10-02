@@ -15,4 +15,7 @@ Public App service domains use:
   https://<random-subdomain>.{{ .Values.env.appServicePublicDomain }}
 Point the wildcard DNS record *.{{ .Values.env.appServicePublicDomain }} to this ingress
 and ensure the TLS issuer can issue a wildcard certificate.
+Image URLs are served from:
+  https://img.{{ .Values.env.appServicePublicDomain }}
+The Cloudflare cache Worker must stay deployed so public image URLs cache for one year.
 {{- end }}

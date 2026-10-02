@@ -7,6 +7,7 @@ pub mod database;
 pub mod error;
 pub mod github;
 pub mod html_pages;
+pub mod images;
 pub mod knotree_registry;
 pub mod kong;
 pub mod limits;
@@ -31,7 +32,7 @@ use axum::{
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     middleware,
-    routing::{any, get, patch, post},
+    routing::{any, delete, get, patch, post},
 };
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
@@ -190,7 +191,57 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/workspaces/{workspace_id}/projects/{project_slug}/resources/{resource_id}/database/query",
             post(database::execute_query),
-        );
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores",
+            get(images::list_stores).post(images::create_store),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}",
+            patch(images::update_store),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/keys",
+            get(images::list_keys).post(images::create_key),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/keys/{key_id}/revoke",
+            post(images::revoke_key),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/objects",
+            get(images::session_list_objects)
+                .post(images::session_upload_object)
+                .layer(DefaultBodyLimit::max(images::UPLOAD_BODY_LIMIT)),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/objects/{image_id}",
+            delete(images::session_delete_object),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/objects/{image_id}/sign",
+            post(images::session_sign_object),
+        )
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/image-stores/{store_id}/folders",
+            delete(images::session_delete_folder),
+        )
+        .route("/images/store", get(images::developer_store))
+        .route(
+            "/images/objects",
+            get(images::list_objects)
+                .post(images::upload_object)
+                .layer(DefaultBodyLimit::max(images::UPLOAD_BODY_LIMIT)),
+        )
+        .route(
+            "/images/objects/{image_id}",
+            delete(images::delete_object),
+        )
+        .route(
+            "/images/objects/{image_id}/sign",
+            post(images::sign_object),
+        )
+        .route("/images/folders", delete(images::delete_folder));
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -212,6 +263,10 @@ pub fn router(state: AppState) -> Router {
         .route("/oauth/token", post(mcp::token))
         .route("/mcp", post(mcp::mcp_endpoint))
         .nest("/api/v1", api)
+        .route(
+            "/images/v1/{store_id}/{image_id}",
+            get(images::serve),
+        )
         .fallback(app_services::public_domain_fallback)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -221,7 +276,9 @@ pub fn router(state: AppState) -> Router {
             tracing::info_span!("http", method = %request.method(), path = request.uri().path())
         }))
         .layer(state.config.cors_layer())
-        // Outer so page-* origins can POST analytics without opening credentialed dashboard CORS.
+        // Outer so browser image clients and page analytics can call from any origin
+        // without opening credentialed dashboard CORS.
+        .layer(middleware::from_fn(images::public_cors))
         .layer(middleware::from_fn(html_pages::public_cors))
         .with_state(state)
 }
