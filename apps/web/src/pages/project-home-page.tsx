@@ -90,6 +90,14 @@ type TopologyNode = {
   position: { left: number; top: number }
 }
 
+function isInfrastructureNode(
+  node: TopologyNode
+): node is TopologyNode & {
+  resource?: PostgresResource | AppService | RedisResource
+} {
+  return node.resource?.resourceType !== "images"
+}
+
 type PersistedDashboardState = {
   zoom?: number
   selectedNode?: string | null
@@ -1148,7 +1156,7 @@ function TopologyDashboard({
             void refreshImageStores()
           }}
         />
-      ) : selectedNodeData ? (
+      ) : selectedNodeData && isInfrastructureNode(selectedNodeData) ? (
         <ResourceWorkspace
           key={`${selectedNodeData.id}:${resourceWorkspaceInitialTab}`}
           node={selectedNodeData}
