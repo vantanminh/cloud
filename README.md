@@ -95,6 +95,7 @@ The Rust API uses Axum, SQLx, and PostgreSQL. Routes are under `/api/v1`:
 - `GET /workspaces/:workspaceId/projects/:projectSlug/resources/:resourceId/database/metrics?range=1h|6h|24h|7d|30d`
 - `GET /workspaces/:workspaceId/projects/:projectSlug/resources/:resourceId/database/config`
 - `POST /workspaces/:workspaceId/projects/:projectSlug/resources/:resourceId/database/query`
+- `GET/POST /workspaces/:workspaceId/projects/:projectSlug/image-stores` and the developer image API under `/images` (see [Image stores](docs/product/images.md))
 
 Sessions are opaque, server-side records in PostgreSQL. The browser receives an
 HttpOnly session cookie plus a short-lived in-memory CSRF token for mutating
@@ -187,6 +188,9 @@ pnpm test:web
 pnpm build:web
 cargo test --manifest-path apps/api/Cargo.toml
 cargo fmt --manifest-path apps/api/Cargo.toml --all -- --check
+node --test sdks/images/node/src/client.test.js
+cargo test --manifest-path sdks/images/rust/Cargo.toml
+go test ./... # from sdks/images/go
 ```
 
 ## Deployment

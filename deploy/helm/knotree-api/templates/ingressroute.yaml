@@ -29,6 +29,12 @@ spec:
           port: {{ .Values.web.service.port }}
 {{- end }}
 {{- if .Values.env.appServicePublicDomain }}
+    - match: Host(`img.{{ .Values.env.appServicePublicDomain }}`) && PathPrefix(`/images/`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: {{ include "knotree-api.fullname" . }}
+          port: {{ .Values.service.port }}
     - match: HostRegexp(`^page-.+\.{{ .Values.env.appServicePublicDomain | replace "." "\\." }}$`) && PathPrefix(`/api/v1/public/html-pages/`)
       kind: Rule
       priority: 50

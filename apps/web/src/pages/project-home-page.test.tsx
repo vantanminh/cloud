@@ -94,6 +94,11 @@ describe("ProjectHomePage", () => {
         ])
       }
       if (
+        path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/image-stores"
+      ) {
+        return Promise.resolve([])
+      }
+      if (
         path === "/workspaces/de305d54-75b4-431b-adb2-eb6b9e546014/projects/knotree-study/app-services"
       ) {
         return Promise.resolve([

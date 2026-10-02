@@ -26,6 +26,8 @@ subtle = "2.6"
 thiserror = "2"
 hmac = "0.12"
 hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+webp = "0.3"
 time = { version = "0.3", features = ["serde", "macros"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
