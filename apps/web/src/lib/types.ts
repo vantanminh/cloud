@@ -233,6 +233,58 @@ export type HtmlAnalyticsSummary = {
   }>
 }
 
+export type ImageCompressionMode = "none" | "fixed" | "per_url"
+
+export type ImageKeyAccess = "full" | "browser"
+
+export type ImageStore = {
+  id: string
+  name: string
+  resourceType: "images"
+  compressionMode: ImageCompressionMode
+  maxWidth: number | null
+  maxHeight: number | null
+  quality: number | null
+  objectCount: number
+  byteSize: number
+  publicBaseUrl: string
+}
+
+export type ImageApiKey = {
+  id: string
+  name: string
+  clientId: string
+  clientSecret?: string
+  access: ImageKeyAccess
+  status: "active" | "revoked"
+  createdAt: string
+  revokedAt: string | null
+}
+
+export type ImageObject = {
+  id: string
+  folder: string
+  fileName: string
+  contentType: string
+  byteSize: number
+  width: number
+  height: number
+  createdAt: string
+}
+
+export type ImageObjectList = {
+  objects: ImageObject[]
+  folders: string[]
+}
+
+export type SignedImageUrl = {
+  url: string
+  visibility: "public" | "private"
+  expiresAt: string | null
+  cacheSeconds: number
+  contentType: string
+}
+
 export function isHtmlPage(service: Pick<AppService, "imageSource">) {
   return service.imageSource === "html" || service.imageSource === "html_github"
 }

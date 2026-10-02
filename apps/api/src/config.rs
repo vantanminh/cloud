@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgConnectOptions;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -61,6 +62,8 @@ pub struct Config {
     pub default_rate_limit_rpm: u32,
     pub html_site_data_dir: String,
     pub html_nginx_image: String,
+    pub image_public_base_url: String,
+    pub image_url_signing_key: [u8; 32],
 }
 
 impl Config {
@@ -227,6 +230,9 @@ impl Config {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| crate::html_pages::HTML_NGINX_IMAGE.to_owned());
+        let database_credentials_encryption_key = credentials_encryption_key(&app_env)?;
+        let image_url_signing_key = image_signing_key(&database_credentials_encryption_key)?;
+        let image_public_base_url = image_public_base_url(&app_env)?;
 
         Ok(Self {
             sso: crate::sso::SsoConfig::from_env(&app_env)?,
@@ -265,7 +271,7 @@ impl Config {
             github_client_id,
             github_client_secret,
             github_oauth_redirect_uri,
-            database_credentials_encryption_key: credentials_encryption_key(&app_env)?,
+            database_credentials_encryption_key,
             kong_admin_url,
             kong_traffic_log_endpoint,
             kong_traffic_log_token,
@@ -279,6 +285,8 @@ impl Config {
             default_rate_limit_rpm,
             html_site_data_dir,
             html_nginx_image,
+            image_public_base_url,
+            image_url_signing_key,
             app_env,
             allowed_origins,
         })
@@ -314,12 +322,7 @@ impl Config {
         CorsLayer::new()
             .allow_origin(AllowOrigin::list(origins))
             .allow_credentials(true)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PATCH,
-                Method::OPTIONS,
-            ])
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
             .allow_headers([
                 header::ACCEPT,
                 header::AUTHORIZATION,
@@ -436,6 +439,47 @@ fn optional_host(key: &str) -> Result<Option<String>> {
         }
         None => Ok(None),
     }
+}
+
+fn image_public_base_url(app_env: &str) -> Result<String> {
+    let value = optional_env("IMAGE_PUBLIC_BASE_URL").unwrap_or_else(|| {
+        if app_env == "production" {
+            "https://img.knotree.org".to_owned()
+        } else {
+            "http://localhost:8080".to_owned()
+        }
+    });
+    let trimmed = value.trim_end_matches('/').to_owned();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+        || trimmed.contains(' ')
+        || trimmed.matches("://").count() != 1
+    {
+        bail!("IMAGE_PUBLIC_BASE_URL must be an http or https origin");
+    }
+    Ok(trimmed)
+}
+
+fn image_signing_key(encryption_key: &[u8; 32]) -> Result<[u8; 32]> {
+    let Some(value) = optional_env("IMAGE_URL_SIGNING_KEY") else {
+        // Public URLs stay valid across restarts without a second production
+        // secret. Rotating the credentials key also rotates these signatures.
+        let mut mac = Hmac::<Sha256>::new_from_slice(encryption_key)
+            .expect("HMAC accepts the 32-byte credentials key");
+        mac.update(b"knotree-image-url-v1");
+        let digest = mac.finalize().into_bytes();
+        let mut key = [0_u8; 32];
+        key.copy_from_slice(&digest);
+        return Ok(key);
+    };
+    let decoded = URL_SAFE_NO_PAD
+        .decode(value.as_bytes())
+        .context("IMAGE_URL_SIGNING_KEY must be base64url")?;
+    if decoded.len() != 32 {
+        bail!("IMAGE_URL_SIGNING_KEY must decode to 32 bytes");
+    }
+    let mut key = [0_u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(key)
 }
 
 fn credentials_encryption_key(app_env: &str) -> Result<[u8; 32]> {
@@ -595,6 +639,8 @@ impl Config {
             default_rate_limit_rpm: 60,
             html_site_data_dir: "/tmp/knotree-html-sites".to_owned(),
             html_nginx_image: "nginxinc/nginx-unprivileged:1.27-alpine".to_owned(),
+            image_public_base_url: "http://localhost:8080".to_owned(),
+            image_url_signing_key: [9; 32],
         }
     }
 }

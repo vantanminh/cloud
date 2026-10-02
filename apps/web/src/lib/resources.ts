@@ -1,4 +1,4 @@
-import { apiRequest, apiUrl } from "@/lib/api"
+import { apiBinaryRequest, apiRequest, apiUrl } from "@/lib/api"
 import type {
   DatabaseConfig,
   DatabaseMetrics,
@@ -14,8 +14,14 @@ import type {
   KnotreeRegistryConnection,
   KnotreeRegistryConnectionList,
   HtmlAnalyticsSummary,
+  ImageApiKey,
+  ImageCompressionMode,
+  ImageKeyAccess,
+  ImageObjectList,
+  ImageStore,
   PostgresResource,
   RedisResource,
+  SignedImageUrl,
 } from "@/lib/types"
 
 export type CreatePostgresResourceInput = {
@@ -461,5 +467,157 @@ export function startKnotreeRegistryConsent(
   return apiRequest<{ authorizationUrl: string }>(
     `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/authorize`,
     { method: "POST", body: { repository } }
+  )
+}
+
+function imageStorePath(workspaceId: string, projectSlug: string, storeId = "") {
+  const base = `/workspaces/${workspaceId}/projects/${projectSlug}/image-stores`
+  return storeId ? `${base}/${storeId}` : base
+}
+
+export type CreateImageStoreInput = {
+  name: string
+  compressionMode: ImageCompressionMode
+  maxWidth?: number
+  maxHeight?: number
+  quality?: number
+}
+
+export function listImageStores(workspaceId: string, projectSlug: string) {
+  return apiRequest<ImageStore[]>(imageStorePath(workspaceId, projectSlug))
+}
+
+export function createImageStore(
+  workspaceId: string,
+  projectSlug: string,
+  input: CreateImageStoreInput
+) {
+  return apiRequest<ImageStore>(imageStorePath(workspaceId, projectSlug), {
+    method: "POST",
+    body: input,
+  })
+}
+
+export function updateImageStore(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  input: CreateImageStoreInput
+) {
+  return apiRequest<ImageStore>(imageStorePath(workspaceId, projectSlug, storeId), {
+    method: "PATCH",
+    body: input,
+  })
+}
+
+export function listImageKeys(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string
+) {
+  return apiRequest<ImageApiKey[]>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/keys`
+  )
+}
+
+export function createImageKey(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  input: { name: string; access: ImageKeyAccess }
+) {
+  return apiRequest<ImageApiKey>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/keys`,
+    { method: "POST", body: input }
+  )
+}
+
+export function revokeImageKey(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  keyId: string
+) {
+  return apiRequest<ImageApiKey>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/keys/${keyId}/revoke`,
+    { method: "POST", body: {} }
+  )
+}
+
+export function listImageObjects(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  folder?: string
+) {
+  const query = new URLSearchParams({ recursive: "true" })
+  if (folder) {
+    query.set("folder", folder)
+  }
+  return apiRequest<ImageObjectList>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/objects?${query.toString()}`
+  )
+}
+
+export function uploadImageObject(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  file: File,
+  folder: string
+) {
+  return apiBinaryRequest<ImageObjectList["objects"][number]>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/objects`,
+    file,
+    {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Knotree-Folder": folder,
+      "X-Knotree-File-Name": file.name,
+    }
+  )
+}
+
+export function deleteImageObject(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  imageId: string
+) {
+  return apiRequest<void>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/objects/${imageId}`,
+    { method: "DELETE" }
+  )
+}
+
+export function deleteImageFolder(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  folder: string
+) {
+  const query = new URLSearchParams({ folder })
+  return apiRequest<{ deleted: number }>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/folders?${query.toString()}`,
+    { method: "DELETE" }
+  )
+}
+
+export function signImageObject(
+  workspaceId: string,
+  projectSlug: string,
+  storeId: string,
+  imageId: string,
+  input: {
+    visibility: "public" | "private"
+    expiresInSeconds?: number
+    width?: number
+    height?: number
+    quality?: number
+    keyId?: string
+  }
+) {
+  return apiRequest<SignedImageUrl>(
+    `${imageStorePath(workspaceId, projectSlug, storeId)}/objects/${imageId}/sign`,
+    { method: "POST", body: input }
   )
 }

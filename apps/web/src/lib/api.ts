@@ -58,6 +58,25 @@ export async function getCsrfToken(): Promise<string> {
   return csrfToken
 }
 
+export async function apiBinaryRequest<T>(
+  path: string,
+  body: Blob,
+  headersInit: Record<string, string>
+): Promise<T> {
+  const headers = new Headers(headersInit)
+  headers.set("X-CSRF-Token", await getCsrfToken())
+  const response = await fetch(apiUrl(path), {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body,
+  })
+  if (!response.ok) {
+    throw await toApiError(response)
+  }
+  return (await response.json()) as T
+}
+
 export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {}
