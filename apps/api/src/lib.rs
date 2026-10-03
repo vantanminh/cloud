@@ -17,6 +17,7 @@ pub mod models;
 pub mod projects;
 pub mod public_access;
 pub mod redis_resources;
+pub mod registry_accounts;
 pub mod registry_consent;
 pub mod resources;
 pub mod security;
@@ -48,6 +49,26 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .route("/auth/knotree-registry/callback", get(registry_consent::callback))
         .route("/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/authorize", post(registry_consent::start))
+        .route(
+            "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/from-account",
+            post(registry_accounts::import_into_project),
+        )
+        .route(
+            "/integrations/knotree-registry",
+            get(registry_accounts::status).delete(registry_accounts::disconnect),
+        )
+        .route(
+            "/integrations/knotree-registry/authorize",
+            post(registry_accounts::start),
+        )
+        .route(
+            "/integrations/knotree-registry/repositories",
+            get(registry_accounts::repositories),
+        )
+        .route(
+            "/integrations/knotree-registry/repositories/{*repository}",
+            get(registry_accounts::repository_tags),
+        )
         .route("/auth/sso/config", get(sso::configuration))
         .route("/auth/sso/start", get(sso::start))
         .route("/auth/sso/callback", get(sso::callback))
