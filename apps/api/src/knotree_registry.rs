@@ -99,6 +99,8 @@ struct RegistryEventMetadata {
     owner_issuer: Option<String>,
     #[serde(default)]
     owner_subject: Option<String>,
+    #[serde(default)]
+    credential_id: Option<Uuid>,
 }
 
 /// An account-derived connection auto-deploys only when Registry reports the
@@ -663,6 +665,26 @@ pub async fn webhook(State(state): State<AppState>, headers: HeaderMap, body: By
     if event.schema_version != 1 || event.kind != event_header {
         return StatusCode::BAD_REQUEST;
     }
+    if event.kind == "grant_revoked" {
+        let Some(credential_id) = event.metadata.credential_id else {
+            return StatusCode::BAD_REQUEST;
+        };
+        let owner = event
+            .metadata
+            .owner_issuer
+            .as_deref()
+            .zip(event.metadata.owner_subject.as_deref());
+        return match crate::registry_accounts::revoke_from_registry(&state, credential_id, owner)
+            .await
+        {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(error) => {
+                tracing::error!(delivery_id = %delivery_id, error = ?error,
+                    "could not apply Knotree Registry grant revocation");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+    }
     if event.kind != "tag_updated" {
         return StatusCode::NO_CONTENT;
     }
@@ -904,6 +926,7 @@ mod tests {
             is_tag: Some(true),
             owner_issuer: issuer.map(Into::into),
             owner_subject: subject.map(Into::into),
+            credential_id: None,
         };
         let issuer = "https://accounts.knotree.com";
         let alice = Some((issuer, "alice"));
