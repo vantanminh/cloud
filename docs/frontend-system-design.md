@@ -2,7 +2,7 @@
 
 > **Status:** Implemented MVP, living design contract  
 > **Scope:** `apps/web`  
-> **Last updated:** 2026-09-13
+> **Last updated:** 2026-10-04
 > **Frontend:** Vite + React 19 + React Router + shadcn/Base UI + Tailwind CSS v4  
 > **Production:** `https://cloud.knotree.com`  
 > **API:** `https://cloudapi.knotree.com/api/v1`
@@ -48,7 +48,8 @@ session should feel quick, calm, and trustworthy:
   Metrics, Console, and Settings. The Database section reads and mutates the
   selected project's dedicated PostgreSQL instance through typed API calls;
   Metrics reads live per-project runtime data through the same boundary.
-- Light and dark dashboard themes persisted as local view preferences.
+- One app-wide light/dark theme, persisted as a local view preference and
+  applied before first paint.
 - Cloudflare Workers static-asset deployment with SPA fallback.
 
 ### Not in the current slice
@@ -133,11 +134,13 @@ Navigation is intentionally small at the workspace boundary:
 
 - Brand mark identifies the product on auth/onboarding screens.
 - Auth screens link only to the alternate auth mode.
-- Workspace project index exposes the signed-in email, project list, `New
-project`, and `Sign out`.
-- Project home provides Resources, Topology, Metrics, Logs, and Integrations
-  navigation, workspace/environment context, and a clear route back to the
-  workspace project index.
+- Every signed-in screen uses the shared `AppShell`: a sidebar on the canvas
+  (workspace switcher, scope navigation, Integrations pinned to the bottom)
+  and an inset panel with a breadcrumb header. The header always carries the
+  page action, the theme toggle, and the account menu (identity, Integrations,
+  `Sign out`).
+- Workspace scope navigation: Projects. Project scope navigation: Resources,
+  Topology, Metrics, Logs; the sidebar also shows the open project.
 - The workspace success state provides the first forward transition into the
   workspace.
 
@@ -242,40 +245,23 @@ creating a second database.
 
 ### 5.1 Authentication shell
 
-Component: `AuthShell`  
+Component: `AuthShell`
 Used by: `/login`, `/register`
 
-#### Desktop composition
-
-- Full viewport white canvas with `1rem` outer padding; `2rem` from the
-  `md` breakpoint upward.
-- Centered frame with `max-width: 1200px`.
-- Two-column grid at `lg`:
-  - brand panel: `0.82fr`;
-  - form panel: `1.18fr`.
-- Frame has a subtle border, `1rem` radius, and a low-contrast shadow.
-- Brand panel has a minimum viewport-height and contains:
-  - `Knotree Cloud` brand mark;
-  - headline: “A calmer way to build together”;
-  - supporting copy: “Knotree Cloud gives teams a flexible workspace to turn
-    ideas into structure.”;
-  - decorative line-art motif;
-  - footer phrase: “Ideas. Structure. Progress together.”
-- Form panel centers a content column no wider than `25rem`.
-
-#### Mobile composition
-
-- The frame collapses to one column.
-- The brand panel becomes a compact top section with a minimum height of
-  `18rem`; the form follows below.
-- Form padding is `1.5rem` on small screens and increases at `md`/`lg`.
-- Decorative imagery is clipped and never becomes interactive or required to
-  understand the form.
+- Two columns from `lg`: a form column (brand, alternate-mode link, centered
+  form no wider than `22.5rem`, quiet footer) and an inset showcase panel on a
+  dotted canvas.
+- The showcase is a static schematic of one service linked to its data stores
+  over the private network, with the caption “Services, databases and the
+  network between them, in one place.” It is `aria-hidden` and never presents
+  itself as live data.
+- Below `lg` the showcase is hidden; below `480px` the alternate-mode prompt
+  keeps only its link.
 
 ### 5.2 Login
 
 Heading: `Welcome back`  
-Supporting text: `Sign in to your workspace`
+Supporting text: `Sign in with your Knotree account to open your workspace.`
 
 Fields:
 
@@ -312,66 +298,43 @@ On success, the account is already authenticated. In development,
 
 ### 5.4 Create first workspace
 
-Component: `NewWorkspacePage`  
+Component: `NewWorkspacePage`
 Route: `/new/workspace`
 
-Layout:
+- Canvas background with the compact brand mark top-left.
+- A single bordered card no wider than `26rem` holding a `Step 1 of 2`
+  indicator, heading `Create your first workspace`, supporting text `A
+  workspace is where your ideas come together.`, the workspace name field
+  (required, 1–80 characters), and the `Create workspace` CTA.
+- Helper text: `Projects and services can be added any time.`
 
-- Full viewport white canvas.
-- Centered content frame no wider than `38rem`.
-- Brand mark at the top.
-- Two-segment stepper with accessible label `Step 1 of 2`.
-- Content column no wider than `25rem`.
-
-Heading: `Create your first workspace`  
-Supporting text: `A workspace is where your ideas come together.`
-
-Fields:
-
-| Field          | Behavior                   |
-| -------------- | -------------------------- |
-| Workspace name | Required, 1–80 characters. |
-
-CTA: `Create workspace`  
-Helper text: `Projects and services can be added any time.`
-
-The API generates a UUID for workspace identity. The UUID is returned by
-workspace creation and session endpoints and forms the workspace route; users
-do not choose a workspace URL slug.
+The API generates a UUID for workspace identity; users do not choose a
+workspace URL slug.
 
 ### 5.5 Creation confirmation
 
-Displayed inline after a successful `POST /workspaces`:
-
-- Centered checkmark in the primary color.
-- Heading: `Workspace created`.
-- Supporting copy: `<workspace name> is ready for your ideas.`
-- Full-width CTA: `Continue to workspace`.
-
-The confirmation is intentionally separate from the API response transition so
-the user can recognize that the workspace was created before entering it.
+The same card shows a check mark on the brand-soft surface, `Workspace
+created`, `<workspace name> is ready for your ideas.`, and a full-width
+`Continue to workspace` CTA.
 
 ### 5.6 Workspace project index
 
 Route: `/workspace/:workspaceId`
 
-This is the authenticated project index and the entry point for project work.
-
-- Header contains compact brand mark on the left.
-- Signed-in email is visible on desktop and hidden on narrow screens to keep
-  the header compact.
-- Header provides `New project` and `Sign out` actions.
-- Empty state uses the heading `Create your first project`, explains that a
-  project owns topology/resources, and keeps `Create project` as the dominant
-  action.
-- Populated state lists projects with name, URL slug, and links to their homes.
-- Loading uses a centered spinner; project-list failures use a page-level
-  alert while leaving the create action available.
+- Rendered inside `AppShell` with the breadcrumb `<workspace> / Projects` and
+  `New project` as the header action.
+- Page header: eyebrow `Workspace`, heading `Welcome to <workspace>`.
+- Populated state: a `Projects` heading with the count, a project search, and a
+  card grid. Each card shows the project initials tile, name, and mono `/slug`;
+  a dashed `New project` card closes the grid.
+- Empty state uses the heading `Create your first project`, a `Create project`
+  CTA, and a three-step explainer (create, add services and data, deploy and
+  observe).
+- Loading uses an inline spinner row; list failures use a page-level alert
+  while leaving the create action available.
 
 The workspace route must only render the workspace returned for the current
-session. A mismatching UUID is corrected by the route guard. Legacy workspace
-slug URLs redirect to the current workspace UUID; legacy project URLs retain
-the project slug during that redirect.
+session. A mismatching UUID is corrected by the route guard.
 
 ### 5.7 Project dashboard
 
@@ -385,62 +348,36 @@ page-local surface tokens.
 
 #### Desktop composition
 
-- Topbar: Knotree mark, workspace and project context, environment, `Add
-  resource`, theme toggle, and sign-out.
-- Side rail: Resources (active by default), Topology, Metrics, Logs, and
-  Integrations. Integrations opens the GitHub integration settings.
-- The `Resources` view has search plus `All resources`, `App services`, and
-  `Data stores` filters. Its table lists app services, hosted HTML pages,
-  PostgreSQL, and Redis with name, type, status, and an action to open the
-  selected resource. Empty and no-match states explain the next action.
-- `Add resource` opens Postgres, Redis, and App service / HTML page creation.
-  App service creation caps a project at six services; resource creation and
-  status come from the real API responses.
-- The `Topology` view has the project service card, optional real PostgreSQL
-  and Redis cards, dashed connectors, and zoom/theme controls. Dragged positions
-  and view preferences are persisted per project.
-- The `Metrics` view lists resources that expose runtime metrics. Selecting one
-  opens its Metrics workspace tab, which renders real API samples and explicit
+- `AppShell` chrome: sidebar with the workspace switcher, the open project
+  (initials, name, `/slug`), Resources / Topology / Metrics / Logs, and
+  Integrations at the bottom. The header breadcrumb is `<workspace> /
+  <project>` plus an environment badge; `Add resource` is the primary action.
+- `Add resource` opens a menu of Postgres, Redis, Images, and App service /
+  HTML page, each with a one-line description. App service creation is capped
+  at six services and the option says so when the cap is reached.
+- The `Resources` view opens by default: a health strip (Resources, Healthy,
+  Deploying, Needs attention — counted from real statuses), a segmented filter
+  (`All resources`, `App services`, `Data stores`), search, and a table of
+  name + mono detail, type, status badge, and `Open`. Rows are clickable. The
+  empty state offers quick-create tiles for each resource type.
+- The `Topology` view is a full-bleed dotted canvas with a legend, draggable
+  resource cards (icon, name, type, mono detail, status, volume), dashed
+  private-network connectors from the database to assigned services, and a
+  zoom dock (zoom out, readout, zoom in, fit). Data stores carry a brand-colour
+  edge.
+- The `Metrics` view lists resources with runtime metrics as cards; each opens
+  the resource Metrics tab, which renders real API samples with explicit
   loading, error, or unsupported-provider states.
-- The `Logs` view shows deployment logs when available and a truthful empty
-  state until runtime log ingestion exists.
-- Resource cards expose name, status, and database name. Clicking a card opens
-  the `ResourceWorkspace` sheet. The sheet has `Deployments`, `Database`,
-  `Backups`, `Variables`, `Metrics`, `Console`, and `Settings` tabs.
-- The `Deployments` tab communicates resource status and lifecycle history.
-  The `Database` tab has `Data`, `Stats`, and `Config` sub-tabs, search,
-  refresh, live table rows, a table builder, bounded SQL execution, and a
-  truthful `No tables yet` state when the dedicated instance has no schema
-  data. `Connect` copies the real connection string without displaying
-  credentials in the UI.
-- The `Metrics` tab calls the selected resource's metrics endpoint, keeps live
-  polling at the server-provided sample interval, and renders CPU, memory,
-  volume, network RX/TX, and disk read/write series. It displays current
-  values, the last update time, loading/error states, and a Live/Paused control;
-  its range selector loads 1-hour, 6-hour, 24-hour, 7-day, or 30-day history,
-  and hovering any chart shows the nearest sample's timestamp and exact values.
-  It never uses placeholder chart coordinates.
-- Add → `Postgres` opens the creation dialog. The API generates the
-  database identifier, login role, and strong password, provisions a dedicated
-  per-project instance, and returns a connection string after a successful
-  connectivity check.
-- Add → `App service` opens a Docker deployment dialog with a display name,
-  image reference, image access mode, and container port. Public mode pulls
-  without credentials. Private mode is restricted to `ghcr.io` and exposes a
-  GitHub OAuth connection action; the browser never receives the GitHub token.
-- The App service Settings menu assigns or removes a ready Postgres resource.
-  The Deployments tab then shows the internal `postgres:5432` endpoint and the
-  number of assigned variables; the Variables tab shows `DATABASE_URL` and
-  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, with secrets masked. Creating
-  either resource does not change the other until the user chooses the
-  connection.
-- The project node remains the application entry point. Once deployed it
-  displays the real image/status and opens a service workspace with deployment
-  metadata, URL, variables, and settings. A failed deployment is shown as an
-  error state and can be retried through Add.
-- `Backups`, write-oriented `Settings` controls, and unsupported resource
-  actions use explicit empty or unavailable states. The App service Console
-  tab does not expose a shell; container logs remain a follow-up capability.
+- The `Logs` view shows deployment logs in a toolbar + stream panel and a
+  truthful empty state until runtime log ingestion exists.
+- Selecting a resource opens `ResourceWorkspace` as a right-hand drawer (at
+  most `66rem` wide) with `Deployments`, `Database`, `Backups`, `Variables`,
+  `Metrics`, `Console`, and `Settings` tabs (HTML pages add `Analytics` and
+  drop `Database`/`Backups`). The drawer header shows the type, environment,
+  and status.
+- Database, Variables, Metrics, Settings, and Console behaviour is unchanged:
+  live tables and bounded SQL, masked variables, ranged metrics with hover
+  values, assign/remove a Postgres connection, and no shell access.
 
 #### Context and transient state
 
@@ -449,8 +386,9 @@ page-local surface tokens.
   the current page.
 - Zoom is clamped from 80% to 125%; fit returns to 100%. Zoom and selected
   resource are persisted per project in local storage as view preferences.
-- The global dashboard theme and canvas theme toggle between `light` and
-  `dark`, and persist in local storage. Theme controls have explicit labels.
+- One global theme toggles between `light` and `dark` from the header, persists
+  in local storage, and is applied by an inline script before first paint. The
+  first visit follows `prefers-color-scheme`.
 - The Logs rail item opens a project-scoped logs shell with resource filtering,
   search, and Live/Paused controls. It remains empty until log ingestion exists.
 - Metrics samples are scoped to the selected dedicated PostgreSQL resource. In
@@ -472,15 +410,13 @@ workspace` action.
 
 #### Mobile composition
 
-- The desktop rail becomes a fixed bottom navigation bar.
-- Topbar keeps a truncated workspace label, environment, activity, and
-  notifications, and the theme action; Agent and the billing badge hide to
-  preserve space.
-- The dotted canvas stacks resource cards in a single column; connectors are
-  hidden because relationship lines are not useful in the narrow layout.
-- `ResourceWorkspace` becomes a full-viewport sheet with a horizontally
-  scrollable tab bar; the body remains vertically scrollable and the fixed
-  bottom navigation is not visible while the modal is open.
+- Below `768px` the sidebar navigation docks to a fixed bottom bar; the header
+  keeps a compact brand link, the current breadcrumb, the action (icon-only
+  `Add resource`), theme toggle, and account menu.
+- The health strip becomes two columns, the table hides the Type column, and
+  the topology cards stack in a single column without connectors.
+- `ResourceWorkspace` fills the viewport with a horizontally scrollable tab
+  bar.
 - The layout must remain within the viewport width at 320px and 390px.
 
 The project card is a logical project/App service node. PostgreSQL and App
@@ -511,102 +447,73 @@ until the user understands how to recover.
 
 ### 6.1 Visual language
 
-The visual direction is “quiet structure”: an airy white foundation, deep pine
-for action, indigo for links, and muted slate for supporting information.
-Avoid gradients, heavy illustrations, glassmorphism, and dense dashboard
-chrome in this product area.
+“Instrument panel”: warm near-neutral greys, hairline borders, small radii,
+and almost no shadow outside overlays. Ink (the foreground colour) is the
+action colour; pine is the single brand accent for focus, selection, links,
+and live state. Status colours (ok, warn, danger) are reserved for status and
+always paired with text. Technical values — images, hosts, slugs, database
+names, timestamps — are set in Geist Mono. Avoid gradients, glows, decorative
+illustration, and oversized display type.
 
 ### 6.2 Color tokens
 
-Tokens are defined in `apps/web/src/index.css` using OKLCH so components use
-semantic roles instead of hard-coded colors.
+Tokens live in `apps/web/src/index.css` as OKLCH custom properties on `:root`
+and are redefined under `.dark`. Components use semantic roles, never raw
+colours.
 
-| Token                | Current value            | Role                                |
-| -------------------- | ------------------------ | ----------------------------------- |
-| `background`         | `oklch(1 0 0)`           | Page and input background           |
-| `foreground`         | `oklch(0.19 0.025 255)`  | Primary text                        |
-| `primary`            | `oklch(0.31 0.075 165)`  | Main CTA, success mark, active step |
-| `primary-foreground` | `oklch(0.985 0.01 165)`  | Text/icon on primary                |
-| `secondary`          | `oklch(0.965 0.012 255)` | Secondary surfaces                  |
-| `muted`              | `oklch(0.972 0.008 255)` | Hover and quiet surfaces            |
-| `muted-foreground`   | `oklch(0.52 0.025 255)`  | Supporting text                     |
-| `accent`             | `oklch(0.965 0.02 260)`  | Accent surface                      |
-| `link`               | `oklch(0.42 0.13 275)`   | Text links                          |
-| `destructive`        | `oklch(0.58 0.19 26)`    | Validation and API error            |
-| `border`             | `oklch(0.90 0.018 255)`  | Dividers and frames                 |
-| `input`              | `oklch(0.86 0.025 255)`  | Input border                        |
-| `ring`               | `oklch(0.45 0.09 165)`   | Keyboard focus ring                 |
+| Token              | Role                                                    |
+| ------------------ | ------------------------------------------------------- |
+| `canvas`           | App background behind the shell and topology canvas     |
+| `background`       | Panels, cards, inputs                                   |
+| `surface`          | Table headers, quiet fills, hover                       |
+| `surface-2`        | Active nav, segmented control track, pressed states     |
+| `border` / `border-strong` | Hairlines / hover and input borders             |
+| `foreground`       | Primary text and primary button fill                    |
+| `muted-foreground` | Secondary text                                          |
+| `faint`            | Tertiary text, placeholders, idle dots                  |
+| `brand`            | Focus ring, selection, active nav icon, links           |
+| `ok` / `warn` / `danger` / `info` | Status only                              |
+| `chart-*`          | Metric series (blue, violet, green, orange; ink = fg)   |
+| `code-bg`          | Log and SQL surfaces                                    |
 
-Rules:
-
-- Prefer semantic tokens (`bg-primary`, `text-muted-foreground`,
-  `border-border`) over raw colors.
-- Do not use color as the only error or status signal; pair it with text,
-  structure, or an icon.
-- Preserve the contrast of primary text, field errors, and focus rings against
-  white surfaces.
+The shadcn roles (`primary`, `secondary`, `muted`, `accent`, `destructive`,
+`input`, `ring`, …) are mapped onto these tokens, so primitives follow the
+theme automatically. The `--project-*` aliases in `project-home.css` exist
+only so older component styles resolve to the same tokens.
 
 ### 6.3 Typography
 
-- Font family: Geist Variable, loaded from `@fontsource-variable/geist`.
-- `font-heading` and `font-sans` resolve to Geist Variable.
-- Headings use semibold weight and tight tracking, usually `text-3xl` to
-  `text-5xl` depending on viewport.
-- Body copy uses regular weight, `text-base`, and approximately `1.75` line
-  height for supporting paragraphs.
-- Eyebrows use small text, medium weight, uppercase, and increased tracking.
-- Error text is at least `text-sm` and remains readable when zoomed.
+- Geist Variable for UI text, Geist Mono Variable for technical values
+  (`@fontsource-variable/geist`, `@fontsource-variable/geist-mono`).
+- Base size 14px. Page titles 22px semibold with tight tracking; section
+  titles 15px; table and control text 13px; meta text 12px.
+- Numbers in stats and charts use tabular figures.
 
 ### 6.4 Spacing, shape, and elevation
 
-- Base radius token: `0.75rem`.
-- Small/medium/large radii derive from the base token.
-- Inputs and buttons are compact but touchable; primary form buttons use
-  `h-11` in the auth/onboarding forms.
-- Form groups use about `1.25rem` between fields and `1.5rem` around the
-  submit region.
-- The auth frame uses a single subtle shadow rather than layered elevation.
-- Success marks are circular and `3.25rem` in the workspace surfaces.
+- Base radius `0.5rem`; cards and tables `0.625rem`; the shell panel and
+  overlays `0.75rem`; controls `0.375rem`.
+- Controls are 32px high (`h-8`); primary auth/onboarding CTAs are 36–40px.
+- Elevation: `shadow-sm` for the shell panel and active nav, `shadow-md` for
+  hover and canvas nodes, `shadow-lg` for menus, dialogs, drawers, and toasts.
 
 ### 6.5 Iconography and imagery
 
-- Use `lucide-react` icons for controls and status affordances.
+- Use `lucide-react` icons at 14–16px with a 1.75 stroke for controls,
+  resource types, and navigation.
+- The Knotree glyph (`KnotreeGlyph`) is an inline SVG of three linked nodes;
+  `BrandMark` pairs it with the product name.
 - Current icons: eye/eye-off for password visibility, check for success, and
   log-out for sign out.
-- Decorative assets:
-  - `apps/web/public/brand/knotree-mark.png` — brand mark;
-  - `apps/web/public/brand/knotree-lines.png` — non-semantic auth motif.
 - Decorative images use an empty `alt` attribute. Product-critical information
   must remain in text.
 
-### 6.6 Topology dashboard tokens
+### 6.6 Topology canvas
 
-The topology dashboard is a denser product surface than auth/onboarding, but
-it keeps the same restraint. Its page-local tokens live in
-`apps/web/src/pages/project-home.css`:
-
-| Token               | Value     | Role                                |
-| ------------------- | --------- | ----------------------------------- |
-| `--project-bg`      | `#ffffff` | Canvas and card background          |
-| `--project-fg`      | `#111111` | Node titles and primary controls    |
-| `--project-accent`  | `#1677ff` | Add CTA, selected node, active rail |
-| `--project-surface` | `#f7f8fa` | Card footers, hover, quiet surfaces |
-| `--project-muted`   | `#6b7280` | Supporting text and connector lines |
-| `--project-border`  | `#d9dee7` | Shell, card, and control borders    |
-| `--project-ok`      | `#16803c` | Ready state text and status accents |
-| `--project-warn`    | `#b45309` | Pending and caution states          |
-
-The default light values above are overridden by the `[data-theme="dark"]`
-dashboard scope (`#0f1216` background, `#f4f6f8` foreground, `#171c22`
-surface, and `#2a323c` border). Topology layout constants are a 64px topbar,
-a 64px desktop rail, 8px shell inset, 8px card radius, and 360px desktop
-node cards. The canvas uses a 24px dot grid, low-elevation card shadows, and
-dashed connector paths. The resource workspace is at most 1180x860px on
-desktop. On mobile the rail is 60px high, the content is stacked, and the
-resource workspace fills the viewport.
-
-Use the local topology tokens only inside the topology page. Shared auth and
-workspace surfaces continue to use the semantic OKLCH tokens above.
+The canvas uses the `canvas` token with a 22px dot grid. Nodes are 248px wide,
+positioned by percentage (centre x, top edge) inside an inset world that zooms
+from 80% to 125%. Connectors are dashed `border-strong` paths that turn solid
+`brand` when an endpoint is selected; selection adds a brand ring to the node.
 
 ## 7. Component architecture
 
@@ -637,7 +544,9 @@ StrictMode
 | Component                                                    | Responsibility                                                                   | Reuse rule                                                                     |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `AuthProvider`                                               | Bootstrap session, expose auth/workspace commands                                | Keep auth mutations here; pages should not own session synchronization         |
-| `AuthShell`                                                  | Shared auth composition and brand panel                                          | Use for public auth entry screens only                                         |
+| `AuthShell`                                                  | Shared auth composition and showcase panel                                       | Use for public auth entry screens only                                         |
+| `AppShell`, `SidebarNavItem`                                 | Signed-in chrome: sidebar, breadcrumb header, theme toggle, account menu         | Every signed-in screen; pass scope navigation rather than re-implementing it   |
+| `ThemeProvider`                                              | App-wide light/dark theme and persistence                                        | Read it with `useTheme`; never store a second, page-local theme                |
 | `BrandMark`                                                  | Product identity, compact or full size                                           | Keep `alt=""` because adjacent text carries the name                           |
 | `PasswordField`                                              | Password input plus visibility toggle                                            | Always provide correct `autocomplete` and field error                          |
 | `LoadingScreen`                                              | Auth bootstrap loading state                                                     | Use before protected/public route decisions are known                          |
@@ -749,7 +658,7 @@ topology dashboard
 | `project`, load error, selected node, menus, toast                    | `ProjectHomePage` / `TopologyDashboard` | Project data is API-backed; view preferences persist locally                                        |
 | `postgresResource`, resource loading/error, create dialog, copy state | `TopologyDashboard`                     | Database metadata and credentials are API-backed; connection string is held in component state only |
 | Zoom and selected resource                                            | `TopologyDashboard`                     | `localStorage` keyed by project id                                                                  |
-| Global theme and canvas theme                                         | `TopologyDashboard`                     | `localStorage` keys `project-topology-dashboard-theme` and `project-topology-canvas-theme`          |
+| Global theme                                                          | `ThemeProvider`                         | `localStorage` key `knotree-theme` (the legacy `project-topology-dashboard-theme` is read once)      |
 | Resource tab, table search, variables search, logs filters            | `ResourceWorkspace` / `LogsWorkspace`   | Memory only; reset when the surface unmounts                                                        |
 
 The frontend does not store the session token, password, or workspace

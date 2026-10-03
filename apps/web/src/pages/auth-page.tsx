@@ -1,3 +1,4 @@
+import { ArrowRightIcon, CheckIcon } from "lucide-react"
 import { Link } from "react-router-dom"
 
 import { AuthShell } from "@/components/auth-shell"
@@ -17,35 +18,58 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   )
 
   return (
-    <AuthShell>
+    <AuthShell
+      aside={
+        <p className="text-[0.8125rem] text-muted-foreground">
+          <span className="auth-switch-prompt">
+            {isRegister
+              ? "Already have an account?"
+              : "Don't have an account?"}{" "}
+          </span>
+          <Link
+            to={isRegister ? "/login" : "/register"}
+            className="font-medium text-foreground underline-offset-4 hover:underline"
+          >
+            {isRegister ? "Sign in" : "Create one"}
+          </Link>
+        </p>
+      }
+    >
       <div className="form-content">
-        <div className="flex flex-col gap-2">
-          <h2 className="font-heading text-3xl font-semibold tracking-[-0.03em] text-foreground">
-            {isRegister ? "Create your account" : "Welcome back"}
-          </h2>
-          <p className="text-base text-muted-foreground">
+        <div className="auth-heading">
+          <h1>{isRegister ? "Create your account" : "Welcome back"}</h1>
+          <p>
             {isRegister
               ? "One Knotree account for Cloud, Registry and every Knotree service."
-              : "Sign in with your Knotree account."}
+              : "Sign in with your Knotree account to open your workspace."}
           </p>
         </div>
 
         <a
           href={href}
-          className={buttonVariants({ size: "lg", className: "h-11 w-full text-sm" })}
+          className={buttonVariants({
+            size: "lg",
+            className: "h-10 w-full text-sm",
+          })}
         >
           {isRegister ? "Create a Knotree account" : "Continue with Knotree"}
+          <ArrowRightIcon data-icon="inline-end" aria-hidden="true" />
         </a>
 
-        <p className="text-center text-sm text-muted-foreground">
-          {isRegister ? "Already have an account?" : "Don't have an account?"}{" "}
-          <Link
-            to={isRegister ? "/login" : "/register"}
-            className="font-medium text-link underline-offset-4 hover:underline"
-          >
-            {isRegister ? "Sign in" : "Create one"}
-          </Link>
-        </p>
+        <ul className="auth-includes">
+          <li>
+            <CheckIcon aria-hidden="true" />
+            Deploy containers and static pages
+          </li>
+          <li>
+            <CheckIcon aria-hidden="true" />
+            Managed PostgreSQL and Redis on a private network
+          </li>
+          <li>
+            <CheckIcon aria-hidden="true" />
+            Live metrics and deployment logs
+          </li>
+        </ul>
       </div>
     </AuthShell>
   )

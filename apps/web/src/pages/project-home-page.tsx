@@ -8,28 +8,35 @@ import {
   type ReactNode,
 } from "react"
 import {
+  ActivityIcon,
   ArrowUpRightIcon,
-  BarChart3Icon,
   BoxIcon,
+  CheckIcon,
+  ChevronRightIcon,
   DatabaseIcon,
-  FileTextIcon,
-  GitBranchIcon,
+  FileCodeIcon,
   HardDriveIcon,
   ImageIcon,
+  LayersIcon,
+  LayoutGridIcon,
   Maximize2Icon,
+  MinusIcon,
   NetworkIcon,
+  PlugIcon,
+  PlusIcon,
+  ScrollTextIcon,
   SearchIcon,
-  Settings2Icon,
-  MoonIcon,
-  SunIcon,
   XIcon,
-  ZoomInIcon,
-  ZoomOutIcon,
 } from "lucide-react"
 import { cn } from "cn"
-import { useNavigate, useParams } from "react-router-dom"
+import { Link, useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import {
+  AppShell,
+  BreadcrumbSeparator,
+  SidebarNavItem,
+} from "@/components/app-shell"
 import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 import { ImageStoreCreateDialog } from "@/components/image-store-create-dialog"
 import { ImageStoreWorkspace } from "@/components/image-store-workspace"
@@ -40,6 +47,7 @@ import { ResourceWorkspace } from "@/components/resource-workspace"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
+import { initials } from "@/lib/initials"
 import { getProject } from "@/lib/projects"
 import {
   appServiceDeploymentEventsUrl,
@@ -67,6 +75,7 @@ import type {
   PostgresResourceStatus,
   Project,
   RedisResource,
+  User,
   RedisResourceStatus,
   Workspace,
 } from "@/lib/types"
@@ -76,7 +85,6 @@ import "./project-home.css"
 type TopologyNodeId = string
 type ConnectorId = string
 type Environment = "production" | "staging"
-type Theme = "light" | "dark"
 type WorkspaceView = "resources" | "topology" | "metrics" | "logs"
 
 type TopologyNode = {
@@ -90,9 +98,7 @@ type TopologyNode = {
   position: { left: number; top: number }
 }
 
-function isInfrastructureNode(
-  node: TopologyNode
-): node is TopologyNode & {
+function isInfrastructureNode(node: TopologyNode): node is TopologyNode & {
   resource?: PostgresResource | AppService | RedisResource
 } {
   return node.resource?.resourceType !== "images"
@@ -160,6 +166,7 @@ export function ProjectHomePage() {
   return (
     <TopologyDashboard
       project={project}
+      user={session.user}
       workspace={session.workspace}
       workspaceId={workspaceId}
       projectSlug={projectSlug}
@@ -178,16 +185,19 @@ function ProjectLoadError({
 
   return (
     <main className="project-load-error">
-      <div className="project-load-error-mark" aria-hidden="true">
+      <span className="empty-icon" aria-hidden="true">
         <XIcon />
-      </div>
-      <div className="flex max-w-md flex-col gap-3 text-center">
-        <h1 className="font-heading text-3xl font-semibold tracking-[-0.04em]">
+      </span>
+      <div className="flex max-w-md flex-col gap-2 text-center">
+        <h1 className="text-xl font-semibold tracking-[-0.02em]">
           Project unavailable
         </h1>
-        <p className="leading-7 text-muted-foreground">{message}</p>
+        <p className="text-sm leading-6 text-muted-foreground">{message}</p>
       </div>
-      <Button onClick={() => navigate(`/workspace/${workspace.id}`)}>
+      <Button
+        variant="outline"
+        onClick={() => navigate(`/workspace/${workspace.id}`)}
+      >
         Back to workspace
       </Button>
     </main>
@@ -196,17 +206,17 @@ function ProjectLoadError({
 
 function TopologyDashboard({
   project,
+  user,
   workspace,
   workspaceId,
   projectSlug,
 }: {
   project: Project
+  user: User
   workspace: Workspace
   workspaceId: string
   projectSlug: string
 }) {
-  const navigate = useNavigate()
-  const { session, signOut } = useAuth()
   const [postgresResource, setPostgresResource] =
     useState<PostgresResource | null>(null)
   const [redisResource, setRedisResource] = useState<RedisResource | null>(null)
@@ -219,12 +229,6 @@ function TopologyDashboard({
   const [appServiceDialogOpen, setAppServiceDialogOpen] = useState(false)
   const [imageDialogOpen, setImageDialogOpen] = useState(false)
   const [copiedConnectionString, setCopiedConnectionString] = useState(false)
-  const [theme, setTheme] = useState<Theme>(() =>
-    readStoredTheme("project-topology-dashboard-theme")
-  )
-  const [canvasTheme, setCanvasTheme] = useState<Theme>(() =>
-    readStoredTheme("project-topology-canvas-theme")
-  )
   const [activeView, setActiveView] = useState<WorkspaceView>("resources")
   const [resourceWorkspaceInitialTab, setResourceWorkspaceInitialTab] =
     useState<"deployments" | "metrics">("deployments")
@@ -317,9 +321,12 @@ function TopologyDashboard({
       }
     })
     const merged = mergePositions(defaults, positions)
-    const placed = [databaseNode, redisNode, ...imageNodes, ...serviceNodes].filter(
-      (node): node is TopologyNode => Boolean(node)
-    )
+    const placed = [
+      databaseNode,
+      redisNode,
+      ...imageNodes,
+      ...serviceNodes,
+    ].filter((node): node is TopologyNode => Boolean(node))
     if (placed.length > 0) {
       return placed.map((node) => ({
         ...node,
@@ -469,14 +476,6 @@ function TopologyDashboard({
       } satisfies PersistedDashboardState)
     )
   }, [positions, selectedNode, stateKey, zoom])
-
-  useEffect(() => {
-    window.localStorage.setItem("project-topology-dashboard-theme", theme)
-  }, [theme])
-
-  useEffect(() => {
-    window.localStorage.setItem("project-topology-canvas-theme", canvasTheme)
-  }, [canvasTheme])
 
   useEffect(() => {
     return () => {
@@ -690,196 +689,149 @@ function TopologyDashboard({
     setActiveView("logs")
   }, [])
 
-  function toggleTheme() {
-    setTheme((current) => (current === "dark" ? "light" : "dark"))
-  }
-
-  function toggleCanvasTheme() {
-    setCanvasTheme((current) => (current === "dark" ? "light" : "dark"))
-  }
-
-  async function handleSignOut() {
-    try {
-      await signOut()
-    } finally {
-      navigate("/login", { replace: true })
-    }
-  }
-
   const selectedNodeData = nodes.find((node) => node.id === selectedNode)
-  const memberInitial = getInitial(session?.user.fullName ?? workspace.name)
+  const resourceNodes = nodes.filter((node) => Boolean(node.resource))
+  const addActions: AddResourceActions = {
+    postgres: handlePostgresAdd,
+    redis: handleRedisAdd,
+    images: handleImagesAdd,
+    app: handleAppServiceAdd,
+  }
 
   return (
-    <div className="project-home" data-theme={theme}>
-      <header className="project-topbar">
-        <div className="project-topbar-left">
-          <button
-            className="project-brand-button"
-            type="button"
-            aria-label={`Open ${workspace.name} workspace`}
-            onClick={() => navigate(`/workspace/${workspace.id}`)}
-          >
-            <span className="project-brand-mark" aria-hidden="true">
-              <span />
+    <AppShell
+      className="project-home"
+      workspace={workspace}
+      user={user}
+      context={
+        <>
+          <span className="app-sidebar-label">Project</span>
+          <div className="app-sidebar-project">
+            <span className="project-initial" aria-hidden="true">
+              {initials(project.name)}
             </span>
-          </button>
-          <span className="project-topbar-divider" aria-hidden="true" />
-          <div className="project-workspace-switcher">
-            <span className="project-avatar-dot" aria-hidden="true">
-              {getInitial(workspace.name)}
+            <span>
+              <strong>{project.name}</strong>
+              <small>/{project.slug}</small>
             </span>
-            <button
-              className="project-context-trigger"
-              type="button"
-              aria-label={`Return to ${workspace.name} workspace`}
-              onClick={() => navigate(`/workspace/${workspace.id}`)}
-            >
-              <span className="project-context-label">{workspace.name}</span>
-            </button>
           </div>
-          <span className="project-topbar-divider" aria-hidden="true" />
-          <span className="project-project-context">{project.name}</span>
-          <span className="project-environment-context">{environment}</span>
-        </div>
-
-        <div className="project-topbar-right">
-          <div ref={addMenuRef} className="project-add-wrap">
-            <button
-              className="project-primary-button"
-              type="button"
-              aria-expanded={addMenuOpen}
-              aria-controls="project-add-menu"
-              onClick={() => setAddMenuOpen((current) => !current)}
-            >
-              <span className="project-plus" aria-hidden="true">
-                +
-              </span>
-              <span className="project-add-label">Add resource</span>
-            </button>
-            <div
-              id="project-add-menu"
-              className="project-add-menu"
-              hidden={!addMenuOpen}
-            >
-              <div className="project-menu-heading">Add resource</div>
-              <ProjectAddOption
-                mark="P"
-                label={
-                  postgresResource?.status === "ready"
-                    ? "Postgres (ready)"
-                    : postgresResource?.status === "provisioning"
-                      ? "Postgres (creating)"
-                      : "Postgres"
-                }
-                onClick={handlePostgresAdd}
-              />
-              <ProjectAddOption
-                mark="R"
-                label={
-                  redisResource?.status === "ready" ? "Redis (ready)" : "Redis"
-                }
-                onClick={handleRedisAdd}
-              />
-              <ProjectAddOption
-                mark="I"
-                label="Images"
-                onClick={handleImagesAdd}
-              />
-              <ProjectAddOption
-                mark="S"
-                label="App service / HTML page"
-                disabled={appServices.length >= 6}
-                onClick={handleAppServiceAdd}
-              />
-            </div>
-          </div>
-          <div className="project-topbar-actions" aria-label="Account actions">
-            <button
-              className="project-icon-button"
-              type="button"
-              aria-label={
-                theme === "dark"
-                  ? "Switch to light mode"
-                  : "Switch to dark mode"
-              }
-              aria-pressed={theme === "dark"}
-              onClick={toggleTheme}
-            >
-              {theme === "dark" ? (
-                <MoonIcon aria-hidden="true" />
-              ) : (
-                <SunIcon aria-hidden="true" />
-              )}
-            </button>
-          </div>
-          <button
-            className="project-agent-button"
-            type="button"
-            aria-label={`Sign out ${session?.user.email ?? "account"}`}
-            onClick={() => void handleSignOut()}
-          >
-            <span className="project-agent-avatar" aria-hidden="true">
-              {memberInitial}
-            </span>
-            <span className="project-sign-out-label">Sign out</span>
-          </button>
-        </div>
-      </header>
-
-      <aside className="project-side-rail">
-        <div className="project-rail-project">
-          <strong>{project.name}</strong>
-          <span>{workspace.name}</span>
-        </div>
-        <nav className="project-rail-nav" aria-label="Primary">
-          <ProjectRailButton
+        </>
+      }
+      nav={
+        <>
+          <SidebarNavItem
             active={activeView === "resources"}
             label="Resources"
+            icon={<LayoutGridIcon />}
             onClick={() => setActiveView("resources")}
-          >
-            <BoxIcon aria-hidden="true" />
-          </ProjectRailButton>
-          <ProjectRailButton
+          />
+          <SidebarNavItem
             active={activeView === "topology"}
             label="Topology"
+            icon={<NetworkIcon />}
             onClick={() => setActiveView("topology")}
-          >
-            <NetworkIcon aria-hidden="true" />
-          </ProjectRailButton>
-          <ProjectRailButton
+          />
+          <SidebarNavItem
             active={activeView === "metrics"}
             label="Metrics"
+            icon={<ActivityIcon />}
             onClick={() => setActiveView("metrics")}
-          >
-            <BarChart3Icon aria-hidden="true" />
-          </ProjectRailButton>
-          <ProjectRailButton
+          />
+          <SidebarNavItem
             active={activeView === "logs"}
             label="Logs"
+            icon={<ScrollTextIcon />}
             onClick={() => {
               setSelectedNode(null)
               setActiveView("logs")
             }}
+          />
+        </>
+      }
+      footerNav={
+        <SidebarNavItem
+          label="Integrations"
+          icon={<PlugIcon />}
+          to="/settings/integrations"
+        />
+      }
+      breadcrumbs={
+        <>
+          <Link
+            to={`/workspace/${workspace.id}`}
+            className="app-breadcrumb-link app-breadcrumb-hide-mobile"
+            aria-label={`Return to ${workspace.name} workspace`}
           >
-            <FileTextIcon aria-hidden="true" />
-          </ProjectRailButton>
-          <ProjectRailButton
-            label="Integrations"
-            onClick={() => navigate("/settings/integrations")}
+            {workspace.name}
+          </Link>
+          <span className="app-breadcrumb-hide-mobile">
+            <BreadcrumbSeparator />
+          </span>
+          <span className="app-breadcrumb-current project-project-context">
+            {project.name}
+          </span>
+          <span className="app-env-badge">{environment}</span>
+        </>
+      }
+      actions={
+        <div ref={addMenuRef} className="project-add-wrap">
+          <Button
+            size="sm"
+            aria-expanded={addMenuOpen}
+            aria-controls="project-add-menu"
+            aria-label="Add resource"
+            onClick={() => setAddMenuOpen((current) => !current)}
           >
-            <Settings2Icon aria-hidden="true" />
-          </ProjectRailButton>
-        </nav>
-        <button
-          className="project-account-button"
-          type="button"
-          aria-label="Sign out"
-          onClick={() => void handleSignOut()}
-        >
-          {memberInitial}
-        </button>
-      </aside>
-
+            <PlusIcon data-icon="inline-start" />
+            <span className="project-add-label">Add resource</span>
+          </Button>
+          <div
+            id="project-add-menu"
+            className="app-menu project-add-menu"
+            hidden={!addMenuOpen}
+          >
+            <div className="project-menu-heading">Add to {project.name}</div>
+            <ProjectAddOption
+              icon={<DatabaseIcon />}
+              label={
+                postgresResource?.status === "ready"
+                  ? "Postgres (ready)"
+                  : postgresResource?.status === "provisioning"
+                    ? "Postgres (creating)"
+                    : "Postgres"
+              }
+              description="Dedicated relational database"
+              onClick={handlePostgresAdd}
+            />
+            <ProjectAddOption
+              icon={<LayersIcon />}
+              label={
+                redisResource?.status === "ready" ? "Redis (ready)" : "Redis"
+              }
+              description="In-memory cache and queues"
+              onClick={handleRedisAdd}
+            />
+            <ProjectAddOption
+              icon={<ImageIcon />}
+              label="Images"
+              description="Image storage with resizing"
+              onClick={handleImagesAdd}
+            />
+            <ProjectAddOption
+              icon={<BoxIcon />}
+              label="App service / HTML page"
+              description={
+                appServices.length >= 6
+                  ? "Limit of 6 services reached"
+                  : "Deploy a container or static site"
+              }
+              disabled={appServices.length >= 6}
+              onClick={handleAppServiceAdd}
+            />
+          </div>
+        </div>
+      }
+    >
       <main className="project-dashboard-main">
         {activeView === "logs" ? (
           <LogsWorkspace
@@ -892,16 +844,16 @@ function TopologyDashboard({
         ) : activeView === "resources" ? (
           <ResourcesWorkspace
             project={project}
-            nodes={nodes.filter((node) => Boolean(node.resource))}
+            nodes={resourceNodes}
             loading={resourcesLoading}
             error={resourceError}
             onOpenResource={(node) => selectNode(node.id)}
-            onAddResource={() => setAddMenuOpen(true)}
+            addActions={addActions}
           />
         ) : activeView === "metrics" ? (
           <MetricsWorkspace
             project={project}
-            nodes={nodes.filter((node) => Boolean(node.resource))}
+            nodes={resourceNodes}
             loading={resourcesLoading}
             error={resourceError}
             onOpenMetrics={(node) => {
@@ -918,26 +870,17 @@ function TopologyDashboard({
                 selectedNode && "has-selection"
               )}
               aria-label={`${environment} infrastructure topology for ${project.name}`}
-              data-canvas-theme={canvasTheme}
             >
-              <div className="project-canvas-toolbar">
-                <button
-                  className="project-canvas-theme-toggle"
-                  type="button"
-                  aria-label={
-                    canvasTheme === "dark"
-                      ? "Switch canvas to light mode"
-                      : "Switch canvas to dark mode"
-                  }
-                  aria-pressed={canvasTheme === "dark"}
-                  onClick={toggleCanvasTheme}
-                >
-                  {canvasTheme === "dark" ? (
-                    <MoonIcon aria-hidden="true" />
-                  ) : (
-                    <SunIcon aria-hidden="true" />
-                  )}
-                </button>
+              <div className="project-canvas-legend" aria-hidden="true">
+                <span>
+                  <i className="is-service" /> Services
+                </span>
+                <span>
+                  <i className="is-data" /> Data stores
+                </span>
+                <span>
+                  <i className="is-link" /> Private network
+                </span>
               </div>
 
               <svg
@@ -947,30 +890,6 @@ function TopologyDashboard({
                 aria-hidden="true"
                 style={{ transform: `scale(${zoom})` }}
               >
-                <defs>
-                  <marker
-                    id="project-arrowhead"
-                    viewBox="0 0 5 5"
-                    refX="4.4"
-                    refY="2.5"
-                    markerWidth="4"
-                    markerHeight="4"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M0 0 5 2.5 0 5z" fill="var(--project-muted)" />
-                  </marker>
-                  <marker
-                    id="project-arrowhead-accent"
-                    viewBox="0 0 5 5"
-                    refX="4.4"
-                    refY="2.5"
-                    markerWidth="4"
-                    markerHeight="4"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M0 0 5 2.5 0 5z" fill="var(--project-accent)" />
-                  </marker>
-                </defs>
                 {postgresResource &&
                   appServices.map((service) => {
                     if (!service.databaseConnection) {
@@ -979,23 +898,22 @@ function TopologyDashboard({
                     const serviceNode = nodes.find(
                       (node) => node.id === appServiceNodeId(service.id)
                     )
-                    if (!serviceNode) {
+                    const databaseNode = nodes.find(
+                      (node) => node.id === "postgres"
+                    )
+                    if (!serviceNode || !databaseNode) {
                       return null
                     }
                     const connector = appServiceDatabaseConnectorId(service.id)
-                    const left = serviceNode.position.left
-                    const top = serviceNode.position.top
+                    const from = databaseNode.position
+                    const to = serviceNode.position
+                    const midTop = Math.max(from.top, to.top - 6)
                     return (
                       <path
                         key={connector}
                         className={connectorClassName(connector, selectedNode)}
                         data-connector={connector}
-                        d={`M50 27 V32 H${left} V${top}`}
-                        markerEnd={
-                          selectedNode === serviceNode.id
-                            ? "url(#project-arrowhead-accent)"
-                            : "url(#project-arrowhead)"
-                        }
+                        d={`M${from.left} ${from.top} V${midTop} H${to.left} V${to.top}`}
                       />
                     )
                   })}
@@ -1013,28 +931,26 @@ function TopologyDashboard({
                   <span>{resourceError}</span>
                 </div>
               )}
-              {!resourcesLoading && !resourceError && !postgresResource && (
-                <div className="project-canvas-empty">
-                  <span
-                    className="project-canvas-empty-icon"
-                    aria-hidden="true"
-                  >
-                    <DatabaseIcon />
-                  </span>
-                  <strong>Create your first database</strong>
-                  <span>
-                    Add a real PostgreSQL database to give this project a
-                    durable data store.
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => setPostgresDialogOpen(true)}
-                  >
-                    Create database
-                  </Button>
-                </div>
-              )}
+              {!resourcesLoading &&
+                !resourceError &&
+                resourceNodes.length === 0 && (
+                  <div className="project-canvas-empty">
+                    <strong>Nothing deployed yet</strong>
+                    <span>
+                      Resources you add appear here with their private network
+                      links.
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPostgresDialogOpen(true)}
+                    >
+                      <DatabaseIcon data-icon="inline-start" />
+                      Create database
+                    </Button>
+                  </div>
+                )}
 
               <div
                 ref={canvasRef}
@@ -1046,8 +962,7 @@ function TopologyDashboard({
                     key={node.id}
                     className={cn(
                       "project-node-card",
-                      node.resource?.resourceType === "app" &&
-                        "project-app-node",
+                      isDataNode(node) ? "is-data" : "is-service",
                       selectedNode === node.id && "is-selected"
                     )}
                     style={{
@@ -1071,64 +986,53 @@ function TopologyDashboard({
                     }}
                   >
                     <div className="project-node-main">
-                      <div className="project-node-title">
-                        <span className="project-node-logo" aria-hidden="true">
-                          <NodeIcon nodeId={node.id} />
-                        </span>
-                        <div>
-                          <h2 className="project-node-heading">{node.title}</h2>
-                          {node.subtitle && (
-                            <p className="project-node-subtitle">
-                              {node.subtitle}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="project-node-status">
-                        <span
-                          className={cn(
-                            "project-status-dot",
-                            `project-status-dot-${node.status.toLowerCase()}`
-                          )}
-                          aria-hidden="true"
-                        />
-                        <span>{node.status}</span>
+                      <span className="project-node-logo" aria-hidden="true">
+                        <ResourceIcon node={node} />
+                      </span>
+                      <div className="project-node-text">
+                        <h2 className="project-node-heading">{node.title}</h2>
+                        <p className="project-node-type">{node.type}</p>
                       </div>
                     </div>
+                    {node.subtitle && node.subtitle !== node.title && (
+                      <p className="project-node-subtitle">{node.subtitle}</p>
+                    )}
                     <div className="project-node-footer">
-                      <HardDriveIcon
-                        className="project-storage-icon"
-                        aria-hidden="true"
-                      />
-                      <span>{node.volume}</span>
+                      <StatusBadge status={node.status} />
+                      <span className="project-node-volume">
+                        <HardDriveIcon aria-hidden="true" />
+                        <span>{node.volume}</span>
+                      </span>
                     </div>
                   </article>
                 ))}
               </div>
 
               <div className="project-selection-hint" aria-hidden="true">
-                <kbd>Click</kbd> a resource to inspect
+                Drag to arrange · click to inspect
               </div>
 
               <div className="project-zoom-dock" aria-label="Canvas controls">
-                <div className="project-zoom-group">
-                  <button
-                    className="project-zoom-button"
-                    type="button"
-                    aria-label="Zoom in"
-                    onClick={() => updateZoom(zoom + 0.1, "Zoomed in")}
-                  >
-                    <ZoomInIcon aria-hidden="true" />
-                  </button>
-                  <button
-                    className="project-zoom-button"
-                    type="button"
-                    aria-label="Zoom out"
-                    onClick={() => updateZoom(zoom - 0.1, "Zoomed out")}
-                  >
-                    <ZoomOutIcon aria-hidden="true" />
-                  </button>
-                </div>
+                <button
+                  className="project-zoom-button"
+                  type="button"
+                  aria-label="Zoom out"
+                  onClick={() => updateZoom(zoom - 0.1, "Zoomed out")}
+                >
+                  <MinusIcon aria-hidden="true" />
+                </button>
+                <span className="project-zoom-readout" aria-live="polite">
+                  {Math.round(zoom * 100)}%
+                </span>
+                <button
+                  className="project-zoom-button"
+                  type="button"
+                  aria-label="Zoom in"
+                  onClick={() => updateZoom(zoom + 0.1, "Zoomed in")}
+                >
+                  <PlusIcon aria-hidden="true" />
+                </button>
+                <span className="project-zoom-divider" aria-hidden="true" />
                 <button
                   className="project-zoom-button"
                   type="button"
@@ -1137,9 +1041,6 @@ function TopologyDashboard({
                 >
                   <Maximize2Icon aria-hidden="true" />
                 </button>
-                <span className="project-zoom-readout" aria-live="polite">
-                  {Math.round(zoom * 100)}%
-                </span>
               </div>
             </section>
           </>
@@ -1231,37 +1132,62 @@ function TopologyDashboard({
 
       {toast && (
         <div className="project-toast" role="status" aria-live="polite">
+          <CheckIcon aria-hidden="true" />
           {toast}
         </div>
       )}
-    </div>
+    </AppShell>
   )
 }
 
-function ProjectRailButton({
-  active = false,
-  label,
-  onClick,
-  children,
+type AddResourceActions = Record<
+  "postgres" | "redis" | "images" | "app",
+  () => void
+>
+
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <span className={cn("status-badge", `status-${statusSlug(status)}`)}>
+      <span className="status-badge-dot" aria-hidden="true" />
+      {status}
+    </span>
+  )
+}
+
+function statusSlug(status: string) {
+  return status.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+}
+
+function isDataNode(node: TopologyNode) {
+  return (
+    node.resource?.resourceType === "postgres" ||
+    node.resource?.resourceType === "redis" ||
+    node.resource?.resourceType === "images"
+  )
+}
+
+function ViewState({
+  loading,
+  error,
 }: {
-  active?: boolean
-  label: string
-  onClick: () => void
-  children: ReactNode
+  loading: boolean
+  error: string | null
 }) {
   return (
-    <button
-      className="project-rail-button"
-      type="button"
-      aria-current={active ? "page" : undefined}
-      aria-label={label}
-      onClick={onClick}
-    >
-      <span className="project-rail-icon" aria-hidden="true">
-        {children}
-      </span>
-      <span className="project-rail-label">{label}</span>
-    </button>
+    <>
+      {error && (
+        <div className="project-view-error" role="alert">
+          <strong>Resources unavailable</strong>
+          <span>{error}</span>
+        </div>
+      )}
+      {loading && (
+        <div className="loading-row" role="status">
+          <Spinner />
+          <span>Loading resources</span>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -1271,23 +1197,20 @@ function ResourcesWorkspace({
   loading,
   error,
   onOpenResource,
-  onAddResource,
+  addActions,
 }: {
   project: Project
   nodes: TopologyNode[]
   loading: boolean
   error: string | null
   onOpenResource: (node: TopologyNode) => void
-  onAddResource: () => void
+  addActions: AddResourceActions
 }) {
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<"all" | "services" | "data">("all")
   const normalizedSearch = search.trim().toLowerCase()
   const filteredNodes = nodes.filter((node) => {
-    const isDataStore =
-      node.resource?.resourceType === "postgres" ||
-      node.resource?.resourceType === "redis" ||
-      node.resource?.resourceType === "images"
+    const isDataStore = isDataNode(node)
     const matchesFilter =
       filter === "all" || (filter === "data" ? isDataStore : !isDataStore)
     const matchesSearch =
@@ -1297,140 +1220,226 @@ function ResourcesWorkspace({
         .includes(normalizedSearch)
     return matchesFilter && matchesSearch
   })
+  const counts = {
+    total: nodes.length,
+    online: nodes.filter((node) => ["Online", "Ready"].includes(node.status))
+      .length,
+    creating: nodes.filter((node) => node.status === "Creating").length,
+    attention: nodes.filter((node) => node.status === "Needs attention").length,
+  }
 
   return (
-    <section className="project-content-view" aria-labelledby="resources-title">
-      <div className="project-view-heading">
-        <div>
-          <h1 id="resources-title">Resources</h1>
-          <p>Manage app services and data stores for this project.</p>
+    <div className="app-content">
+      <section
+        className="app-page project-content-view"
+        aria-labelledby="resources-title"
+      >
+        <div className="page-header">
+          <div>
+            <h1 id="resources-title">Resources</h1>
+            <p>Manage app services and data stores for this project.</p>
+          </div>
         </div>
-      </div>
 
-      <div className="project-resource-toolbar">
-        <label className="project-resource-search">
-          <SearchIcon aria-hidden="true" />
-          <span className="sr-only">Search resources</span>
-          <input
-            type="search"
-            value={search}
-            placeholder="Search resources"
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
-        <div
-          className="project-resource-filters"
-          role="group"
-          aria-label="Filter resources"
-        >
-          {(
-            [
-              ["all", "All resources"],
-              ["services", "App services"],
-              ["data", "Data stores"],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={filter === value}
-              className={cn(filter === value && "is-active")}
-              onClick={() => setFilter(value)}
+        {!loading && nodes.length > 0 && (
+          <dl className="project-stats" aria-label="Resource health">
+            <div>
+              <dt>Resources</dt>
+              <dd>{counts.total}</dd>
+            </div>
+            <div className="is-online">
+              <dt>Healthy</dt>
+              <dd>{counts.online}</dd>
+            </div>
+            <div className="is-creating">
+              <dt>Deploying</dt>
+              <dd>{counts.creating}</dd>
+            </div>
+            <div className={cn(counts.attention > 0 && "is-attention")}>
+              <dt>Needs attention</dt>
+              <dd>{counts.attention}</dd>
+            </div>
+          </dl>
+        )}
+
+        {nodes.length > 0 && (
+          <div className="project-resource-toolbar">
+            <div
+              className="segmented"
+              role="group"
+              aria-label="Filter resources"
             >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {error && (
-        <div className="project-view-error" role="alert">
-          <strong>Resources unavailable</strong>
-          <span>{error}</span>
-        </div>
-      )}
-
-      {loading ? (
-        <div className="project-view-loading" role="status">
-          <Spinner />
-          <span>Loading resources</span>
-        </div>
-      ) : nodes.length === 0 && !error ? (
-        <div className="project-view-empty">
-          <span className="project-view-empty-icon" aria-hidden="true">
-            <BoxIcon />
-          </span>
-          <h2>No resources yet</h2>
-          <p>
-            Add an app service, HTML page, PostgreSQL database, Redis store, or
-            image store to get started.
-          </p>
-          <Button type="button" onClick={onAddResource}>
-            Add resource
-          </Button>
-        </div>
-      ) : filteredNodes.length === 0 && !error ? (
-        <div className="project-view-empty project-view-empty-compact">
-          <h2>No matching resources</h2>
-          <p>Try another search or filter for {project.name}.</p>
-        </div>
-      ) : (
-        <div className="project-resource-table-wrap">
-          <table className="project-resource-table">
-            <caption className="sr-only">Resources for {project.name}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Type</th>
-                <th scope="col">Status</th>
-                <th scope="col">Open</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredNodes.map((node) => (
-                <tr key={node.id}>
-                  <th scope="row" className="project-resource-name-cell">
-                    <span className="project-resource-icon" aria-hidden="true">
-                      <ResourceIcon node={node} />
-                    </span>
-                    <span className="project-resource-name">
-                      <strong>{node.title}</strong>
-                      <span className="project-resource-mobile-type">
-                        {node.type}
-                      </span>
-                    </span>
-                  </th>
-                  <td className="project-resource-type-cell">{node.type}</td>
-                  <td>
-                    <span className="project-resource-status">
-                      <span
-                        className={cn(
-                          "project-resource-status-dot",
-                          `status-${node.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
-                        )}
-                        aria-hidden="true"
-                      />
-                      {node.status}
-                    </span>
-                  </td>
-                  <td className="project-resource-action-cell">
-                    <button
-                      type="button"
-                      className="project-resource-open"
-                      aria-label={`Open ${node.title}`}
-                      onClick={() => onOpenResource(node)}
-                    >
-                      <span>Open</span>
-                      <ArrowUpRightIcon aria-hidden="true" />
-                    </button>
-                  </td>
-                </tr>
+              {(
+                [
+                  ["all", "All resources"],
+                  ["services", "App services"],
+                  ["data", "Data stores"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {label}
+                </button>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+            </div>
+            <label className="search-field">
+              <SearchIcon aria-hidden="true" />
+              <span className="sr-only">Search resources</span>
+              <input
+                type="search"
+                value={search}
+                placeholder="Search resources"
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+          </div>
+        )}
+
+        <ViewState loading={loading} error={error} />
+
+        {loading ? null : nodes.length === 0 && !error ? (
+          <div className="empty-panel">
+            <span className="empty-icon" aria-hidden="true">
+              <LayoutGridIcon />
+            </span>
+            <div>
+              <h2>No resources yet</h2>
+              <p>
+                Add an app service, HTML page, PostgreSQL database, Redis store,
+                or image store to get started.
+              </p>
+            </div>
+            <div className="project-quick-add">
+              <QuickAddTile
+                icon={<BoxIcon />}
+                title="App service"
+                description="Container image or HTML page"
+                onClick={addActions.app}
+              />
+              <QuickAddTile
+                icon={<DatabaseIcon />}
+                title="PostgreSQL"
+                description="Dedicated database"
+                onClick={addActions.postgres}
+              />
+              <QuickAddTile
+                icon={<LayersIcon />}
+                title="Redis store"
+                description="Cache and queues"
+                onClick={addActions.redis}
+              />
+              <QuickAddTile
+                icon={<ImageIcon />}
+                title="Image store"
+                description="Resized image delivery"
+                onClick={addActions.images}
+              />
+            </div>
+          </div>
+        ) : filteredNodes.length === 0 && !error ? (
+          <div className="empty-panel project-empty-compact">
+            <div>
+              <h2>No matching resources</h2>
+              <p>Try another search or filter for {project.name}.</p>
+            </div>
+          </div>
+        ) : nodes.length > 0 ? (
+          <div className="data-table-wrap">
+            <table className="data-table project-resource-table">
+              <caption className="sr-only">
+                Resources for {project.name}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col" className="project-resource-type-cell">
+                    Type
+                  </th>
+                  <th scope="col">Status</th>
+                  <th scope="col">
+                    <span className="sr-only">Open</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredNodes.map((node) => (
+                  <tr key={node.id} onClick={() => onOpenResource(node)}>
+                    <th scope="row">
+                      <span className="project-resource-name-cell">
+                        <span
+                          className={cn(
+                            "project-resource-icon",
+                            isDataNode(node) && "is-data"
+                          )}
+                          aria-hidden="true"
+                        >
+                          <ResourceIcon node={node} />
+                        </span>
+                        <span className="project-resource-name">
+                          <strong>{node.title}</strong>
+                          {node.subtitle && node.subtitle !== node.title && (
+                            <span className="project-resource-subtitle">
+                              {node.subtitle}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                    </th>
+                    <td className="project-resource-type-cell">{node.type}</td>
+                    <td>
+                      <StatusBadge status={node.status} />
+                    </td>
+                    <td className="project-resource-action-cell">
+                      <button
+                        type="button"
+                        className="project-resource-open"
+                        aria-label={`Open ${node.title}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onOpenResource(node)
+                        }}
+                      >
+                        <span>Open</span>
+                        <ChevronRightIcon aria-hidden="true" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  )
+}
+
+function QuickAddTile({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: ReactNode
+  title: string
+  description: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className="project-quick-add-tile"
+      aria-label={`New ${title}`}
+      onClick={onClick}
+    >
+      <span aria-hidden="true">{icon}</span>
+      <strong>{title}</strong>
+      <small>{description}</small>
+    </button>
   )
 }
 
@@ -1454,113 +1463,97 @@ function MetricsWorkspace({
   )
 
   return (
-    <section className="project-content-view" aria-labelledby="metrics-title">
-      <div className="project-view-heading">
-        <div>
-          <h1 id="metrics-title">Metrics</h1>
-          <p>
-            Choose a PostgreSQL database or app service to view its live
-            metrics.
-          </p>
+    <div className="app-content">
+      <section
+        className="app-page project-content-view"
+        aria-labelledby="metrics-title"
+      >
+        <div className="page-header">
+          <div>
+            <h1 id="metrics-title">Metrics</h1>
+            <p>
+              Choose a PostgreSQL database or app service to view its live
+              metrics.
+            </p>
+          </div>
         </div>
-      </div>
 
-      {error && (
-        <div className="project-view-error" role="alert">
-          <strong>Resources unavailable</strong>
-          <span>{error}</span>
-        </div>
-      )}
+        <ViewState loading={loading} error={error} />
 
-      {loading ? (
-        <div className="project-view-loading" role="status">
-          <Spinner />
-          <span>Loading resources</span>
-        </div>
-      ) : metricNodes.length === 0 && !error ? (
-        <div className="project-view-empty">
-          <span className="project-view-empty-icon" aria-hidden="true">
-            <BarChart3Icon />
-          </span>
-          <h2>No metrics resources yet</h2>
-          <p>
-            Add a PostgreSQL database or app service to view runtime metrics for
-            {` ${project.name}`}.
-          </p>
-        </div>
-      ) : (
-        <div className="project-resource-table-wrap">
-          <table className="project-resource-table project-metrics-table">
-            <caption className="sr-only">
-              Resources with runtime metrics in {project.name}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Type</th>
-                <th scope="col">Status</th>
-                <th scope="col">Metrics</th>
-              </tr>
-            </thead>
-            <tbody>
-              {metricNodes.map((node) => (
-                <tr key={node.id}>
-                  <th scope="row" className="project-resource-name-cell">
-                    <span className="project-resource-icon" aria-hidden="true">
+        {loading ? null : metricNodes.length === 0 && !error ? (
+          <div className="empty-panel">
+            <span className="empty-icon" aria-hidden="true">
+              <ActivityIcon />
+            </span>
+            <div>
+              <h2>No metrics resources yet</h2>
+              <p>
+                Add a PostgreSQL database or app service to view runtime metrics
+                for {project.name}.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <ul className="project-metric-grid">
+            {metricNodes.map((node) => (
+              <li key={node.id}>
+                <button
+                  type="button"
+                  className="project-metric-card"
+                  aria-label={`View metrics for ${node.title}`}
+                  onClick={() => onOpenMetrics(node)}
+                >
+                  <span className="project-metric-card-head">
+                    <span
+                      className={cn(
+                        "project-resource-icon",
+                        isDataNode(node) && "is-data"
+                      )}
+                      aria-hidden="true"
+                    >
                       <ResourceIcon node={node} />
                     </span>
-                    <span className="project-resource-name">
-                      <strong>{node.title}</strong>
-                      <span className="project-resource-mobile-type">
-                        {node.type}
-                      </span>
+                    <StatusBadge status={node.status} />
+                  </span>
+                  <span className="project-metric-card-body">
+                    <strong>{node.title}</strong>
+                    <span>{node.type}</span>
+                  </span>
+                  <span className="project-metric-card-foot">
+                    <span>
+                      {node.resource?.resourceType === "app"
+                        ? "CPU · memory · requests · latency"
+                        : "CPU · memory · volume · I/O"}
                     </span>
-                  </th>
-                  <td className="project-resource-type-cell">{node.type}</td>
-                  <td>
-                    <span className="project-resource-status">
-                      <span
-                        className={cn(
-                          "project-resource-status-dot",
-                          `status-${node.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
-                        )}
-                        aria-hidden="true"
-                      />
-                      {node.status}
-                    </span>
-                  </td>
-                  <td className="project-resource-action-cell">
-                    <button
-                      type="button"
-                      className="project-resource-open"
-                      aria-label={`View metrics for ${node.title}`}
-                      onClick={() => onOpenMetrics(node)}
-                    >
-                      <span>View metrics</span>
+                    <span className="project-metric-card-cta">
+                      View metrics
                       <ArrowUpRightIcon aria-hidden="true" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
   )
 }
 
 function ResourceIcon({ node }: { node: TopologyNode }) {
   if (node.type === "HTML page") {
-    return <FileTextIcon aria-hidden="true" />
+    return <FileCodeIcon aria-hidden="true" />
   }
   if (node.resource?.resourceType === "images") {
     return <ImageIcon aria-hidden="true" />
   }
-  if (node.resource?.resourceType === "app") {
-    return <BoxIcon aria-hidden="true" />
+  if (node.resource?.resourceType === "postgres") {
+    return <DatabaseIcon aria-hidden="true" />
   }
-  return <NodeIcon nodeId={node.id} />
+  if (node.resource?.resourceType === "redis") {
+    return <LayersIcon aria-hidden="true" />
+  }
+  return <BoxIcon aria-hidden="true" />
 }
 
 function LogsWorkspace({
@@ -1593,11 +1586,7 @@ function LogsWorkspace({
         return []
       }
       const source = new EventSource(
-        appServiceDeploymentEventsUrl(
-          workspaceId,
-          projectSlug,
-          deployment.id
-        ),
+        appServiceDeploymentEventsUrl(workspaceId, projectSlug, deployment.id),
         { withCredentials: true }
       )
       source.addEventListener("deployment", (event) => {
@@ -1646,92 +1635,103 @@ function LogsWorkspace({
     : []
 
   return (
-    <section className="project-logs-shell" aria-label={`${project.name} logs`}>
-      <div className="project-logs-toolbar">
-        <div className="project-logs-heading">
-          <h1>Logs</h1>
-          <p>
-            Runtime events for {project.name} · {environment}
-          </p>
-        </div>
-        <div className="project-logs-filters">
-          <label>
-            <span className="sr-only">Filter logs by resource</span>
-            <select
-              value={resourceFilter}
-              onChange={(event) => setResourceFilter(event.target.value)}
-            >
-              <option value="all">All resources</option>
-              <option value="postgres">Postgres</option>
-              <option value="project">App service</option>
-            </select>
-          </label>
-          <label className="project-logs-search">
-            <SearchIcon aria-hidden="true" />
-            <span className="sr-only">Search logs</span>
-            <input
-              type="search"
-              value={search}
-              placeholder="Filter messages..."
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <button
-            className="project-logs-live"
-            type="button"
-            aria-pressed={live}
-            onClick={() => setLive((current) => !current)}
-          >
-            <span aria-hidden="true" />
-            {live ? "Live" : "Paused"}
-          </button>
-        </div>
-      </div>
-      <div className="project-logs-stream" role="log" aria-live="polite">
-        {visibleDeployments.length > 0 ? (
-          visibleDeployments.map(({ service, deployment }) => (
-            <div key={service.id} className="project-logs-deployment">
-              <strong>{service.name}</strong>
-              <AppServiceDeploymentLogs deployment={deployment} compact />
-              {!live && (
-                <span className="project-logs-filter-note">
-                  Live tail paused; showing the last saved deployment snapshot.
-                </span>
-              )}
-            </div>
-          ))
-        ) : (
-          <div className="project-logs-empty">
-            <span className="project-logs-empty-icon" aria-hidden="true">
-              <FileTextIcon />
-            </span>
-            <h2>No logs yet</h2>
+    <div className="app-content">
+      <section
+        className="app-page project-logs-shell"
+        aria-label={`${project.name} logs`}
+      >
+        <div className="page-header">
+          <div>
+            <h1>Logs</h1>
             <p>
-              Logs will appear here once{" "}
-              {resourceFilter === "all" ? "a resource" : "this resource"} starts
-              handling traffic.
+              Deployment events for {project.name} ·{" "}
+              <span className="mono">{environment}</span>
             </p>
-            {(search || !live) && (
-              <span className="project-logs-filter-note">
-                {search ? `Filtering for “${search}” · ` : ""}
-                {live ? "Live tail enabled" : "Live tail paused"}
-              </span>
+          </div>
+        </div>
+        <div className="project-logs-panel">
+          <div className="project-logs-toolbar">
+            <label className="project-select">
+              <span className="sr-only">Filter logs by resource</span>
+              <select
+                value={resourceFilter}
+                onChange={(event) => setResourceFilter(event.target.value)}
+              >
+                <option value="all">All resources</option>
+                <option value="postgres">Postgres</option>
+                <option value="project">App service</option>
+              </select>
+            </label>
+            <label className="search-field">
+              <SearchIcon aria-hidden="true" />
+              <span className="sr-only">Search logs</span>
+              <input
+                type="search"
+                value={search}
+                placeholder="Filter messages…"
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+            <button
+              className="project-logs-live"
+              type="button"
+              aria-pressed={live}
+              onClick={() => setLive((current) => !current)}
+            >
+              <span aria-hidden="true" />
+              {live ? "Live" : "Paused"}
+            </button>
+          </div>
+          <div className="project-logs-stream" role="log" aria-live="polite">
+            {visibleDeployments.length > 0 ? (
+              visibleDeployments.map(({ service, deployment }) => (
+                <div key={service.id} className="project-logs-deployment">
+                  <strong>{service.name}</strong>
+                  <AppServiceDeploymentLogs deployment={deployment} compact />
+                  {!live && (
+                    <span className="project-logs-filter-note">
+                      Live tail paused; showing the last saved deployment
+                      snapshot.
+                    </span>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="project-logs-empty">
+                <span className="empty-icon" aria-hidden="true">
+                  <ScrollTextIcon />
+                </span>
+                <h2>No logs yet</h2>
+                <p>
+                  Logs will appear here once{" "}
+                  {resourceFilter === "all" ? "a resource" : "this resource"}{" "}
+                  starts handling traffic.
+                </p>
+                {(search || !live) && (
+                  <span className="project-logs-filter-note">
+                    {search ? `Filtering for “${search}” · ` : ""}
+                    {live ? "Live tail enabled" : "Live tail paused"}
+                  </span>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
-    </section>
+        </div>
+      </section>
+    </div>
   )
 }
 
 function ProjectAddOption({
   label,
-  mark,
+  description,
+  icon,
   disabled = false,
   onClick,
 }: {
   label: string
-  mark: string
+  description: string
+  icon: ReactNode
   disabled?: boolean
   onClick: () => void
 }) {
@@ -1739,25 +1739,19 @@ function ProjectAddOption({
     <button
       className="project-menu-option"
       type="button"
+      aria-label={label}
       disabled={disabled}
       onClick={onClick}
     >
       <span className="project-menu-icon" aria-hidden="true">
-        {mark}
+        {icon}
       </span>
-      <span>{label}</span>
+      <span className="project-menu-text" aria-hidden="true">
+        <strong>{label}</strong>
+        <small>{description}</small>
+      </span>
     </button>
   )
-}
-
-function NodeIcon({ nodeId }: { nodeId: TopologyNodeId }) {
-  if (nodeId === "postgres") {
-    return <DatabaseIcon aria-hidden="true" />
-  }
-  if (nodeId === "redis") {
-    return <HardDriveIcon aria-hidden="true" />
-  }
-  return <GitBranchIcon aria-hidden="true" />
 }
 
 function appServiceNodeId(serviceId: string) {
@@ -1829,16 +1823,4 @@ function isTopologyNodeId(value: unknown): value is TopologyNodeId {
     value === "project" ||
     (typeof value === "string" && value.startsWith("app:") && value.length > 4)
   )
-}
-
-function getInitial(value: string) {
-  return value.trim().charAt(0).toUpperCase() || "K"
-}
-
-function readStoredTheme(key: string): Theme {
-  try {
-    return window.localStorage.getItem(key) === "dark" ? "dark" : "light"
-  } catch {
-    return "light"
-  }
 }
