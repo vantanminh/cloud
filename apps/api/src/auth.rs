@@ -48,8 +48,17 @@ pub struct AuthenticatedUser {
     pub id: Uuid,
 }
 
-pub async fn csrf(State(state): State<AppState>) -> Response {
-    let token = security::random_token();
+pub async fn csrf(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Reuse the browser's current token so another tab fetching /auth/csrf
+    // does not invalidate the token this tab already holds.
+    let token = security::get_cookie(&headers, state.config.csrf_cookie_name())
+        .filter(|value| {
+            (32..=128).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+        .unwrap_or_else(security::random_token);
     let mut response = (
         StatusCode::OK,
         Json(CsrfResponse {
@@ -424,5 +433,33 @@ mod tests {
     fn rejects_short_password() {
         let error = validate_identity("User", "user@example.com", "short").unwrap_err();
         assert!(matches!(error, AppError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn csrf_reuses_the_browsers_current_token() {
+        let Some(state) = crate::test_support::test_app_state().await else {
+            return;
+        };
+        let token_from = |response: Response| {
+            let cookie = response.headers()[axum::http::header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_owned()
+        };
+        let first = token_from(csrf(State(state.clone()), HeaderMap::new()).await);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}={first}", state.config.csrf_cookie_name()).parse().unwrap(),
+        );
+        assert_eq!(token_from(csrf(State(state.clone()), headers).await), first);
+        // A malformed cookie is replaced, not echoed back.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}=bad;token", state.config.csrf_cookie_name()).parse().unwrap(),
+        );
+        assert_ne!(token_from(csrf(State(state), headers).await), "bad");
     }
 }
