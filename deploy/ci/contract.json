@@ -169,5 +169,8 @@
   },
   "external_secrets": [
     "KNOTREE_REGISTRY_WEBHOOK_SECRET"
+  ],
+  "optional_config": [
+    "KNOTREE_REGISTRY_SERVICE_ORIGIN"
   ]
 }

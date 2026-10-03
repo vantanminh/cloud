@@ -102,7 +102,7 @@ pub async fn start(
     let verifier = security::random_token();
     let challenge = URL_SAFE_NO_PAD.encode(security::token_hash(&verifier));
     let response = registry_consent::client()?
-        .post(format!("{REGISTRY}/api/v1/cloud-grants/requests"))
+        .post(format!("{}/api/v1/cloud-grants/requests", crate::knotree_registry::registry_api_origin()))
         .json(&serde_json::json!({
             "client_id": registry_consent::CLIENT,
             "redirect_uri": registry_consent::CALLBACK,
@@ -115,7 +115,7 @@ pub async fn start(
         }))
         .send()
         .await
-        .map_err(|_| invalid())?;
+        .map_err(registry_consent::registry_consent_unreachable)?;
     let started: Started = registry_consent::bounded_json(response).await?;
     if started.authorization_url != format!("{REGISTRY}/cloud/authorize/{}", started.request_id) {
         return Err(invalid());
@@ -228,7 +228,7 @@ pub(crate) async fn complete_callback(
             &state.config.database_credentials_encryption_key,
         )?;
         let response = registry_consent::client()?
-            .post(format!("{REGISTRY}/api/v1/cloud-grants/exchange"))
+            .post(format!("{}/api/v1/cloud-grants/exchange", crate::knotree_registry::registry_api_origin()))
             .json(&serde_json::json!({
                 "client_id": registry_consent::CLIENT,
                 "redirect_uri": registry_consent::CALLBACK,
@@ -237,7 +237,7 @@ pub(crate) async fn complete_callback(
             }))
             .send()
             .await
-            .map_err(|_| invalid())?;
+            .map_err(registry_consent::registry_consent_unreachable)?;
         let grant: Grant = registry_consent::bounded_json(response).await?;
         validate_grant(&grant, &attempt)?;
         let encrypted = security::encrypt_secret(
@@ -518,7 +518,7 @@ fn registry_unavailable() -> AppError {
 
 async fn registry_get(path: &str, username: &str, secret: &str) -> Result<serde_json::Value, AppError> {
     let mut response = registry_consent::client()?
-        .get(format!("{REGISTRY}{path}"))
+        .get(format!("{}{path}", knotree_registry::registry_api_origin()))
         .basic_auth(username, Some(secret))
         .send()
         .await

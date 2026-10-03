@@ -30,6 +30,10 @@ pub(crate) fn session_hash(state: &AppState, headers: &HeaderMap) -> Result<Vec<
         security::get_cookie(headers, state.config.session_cookie_name()).ok_or_else(invalid)?;
     Ok(security::token_hash(&token))
 }
+pub(crate) fn registry_consent_unreachable(error: reqwest::Error) -> AppError {
+    tracing::warn!(error = %error, "could not reach Knotree Registry for consent");
+    invalid()
+}
 pub(crate) fn client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -41,6 +45,8 @@ pub(crate) async fn bounded_json<T: serde::de::DeserializeOwned>(
     mut response: reqwest::Response,
 ) -> Result<T, AppError> {
     if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), url = %response.url(),
+            "Knotree Registry rejected a consent request");
         return Err(invalid());
     }
     let mut bytes = Vec::new();
@@ -87,9 +93,9 @@ pub async fn start(
     let state_token = security::random_token();
     let verifier = security::random_token();
     let challenge = URL_SAFE_NO_PAD.encode(security::token_hash(&verifier));
-    let response = client()?.post(format!("{REGISTRY}/api/v1/cloud-grants/requests"))
+    let response = client()?.post(format!("{}/api/v1/cloud-grants/requests", crate::knotree_registry::registry_api_origin()))
         .json(&serde_json::json!({"client_id":CLIENT,"redirect_uri":CALLBACK,"state":state_token,"repository":repository,"code_challenge":challenge,"code_challenge_method":"S256","expected_issuer":config.issuer,"expected_subject":subject}))
-        .send().await.map_err(|_| invalid())?;
+        .send().await.map_err(registry_consent_unreachable)?;
     let started: Started = bounded_json(response).await?;
     if started.authorization_url != format!("{REGISTRY}/cloud/authorize/{}", started.request_id) {
         return Err(invalid());
@@ -213,9 +219,9 @@ pub async fn callback(
             &attempt.verifier_ciphertext,
             &state.config.database_credentials_encryption_key,
         )?;
-        let response = client()?.post(format!("{REGISTRY}/api/v1/cloud-grants/exchange"))
+        let response = client()?.post(format!("{}/api/v1/cloud-grants/exchange", crate::knotree_registry::registry_api_origin()))
             .json(&serde_json::json!({"client_id":CLIENT,"redirect_uri":CALLBACK,"code":code,"code_verifier":verifier}))
-            .send().await.map_err(|_| invalid())?;
+            .send().await.map_err(registry_consent_unreachable)?;
         let grant: Grant = bounded_json(response).await?;
         validate_grant(&grant, &attempt)?;
         if !knotree_registry::verify_pull_access(

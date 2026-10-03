@@ -20,11 +20,34 @@ use crate::{auth, cluster_kubernetes, error::AppError, projects, security, state
 
 pub const REGISTRY_HOST: &str = "registry.knotree.com";
 const REGISTRY_URL: &str = "https://registry.knotree.com";
+const REGISTRY_SERVICE_ORIGIN: &str = "http://registry.knotree-registry.svc.cluster.local";
 const REGISTRY_TOKEN_SERVICE: &str = "knotree-registry";
 const WEBHOOK_CLOCK_SKEW_SECONDS: i64 = 300;
 const MAX_REGISTRY_DELIVERY_BYTES: usize = 64 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Origin for Cloud's server-to-server Registry calls. In production these
+/// stay inside the cluster (`KNOTREE_REGISTRY_SERVICE_ORIGIN`) so Cloudflare
+/// cannot challenge them; browsers always use the public registry URL.
+pub(crate) fn registry_api_origin() -> &'static str {
+    static ORIGIN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(|| {
+        api_origin_from(std::env::var("KNOTREE_REGISTRY_SERVICE_ORIGIN").ok().as_deref())
+    })
+}
+
+fn api_origin_from(value: Option<&str>) -> &'static str {
+    match value.map(|value| value.trim().trim_end_matches('/')) {
+        None | Some("") => REGISTRY_URL,
+        Some(REGISTRY_SERVICE_ORIGIN) => REGISTRY_SERVICE_ORIGIN,
+        Some(other) => {
+            tracing::warn!(origin = other,
+                "ignoring KNOTREE_REGISTRY_SERVICE_ORIGIN; only the in-cluster Registry service is allowed");
+            REGISTRY_URL
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct RegistryDockerCredentials {
@@ -554,7 +577,7 @@ pub(crate) async fn resolve_tag_digest(
         .timeout(Duration::from_secs(15))
         .build()
         .ok()?;
-    let url = format!("{REGISTRY_URL}/v2/{repository}/manifests/{tag}");
+    let url = format!("{}/v2/{repository}/manifests/{tag}", registry_api_origin());
     let response = client
         .get(url)
         .bearer_auth(bearer)
@@ -593,7 +616,8 @@ async fn request_registry_bearer(
         return None;
     };
     let token_url = format!(
-        "{REGISTRY_URL}/auth/token?service={REGISTRY_TOKEN_SERVICE}&scope=repository:{repository}:pull"
+        "{}/auth/token?service={REGISTRY_TOKEN_SERVICE}&scope=repository:{repository}:pull",
+        registry_api_origin()
     );
     let response = client
         .get(token_url)
@@ -916,6 +940,17 @@ mod tests {
             br#"{"kind":"tag_updated"} "#,
             &signature
         ));
+    }
+
+    #[test]
+    fn server_calls_only_use_the_in_cluster_registry_service() {
+        assert_eq!(api_origin_from(None), REGISTRY_URL);
+        assert_eq!(api_origin_from(Some("")), REGISTRY_URL);
+        assert_eq!(
+            api_origin_from(Some("http://registry.knotree-registry.svc.cluster.local/")),
+            REGISTRY_SERVICE_ORIGIN
+        );
+        assert_eq!(api_origin_from(Some("http://attacker.example")), REGISTRY_URL);
     }
 
     #[test]
