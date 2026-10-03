@@ -18,7 +18,6 @@ pub mod projects;
 pub mod public_access;
 pub mod redis_resources;
 pub mod registry_accounts;
-pub mod registry_consent;
 pub mod resources;
 pub mod security;
 pub mod sso;
@@ -47,19 +46,13 @@ struct HealthResponse {
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
-        .route("/auth/knotree-registry/callback", get(registry_consent::callback))
-        .route("/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/authorize", post(registry_consent::start))
         .route(
             "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/from-account",
             post(registry_accounts::import_into_project),
         )
         .route(
             "/integrations/knotree-registry",
-            get(registry_accounts::status).delete(registry_accounts::disconnect),
-        )
-        .route(
-            "/integrations/knotree-registry/authorize",
-            post(registry_accounts::start),
+            get(registry_accounts::status),
         )
         .route(
             "/integrations/knotree-registry/repositories",
@@ -74,8 +67,6 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/sso/callback", get(sso::callback))
         .route("/auth/csrf", get(auth::csrf))
         .route("/auth/me", get(auth::me))
-        .route("/auth/register", post(auth::register))
-        .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/github/start", get(github::start))
         .route("/auth/github/callback", get(github::callback))
@@ -83,12 +74,11 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/github/disconnect", post(github::disconnect))
         .route(
             "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections",
-            get(knotree_registry::list_connections).post(knotree_registry::create_connection),
+            get(knotree_registry::list_connections),
         )
         .route(
             "/workspaces/{workspace_id}/projects/{project_slug}/registry-connections/{connection_id}",
-            patch(knotree_registry::update_connection)
-                .delete(knotree_registry::revoke_connection),
+            axum::routing::delete(knotree_registry::revoke_connection),
         )
         .route(
             "/public/webhooks/knotree-registry",

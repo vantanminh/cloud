@@ -1,5 +1,38 @@
 # Knotree Registry integration for App services
 
+## Current design: one Knotree account, nothing to connect (DEC-0012)
+
+Cloud and Registry share one Knotree account, so users never connect,
+authorize or renew Registry access. This supersedes the token, per-repository
+consent and "connect once" flows described further down, which are kept for
+history.
+
+- **Sign-in.** Cloud has no passwords. `/login` and `/register` both send the
+  user to Knotree Accounts (`/api/v1/auth/sso/start`, with `?intent=signup` for
+  sign-up). Users are identified by the Knotree `sub` only. Email, name and
+  username are refreshed at every sign-in.
+- **Internal API.** Cloud calls Registry's cluster-only API at
+  `http://registry-internal.knotree-registry.svc.cluster.local:8081`.
+  - It authenticates with a projected ServiceAccount token (audience
+    `knotree-registry-internal`, 10 minutes, mounted at
+    `/var/run/secrets/knotree-registry/token`). Registry verifies the token with
+    TokenReview.
+  - Each call names the signed-in account (`X-Knotree-Issuer`,
+    `X-Knotree-Subject`). Registry answers only for that account's `kt-`
+    namespace.
+  - The Helm values are under `knotreeRegistry.internal`.
+- **Picker.** `GET /integrations/knotree-registry/repositories` and
+  `.../repositories/{repo}` list only the signed-in account's images.
+- **Import.** `POST .../registry-connections/from-account` asks Registry for a
+  pull-only credential for one repository. Cloud stores it encrypted on the
+  project connection, together with `owner_issuer` and `owner_subject`.
+- **Renewal.** Credentials last 90 days. Cloud renews them when less than
+  30 days remain, both before every deploy and every 6 hours in the
+  background. Renewal rewrites the pull Secrets of the affected services.
+  Registry keeps the newest two credentials live.
+- **Auto-deploy.** A signed `tag_updated` event deploys a service only when
+  the event's `owner_subject` matches the connection owner.
+
 ## Status and scope
 
 The Cloud-side implementation is in place in this repository. It adds a

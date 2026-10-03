@@ -9,6 +9,8 @@ pub struct UserResponse {
     pub email: String,
     #[serde(rename = "emailVerified")]
     pub email_verified: bool,
+    /// The Knotree account username, when Accounts shared it.
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,20 +30,6 @@ pub struct ProjectResponse {
 pub struct AuthResponse {
     pub user: UserResponse,
     pub workspace: Option<WorkspaceResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterRequest {
-    #[serde(rename = "fullName")]
-    pub full_name: String,
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
 }
 
 #[derive(Debug, Deserialize)]

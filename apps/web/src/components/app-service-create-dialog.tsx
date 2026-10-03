@@ -4,7 +4,6 @@ import { BoxIcon, FileCodeIcon, GitBranchIcon } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AppServiceDeploymentLogs } from "@/components/app-service-deployment-logs"
-import { connectKnotreeRegistryAccount } from "@/components/knotree-registry-account-card"
 import { KnotreeRegistryImagePicker } from "@/components/knotree-registry-image-picker"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,10 +20,7 @@ import { ApiError } from "@/lib/api"
 import {
   type CreateAppServiceInput,
   createAppService,
-  createKnotreeRegistryConnection,
-  startKnotreeRegistryConsent,
   appServiceDeploymentEventsUrl,
-  listKnotreeRegistryConnections,
   getGithubAuthorizationUrl,
   getGithubConnectionStatus,
   getKnotreeRegistryAccount,
@@ -36,7 +32,6 @@ import type {
   AppServiceDeployment,
   GithubConnectionStatus,
   KnotreeRegistryAccountStatus,
-  KnotreeRegistryConnection,
 } from "@/lib/types"
 
 type AppServiceCreateDialogProps = {
@@ -51,7 +46,6 @@ type AppServiceCreateDialogProps = {
 type ServiceKind = "docker" | "html"
 type ImageSource = "public" | "github" | "knotree_registry"
 type HtmlSource = "paste" | "github"
-const NEW_REGISTRY_CONNECTION = "new"
 
 export function AppServiceCreateDialog({
   workspaceId,
@@ -85,23 +79,8 @@ export function AppServiceCreateDialog({
   const [githubStatus, setGithubStatus] =
     useState<GithubConnectionStatus | null>(null)
   const [githubStatusLoading, setGithubStatusLoading] = useState(false)
-  const [registryUsername, setRegistryUsername] = useState("")
-  const [registryToken, setRegistryToken] = useState("")
-  const [registryConnections, setRegistryConnections] = useState<
-    KnotreeRegistryConnection[]
-  >([])
-  const [registryConnectionChoice, setRegistryConnectionChoice] = useState(
-    NEW_REGISTRY_CONNECTION
-  )
-  const [registryConsentReady, setRegistryConsentReady] = useState(false)
-  const [registryConsentBusy, setRegistryConsentBusy] = useState(false)
   const [registryAutoDeployReady, setRegistryAutoDeployReady] = useState(false)
   const [registryAutoDeploy, setRegistryAutoDeploy] = useState(false)
-  const [registryConnectionsProjectKey, setRegistryConnectionsProjectKey] =
-    useState("")
-  const [registryStatusError, setRegistryStatusError] = useState<string | null>(
-    null
-  )
   const [registryAccount, setRegistryAccount] =
     useState<KnotreeRegistryAccountStatus | null>(null)
   const [registryAccountLoaded, setRegistryAccountLoaded] = useState(false)
@@ -114,29 +93,12 @@ export function AppServiceCreateDialog({
     (kind === "html" && htmlSource === "github")
   const needsKnotreeRegistry =
     kind === "docker" && imageSource === "knotree_registry"
-  const registryProjectKey = `${workspaceId}:${projectSlug}`
-  const registryStatusLoading =
-    needsKnotreeRegistry && registryConnectionsProjectKey !== registryProjectKey
-  const currentRegistryConnections =
-    registryConnectionsProjectKey === registryProjectKey
-      ? registryConnections
-      : []
   const registryRepository = needsKnotreeRegistry
     ? registryRepositoryFromImage(image)
     : ""
-  const matchingRegistryConnections = currentRegistryConnections.filter(
-    (connection) => connection.repository === registryRepository
-  )
-  const registryChoice = matchingRegistryConnections.some(
-    (connection) => connection.id === registryConnectionChoice
-  )
-    ? registryConnectionChoice
-    : NEW_REGISTRY_CONNECTION
-  // Images in the user's own connected namespace deploy through the account
-  // connection; anything else keeps the per-repository token flow.
+  // The signed-in Knotree account can deploy only its own Registry namespace.
   const accountCovers = Boolean(
     registryAccount?.connected &&
-    !registryAccount.expired &&
     registryAccount.namespace &&
     registryRepository.startsWith(`${registryAccount.namespace}/`)
   )
@@ -183,9 +145,8 @@ export function AppServiceCreateDialog({
       .then((account) => {
         if (active) {
           setRegistryAccount(account)
-          if (account.autoDeployReady && account.connected) {
-            setRegistryAutoDeployReady(true)
-          }
+          setRegistryAutoDeployReady(account.autoDeployReady && account.connected)
+          if (!account.autoDeployReady) setRegistryAutoDeploy(false)
         }
       })
       .catch(() => {
@@ -199,41 +160,6 @@ export function AppServiceCreateDialog({
       active = false
     }
   }, [needsKnotreeRegistry, open])
-
-  useEffect(() => {
-    if (!open || !needsKnotreeRegistry) {
-      return undefined
-    }
-
-    let active = true
-    void listKnotreeRegistryConnections(workspaceId, projectSlug)
-      .then((result) => {
-        if (active) {
-          setRegistryConnections(result.connections)
-          setRegistryConsentReady(result.consentReady === true)
-          setRegistryAutoDeployReady(result.autoDeployReady)
-          if (!result.autoDeployReady) setRegistryAutoDeploy(false)
-          setRegistryConnectionsProjectKey(registryProjectKey)
-          setRegistryStatusError(null)
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setRegistryConnections([])
-          setRegistryConsentReady(false)
-          setRegistryStatusError(
-            "Saved Registry connections could not be loaded. You can still connect a new repository."
-          )
-          setRegistryAutoDeployReady(false)
-          setRegistryAutoDeploy(false)
-          setRegistryConnectionsProjectKey(registryProjectKey)
-        }
-      })
-
-    return () => {
-      active = false
-    }
-  }, [needsKnotreeRegistry, open, projectSlug, registryProjectKey, workspaceId])
 
   useEffect(() => {
     if (!open || !submittedResourceId || !deploymentId || !deploymentIsActive) {
@@ -338,23 +264,10 @@ export function AppServiceCreateDialog({
         if (!registryRepository) {
           nextErrors.image =
             "Use registry.knotree.com/repository:tag with an explicit tag."
-        }
-        if (accountCovers) {
-          // The account connection supplies the credential.
-        } else if (registryChoice === NEW_REGISTRY_CONNECTION) {
-          if (!registryUsername.trim()) {
-            nextErrors.username = "Enter your Knotree Registry username."
-          }
-          if (!registryToken.trim()) {
-            nextErrors.token = "Enter a pull-only Registry access token."
-          }
-        } else if (
-          !matchingRegistryConnections.some(
-            (connection) => connection.id === registryChoice
-          )
-        ) {
-          nextErrors.registryConnectionId =
-            "Connect a Registry token for this repository."
+        } else if (!accountCovers) {
+          nextErrors.image = registryAccount?.namespace
+            ? `Choose an image from your namespace, registry.knotree.com/${registryAccount.namespace}/….`
+            : "Sign in with your Knotree account to deploy Knotree Registry images."
         }
       }
     } else {
@@ -391,11 +304,6 @@ export function AppServiceCreateDialog({
       )
       return
     }
-    if (needsKnotreeRegistry && registryStatusLoading && !accountCovers) {
-      setSubmitError("Loading saved Knotree Registry connections…")
-      return
-    }
-
     setIsSubmitting(true)
     setStreamError(null)
     try {
@@ -409,29 +317,12 @@ export function AppServiceCreateDialog({
             }
           : undefined
       if (needsKnotreeRegistry) {
-        let registryConnectionId = registryChoice
-        if (accountCovers) {
-          const connection = await importKnotreeRegistryRepository(
-            workspaceId,
-            projectSlug,
-            registryRepository
-          )
-          registryConnectionId = connection.id
-        } else if (registryChoice === NEW_REGISTRY_CONNECTION) {
-          const connection = await createKnotreeRegistryConnection(
-            workspaceId,
-            projectSlug,
-            {
-              username: registryUsername.trim(),
-              token: registryToken.trim(),
-              repository: registryRepository,
-            }
-          )
-          registryConnectionId = connection.id
-          setRegistryConnections((connections) => [connection, ...connections])
-          setRegistryConnectionChoice(connection.id)
-          setRegistryToken("")
-        }
+        const connection = await importKnotreeRegistryRepository(
+          workspaceId,
+          projectSlug,
+          registryRepository
+        )
+        const registryConnectionId = connection.id
         if (dockerInput) {
           dockerInput = {
             ...dockerInput,
@@ -649,208 +540,18 @@ export function AppServiceCreateDialog({
                             account={registryAccount}
                             accountLoading={!registryAccountLoaded}
                             selectedRepository={registryRepository}
-                            disabled={isSubmitting || registryConsentBusy}
+                            disabled={isSubmitting}
                             onSelect={(repository, tag) =>
                               setImage(
                                 `registry.knotree.com/${repository}:${tag}`
                               )
                             }
-                            onConnect={() => {
-                              setRegistryConsentBusy(true)
-                              setSubmitError(null)
-                              void connectKnotreeRegistryAccount(
-                                window.location.pathname
-                              ).catch((reason: unknown) => {
-                                setSubmitError(
-                                  reason instanceof Error
-                                    ? reason.message
-                                    : "Registry authorization failed."
-                                )
-                                setRegistryConsentBusy(false)
-                              })
-                            }}
                           />
-                          {!accountCovers && (
-                            <>
-                              <Field
-                                data-invalid={Boolean(
-                                  errors.registryConnectionId
-                                )}
-                              >
-                                <FieldLabel htmlFor="knotreeRegistryConnection">
-                                  Knotree Registry connection
-                                </FieldLabel>
-                                <select
-                                  id="knotreeRegistryConnection"
-                                  name="knotreeRegistryConnection"
-                                  className="project-dialog-select"
-                                  value={registryChoice}
-                                  aria-invalid={Boolean(
-                                    errors.registryConnectionId
-                                  )}
-                                  onChange={(event) =>
-                                    setRegistryConnectionChoice(
-                                      event.target.value
-                                    )
-                                  }
-                                >
-                                  <option value={NEW_REGISTRY_CONNECTION}>
-                                    Connect Knotree Registry
-                                  </option>
-                                  {matchingRegistryConnections.map(
-                                    (connection) => (
-                                      <option
-                                        key={connection.id}
-                                        value={connection.id}
-                                      >
-                                        {connection.registryHost}/
-                                        {connection.repository} · @
-                                        {connection.username}
-                                      </option>
-                                    )
-                                  )}
-                                </select>
-                                <FieldDescription>
-                                  {registryStatusLoading
-                                    ? "Loading saved Registry connections…"
-                                    : registryRepository
-                                      ? `This connection needs pull access to repository:${registryRepository}:pull.`
-                                      : "Enter a tagged image above to select or create a repository connection."}
-                                </FieldDescription>
-                                {errors.registryConnectionId && (
-                                  <FieldError>
-                                    {errors.registryConnectionId}
-                                  </FieldError>
-                                )}
-                              </Field>
-                              {registryConsentReady &&
-                                registryChoice === NEW_REGISTRY_CONNECTION && (
-                                  <Field>
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      disabled={
-                                        !registryRepository ||
-                                        registryConsentBusy ||
-                                        isSubmitting
-                                      }
-                                      onClick={async () => {
-                                        setRegistryConsentBusy(true)
-                                        setSubmitError(null)
-                                        try {
-                                          const result =
-                                            await startKnotreeRegistryConsent(
-                                              workspaceId,
-                                              projectSlug,
-                                              registryRepository
-                                            )
-                                          const target = new URL(
-                                            result.authorizationUrl
-                                          )
-                                          if (
-                                            target.origin !==
-                                              "https://registry.knotree.com" ||
-                                            !/^\/cloud\/authorize\/[0-9a-f-]{36}$/.test(
-                                              target.pathname
-                                            ) ||
-                                            target.search ||
-                                            target.hash ||
-                                            target.username ||
-                                            target.password
-                                          ) {
-                                            throw new Error(
-                                              "Registry returned an invalid authorization URL."
-                                            )
-                                          }
-                                          window.location.assign(target.href)
-                                        } catch (reason) {
-                                          setSubmitError(
-                                            reason instanceof Error
-                                              ? reason.message
-                                              : "Registry authorization failed."
-                                          )
-                                          setRegistryConsentBusy(false)
-                                        }
-                                      }}
-                                    >
-                                      {registryConsentBusy
-                                        ? "Connecting…"
-                                        : "Authorize Registry pull access"}
-                                    </Button>
-                                    <FieldDescription>
-                                      Review access on Registry, then return to
-                                      this project to select the saved
-                                      connection.
-                                    </FieldDescription>
-                                  </Field>
-                                )}
-                              {registryChoice === NEW_REGISTRY_CONNECTION && (
-                                <>
-                                  <Field
-                                    data-invalid={Boolean(errors.username)}
-                                  >
-                                    <FieldLabel htmlFor="knotreeRegistryUsername">
-                                      Registry username
-                                    </FieldLabel>
-                                    <Input
-                                      id="knotreeRegistryUsername"
-                                      name="knotreeRegistryUsername"
-                                      value={registryUsername}
-                                      autoComplete="username"
-                                      aria-invalid={Boolean(errors.username)}
-                                      onChange={(event) =>
-                                        setRegistryUsername(event.target.value)
-                                      }
-                                    />
-                                    {errors.username && (
-                                      <FieldError>{errors.username}</FieldError>
-                                    )}
-                                  </Field>
-                                  <Field data-invalid={Boolean(errors.token)}>
-                                    <FieldLabel htmlFor="knotreeRegistryToken">
-                                      Pull-only access token
-                                    </FieldLabel>
-                                    <Input
-                                      id="knotreeRegistryToken"
-                                      name="knotreeRegistryToken"
-                                      type="password"
-                                      value={registryToken}
-                                      autoComplete="new-password"
-                                      aria-invalid={Boolean(errors.token)}
-                                      onChange={(event) =>
-                                        setRegistryToken(event.target.value)
-                                      }
-                                    />
-                                    <FieldDescription>
-                                      Create a token with only pull permission
-                                      for this repository. Cloud encrypts it; it
-                                      is never passed to your container.
-                                    </FieldDescription>
-                                    {errors.token && (
-                                      <FieldError>{errors.token}</FieldError>
-                                    )}
-                                  </Field>
-                                </>
-                              )}
-                            </>
-                          )}
-                          {registryStatusError && (
-                            <p
-                              className="project-dialog-description"
-                              role="status"
-                            >
-                              {registryStatusError}
-                            </p>
-                          )}
                           <label className="project-registry-auto-deploy">
                             <input
                               type="checkbox"
                               checked={registryAutoDeploy}
-                              disabled={
-                                !registryAutoDeployReady ||
-                                registryStatusLoading ||
-                                isSubmitting
-                              }
+                              disabled={!registryAutoDeployReady || isSubmitting}
                               onChange={(event) =>
                                 setRegistryAutoDeploy(event.target.checked)
                               }
@@ -1054,20 +755,10 @@ export function AppServiceCreateDialog({
                   </Button>
                   <Button
                     type="submit"
-                    disabled={
-                      isSubmitting ||
-                      isConnecting ||
-                      (needsKnotreeRegistry &&
-                        registryStatusLoading &&
-                        !accountCovers)
-                    }
+                    disabled={isSubmitting || isConnecting}
                   >
                     {isSubmitting && <Spinner data-icon="inline-start" />}
-                    {needsKnotreeRegistry &&
-                    !accountCovers &&
-                    registryChoice === NEW_REGISTRY_CONNECTION
-                      ? "Connect Knotree Registry & deploy"
-                      : "Deploy service"}
+                    Deploy service
                   </Button>
                 </div>
               </form>

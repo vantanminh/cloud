@@ -3,6 +3,7 @@ export type User = {
   fullName: string
   email: string
   emailVerified: boolean
+  username?: string | null
 }
 
 export type Workspace = {
@@ -123,13 +124,11 @@ export type KnotreeRegistryConnection = {
   verifiedAt: string
 }
 
+/** Registry for the signed-in Knotree account; there is nothing to connect. */
 export type KnotreeRegistryAccountStatus = {
   connected: boolean
-  consentReady: boolean
   autoDeployReady: boolean
   namespace: string | null
-  expiresAt: string | null
-  expired: boolean
 }
 
 export type KnotreeRegistryRepository = {
@@ -157,7 +156,6 @@ export type KnotreeRegistryTag = {
 export type KnotreeRegistryConnectionList = {
   connections: KnotreeRegistryConnection[]
   autoDeployReady: boolean
-  consentReady?: boolean
 }
 
 export type DatabaseTable = {

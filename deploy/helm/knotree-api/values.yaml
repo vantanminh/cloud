@@ -142,6 +142,15 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# Cloud reaches Knotree Registry for the signed-in Knotree account through
+# Registry's cluster-only API, authenticated by a projected ServiceAccount token.
+knotreeRegistry:
+  internal:
+    enabled: true
+    origin: http://registry-internal.knotree-registry.svc.cluster.local:8081
+    audience: knotree-registry-internal
+    tokenExpirationSeconds: 600
+
 migrations:
   enabled: false
   backoffLimit: 4

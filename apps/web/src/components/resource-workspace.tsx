@@ -50,7 +50,6 @@ import {
   listAppServices,
   listPostgresResources,
   retryPostgresResource,
-  updateKnotreeRegistryConnection,
   updateAppService,
   updateAppServiceAutoDeploy,
   updateAppServiceDatabase,
@@ -2686,8 +2685,6 @@ function AutoDeployEditor({
   const [enabled, setEnabled] = useState(appService.autoDeployEnabled ?? false)
   const [isSaving, setIsSaving] = useState(false)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
-  const [isRotatingToken, setIsRotatingToken] = useState(false)
-  const [replacementRegistryToken, setReplacementRegistryToken] = useState("")
   const [error, setError] = useState<string | null>(null)
   const isBusy = isSaving || appService.status === "provisioning"
 
@@ -2745,7 +2742,7 @@ function AutoDeployEditor({
       const updated = services.find((service) => service.id === appService.id)
       if (updated) onAppServiceUpdated?.(updated)
       onToast(
-        "Cloud connection removed. Revoke the PAT in Knotree Registry too if you no longer need it. The running service stays up; future Cloud pulls and auto-deploys are stopped."
+        "Knotree Registry access removed for this service. The running service stays up; future pulls and auto-deploys are stopped."
       )
     } catch (caught) {
       setError(
@@ -2755,32 +2752,6 @@ function AutoDeployEditor({
       )
     } finally {
       setIsDisconnecting(false)
-    }
-  }
-
-  async function rotateRegistryToken(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const connectionId = appService.registryConnectionId
-    if (!connectionId || !replacementRegistryToken.trim()) return
-    setIsRotatingToken(true)
-    setError(null)
-    try {
-      await updateKnotreeRegistryConnection(
-        workspaceId,
-        projectSlug,
-        connectionId,
-        replacementRegistryToken.trim()
-      )
-      setReplacementRegistryToken("")
-      onToast("Knotree Registry token updated for this project connection.")
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "The Knotree Registry token could not be updated."
-      )
-    } finally {
-      setIsRotatingToken(false)
     }
   }
 
@@ -2868,44 +2839,11 @@ function AutoDeployEditor({
       </dl>
       {isKnotreeRegistryImage && appService.registryConnectionId ? (
         <div className="resource-workspace-registry-connection-actions">
-          <form onSubmit={rotateRegistryToken}>
-            <label htmlFor="replacementRegistryToken">Replace pull token</label>
-            <div>
-              <Input
-                id="replacementRegistryToken"
-                type="password"
-                autoComplete="new-password"
-                value={replacementRegistryToken}
-                onChange={(event) =>
-                  setReplacementRegistryToken(event.target.value)
-                }
-                placeholder="Paste a new pull-only token"
-              />
-              <Button
-                type="submit"
-                variant="outline"
-                size="sm"
-                disabled={
-                  isRotatingToken ||
-                  isBusy ||
-                  replacementRegistryToken.trim().length === 0
-                }
-              >
-                {isRotatingToken ? <Spinner data-icon="inline-start" /> : null}
-                {isRotatingToken ? "Updating…" : "Update token"}
-              </Button>
-            </div>
-            <small>
-              The replacement is verified for this repository and remains
-              encrypted. Disconnecting removes Cloud&apos;s saved connection;
-              revoke the PAT in Knotree Registry separately if needed.
-            </small>
-          </form>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            disabled={isDisconnecting || isRotatingToken || isBusy}
+            disabled={isDisconnecting || isBusy}
             onClick={() => void disconnectRegistry()}
           >
             {isDisconnecting ? <Spinner data-icon="inline-start" /> : null}
