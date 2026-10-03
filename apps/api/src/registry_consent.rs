@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::{auth, error::AppError, knotree_registry, projects, security, state::AppState};
 
 const REGISTRY: &str = "https://registry.knotree.com";
-const CLIENT: &str = "knotree-cloud";
-const CALLBACK: &str = "https://cloud.knotree.com/api/v1/auth/knotree-registry/callback";
+pub(crate) const CLIENT: &str = "knotree-cloud";
+pub(crate) const CALLBACK: &str = "https://cloud.knotree.com/api/v1/auth/knotree-registry/callback";
 
 fn invalid() -> AppError {
     AppError::BadRequest {
@@ -25,19 +25,19 @@ fn invalid() -> AppError {
         message: "Registry authorization expired or could not be verified. Start again.",
     }
 }
-fn session_hash(state: &AppState, headers: &HeaderMap) -> Result<Vec<u8>, AppError> {
+pub(crate) fn session_hash(state: &AppState, headers: &HeaderMap) -> Result<Vec<u8>, AppError> {
     let token =
         security::get_cookie(headers, state.config.session_cookie_name()).ok_or_else(invalid)?;
     Ok(security::token_hash(&token))
 }
-fn client() -> Result<reqwest::Client, AppError> {
+pub(crate) fn client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| invalid())
 }
-async fn bounded_json<T: serde::de::DeserializeOwned>(
+pub(crate) async fn bounded_json<T: serde::de::DeserializeOwned>(
     mut response: reqwest::Response,
 ) -> Result<T, AppError> {
     if !response.status().is_success() {
@@ -162,6 +162,19 @@ pub async fn callback(
     let user = auth::authenticate(&state, &headers).await?;
     let config = state.config.sso.as_ref().ok_or_else(invalid)?;
     let token = query.state.filter(|v| v.len() == 43).ok_or_else(invalid)?;
+    // Account-level ("connect once") consents share this registered callback.
+    if let Some(response) = crate::registry_accounts::complete_callback(
+        &state,
+        &headers,
+        user.id,
+        &token,
+        query.code.clone(),
+        query.error.as_deref(),
+    )
+    .await?
+    {
+        return Ok(response);
+    }
     // Consume only for the initiating user and live browser session. Replays,
     // another signed-in account, and configuration changes fail closed.
     let attempt: Attempt = sqlx::query_as("DELETE FROM registry_consent_attempts WHERE state_hash=$1 AND session_hash=$2 AND user_id=$3 AND issuer=$4 AND expires_at>now() RETURNING project_id,workspace_id,project_slug,repository,issuer,subject,verifier_ciphertext")

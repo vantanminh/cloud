@@ -95,6 +95,26 @@ struct RegistryEventMetadata {
     registry: Option<String>,
     tagged_image: Option<String>,
     is_tag: Option<bool>,
+    #[serde(default)]
+    owner_issuer: Option<String>,
+    #[serde(default)]
+    owner_subject: Option<String>,
+}
+
+/// An account-derived connection auto-deploys only when Registry reports the
+/// pushed namespace belongs to the same central identity that connected it.
+/// Legacy per-repository connections keep their verified-at-consent scope.
+fn owner_matches(
+    account_identity: Option<(&str, &str)>,
+    metadata: &RegistryEventMetadata,
+) -> bool {
+    match account_identity {
+        None => true,
+        Some((issuer, subject)) => {
+            metadata.owner_issuer.as_deref() == Some(issuer)
+                && metadata.owner_subject.as_deref() == Some(subject)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +239,8 @@ pub async fn update_connection(
     let connection = sqlx::query_as::<_, RegistryConnectionRow>(
         "SELECT id, registry_username, repository, verified_at
          FROM knotree_registry_connections
-         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL",
+         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
+           AND account_id IS NULL",
     )
     .bind(connection_id)
     .bind(project_id)
@@ -376,11 +397,17 @@ pub(crate) async fn load_credentials(
     project_id: Uuid,
     connection_id: Uuid,
 ) -> Result<Option<RegistryDockerCredentials>, AppError> {
+    // Connections created from an account always use the account's current
+    // credential, so reconnecting the account renews every derived project.
     let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT registry_username, credential_ciphertext
-         FROM knotree_registry_connections
-         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
-           AND (credential_expires_at IS NULL OR credential_expires_at > now())",
+        "SELECT connection.registry_username,
+                COALESCE(account.credential_ciphertext, connection.credential_ciphertext)
+         FROM knotree_registry_connections AS connection
+         LEFT JOIN knotree_registry_accounts AS account ON account.id = connection.account_id
+         WHERE connection.id = $1 AND connection.project_id = $2 AND connection.revoked_at IS NULL
+           AND (connection.credential_expires_at IS NULL OR connection.credential_expires_at > now())
+           AND (connection.account_id IS NULL
+                OR (account.revoked_at IS NULL AND account.credential_expires_at > now()))",
     )
     .bind(connection_id)
     .bind(project_id)
@@ -735,24 +762,43 @@ async fn persist_registry_event(
     }
     let image_ref =
         immutable_image(repository, digest).expect("event repository and digest were validated");
-    let services = sqlx::query_as::<_, (Uuid, String)>(
-        "SELECT id, image
-         FROM project_app_services
-         WHERE image_source = 'knotree_registry'
-           AND auto_deploy_enabled = TRUE
-           AND status IN ('ready', 'provisioning')
-           AND registry_connection_id IN (
-               SELECT id FROM knotree_registry_connections WHERE revoked_at IS NULL
-                   AND (credential_expires_at IS NULL OR credential_expires_at > now())
-           )",
+    let services = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>)>(
+        "SELECT service.id, service.image, connection.repository,
+                account.issuer, account.subject
+         FROM project_app_services AS service
+         JOIN knotree_registry_connections AS connection
+           ON connection.id = service.registry_connection_id
+         LEFT JOIN knotree_registry_accounts AS account ON account.id = connection.account_id
+         WHERE service.image_source = 'knotree_registry'
+           AND service.auto_deploy_enabled = TRUE
+           AND service.status IN ('ready', 'provisioning')
+           AND connection.revoked_at IS NULL
+           AND (connection.credential_expires_at IS NULL OR connection.credential_expires_at > now())
+           AND (connection.account_id IS NULL
+                OR (account.revoked_at IS NULL AND account.credential_expires_at > now()))",
     )
     .fetch_all(&mut *transaction)
     .await?;
-    for (service_id, image) in services {
+    for (service_id, image, connected_repository, account_issuer, account_subject) in services {
         let Some(target) = parse_registry_image(&image) else {
             continue;
         };
-        if target.repository != repository || target.tag != tag {
+        if target.repository != repository
+            || target.tag != tag
+            || connected_repository != repository
+        {
+            continue;
+        }
+        let account_identity = match (account_issuer.as_deref(), account_subject.as_deref()) {
+            (Some(issuer), Some(subject)) => Some((issuer, subject)),
+            _ => None,
+        };
+        if !owner_matches(account_identity, &event.metadata) {
+            tracing::warn!(
+                delivery_id = %delivery_id,
+                app_service_id = %service_id,
+                "ignoring Knotree Registry push whose owner does not match the connected account"
+            );
             continue;
         }
         sqlx::query(
@@ -848,6 +894,25 @@ mod tests {
             br#"{"kind":"tag_updated"} "#,
             &signature
         ));
+    }
+
+    #[test]
+    fn account_connections_deploy_only_for_matching_owner() {
+        let metadata = |issuer: Option<&str>, subject: Option<&str>| RegistryEventMetadata {
+            registry: Some(REGISTRY_HOST.into()),
+            tagged_image: None,
+            is_tag: Some(true),
+            owner_issuer: issuer.map(Into::into),
+            owner_subject: subject.map(Into::into),
+        };
+        let issuer = "https://accounts.knotree.com";
+        let alice = Some((issuer, "alice"));
+        assert!(owner_matches(alice, &metadata(Some(issuer), Some("alice"))));
+        assert!(!owner_matches(alice, &metadata(Some(issuer), Some("bob"))));
+        assert!(!owner_matches(alice, &metadata(Some("https://evil.example"), Some("alice"))));
+        assert!(!owner_matches(alice, &metadata(None, None)));
+        // Legacy repository-scoped connections are unaffected.
+        assert!(owner_matches(None, &metadata(None, None)));
     }
 
     #[test]
