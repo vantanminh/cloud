@@ -123,6 +123,37 @@ export type KnotreeRegistryConnection = {
   verifiedAt: string
 }
 
+export type KnotreeRegistryAccountStatus = {
+  connected: boolean
+  consentReady: boolean
+  autoDeployReady: boolean
+  namespace: string | null
+  expiresAt: string | null
+  expired: boolean
+}
+
+export type KnotreeRegistryRepository = {
+  name: string
+  tagCount: number
+  latestTag: string | null
+  latestDigest: string | null
+  size: number
+  updatedAt: number | null
+}
+
+export type KnotreeRegistryRepositoryList = {
+  namespace: string
+  registryHost: string
+  repositories: KnotreeRegistryRepository[]
+}
+
+export type KnotreeRegistryTag = {
+  tag: string
+  digest: string
+  size: number
+  createdAt: number | null
+}
+
 export type KnotreeRegistryConnectionList = {
   connections: KnotreeRegistryConnection[]
   autoDeployReady: boolean

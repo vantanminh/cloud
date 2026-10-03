@@ -250,7 +250,7 @@ pub(crate) async fn complete_callback(
         "connected"
     };
     let mut destination = Url::parse(&config.frontend_url).map_err(|_| invalid())?;
-    let path = attempt.return_to.as_deref().unwrap_or("/integrations");
+    let path = attempt.return_to.as_deref().unwrap_or("/settings/integrations");
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     destination.set_path(path);
     destination.set_query((!query.is_empty()).then_some(query));
