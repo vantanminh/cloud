@@ -235,14 +235,7 @@ impl Config {
         let image_public_base_url = image_public_base_url(&app_env)?;
 
         Ok(Self {
-            sso: {
-                let sso = crate::sso::SsoConfig::from_env(&app_env)?;
-                // Knotree Accounts is the only way to sign in to Cloud.
-                if app_env == "production" && sso.is_none() {
-                    bail!("SSO_ENABLED=true is required in production");
-                }
-                sso
-            },
+            sso: crate::sso::SsoConfig::from_env(&app_env)?,
             database_url,
             bind_addr,
             cookie_secure: env_bool("COOKIE_SECURE", app_env == "production")?,
