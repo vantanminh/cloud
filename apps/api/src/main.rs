@@ -29,6 +29,11 @@ async fn main() -> Result<()> {
         tracing::info!("database migrations applied");
         return Ok(());
     }
+    // Knotree Accounts is the only way to sign in to Cloud. Checked after
+    // `migrate`, which runs without the SSO settings.
+    if config.app_env == "production" && config.sso.is_none() {
+        anyhow::bail!("SSO_ENABLED=true is required in production");
+    }
 
     let bind_addr = config.bind_addr;
     let state = AppState::new(db, config.clone());
