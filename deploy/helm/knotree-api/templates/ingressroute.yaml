@@ -11,6 +11,7 @@ spec:
   routes:
     - match: Host(`{{ .Values.ingress.host }}`) && (PathPrefix(`/api`) || PathPrefix(`/healthz`) || PathPrefix(`/readyz`) || PathPrefix(`/oauth`) || PathPrefix(`/mcp`) || PathPrefix(`/.well-known`))
       kind: Rule
+      priority: 1000
       services:
         - name: {{ include "knotree-api.fullname" . }}
           port: {{ .Values.service.port }}
@@ -24,6 +25,7 @@ spec:
 {{- if .Values.web.enabled }}
     - match: Host(`{{ .Values.web.ingress.host }}`)
       kind: Rule
+      priority: 1000
       services:
         - name: {{ include "knotree-api.fullname" . }}-web
           port: {{ .Values.web.service.port }}
