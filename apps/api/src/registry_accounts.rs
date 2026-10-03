@@ -250,7 +250,7 @@ pub(crate) async fn complete_callback(
         "connected"
     };
     let mut destination = Url::parse(&config.frontend_url).map_err(|_| invalid())?;
-    let path = attempt.return_to.as_deref().unwrap_or("/integrations");
+    let path = attempt.return_to.as_deref().unwrap_or("/settings/integrations");
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     destination.set_path(path);
     destination.set_query((!query.is_empty()).then_some(query));
@@ -334,13 +334,74 @@ async fn revoke_account_rows(
     .bind(account_id)
     .fetch_all(&mut **transaction)
     .await?;
+    stop_connection_deploys(transaction, &connection_ids, reason).await
+}
+
+/// Registry reported that the user revoked a credential it issued to Cloud.
+/// Revokes the account that holds it (only when the reported owner matches)
+/// and any legacy repository connection, then stops their auto-deploys.
+pub(crate) async fn revoke_from_registry(
+    state: &AppState,
+    credential_id: Uuid,
+    owner: Option<(&str, &str)>,
+) -> Result<(), AppError> {
+    const REASON: &str = "Knotree Registry access was revoked in Registry. Reconnect to continue.";
+    let mut transaction = state.db.begin().await?;
+    let mut service_ids = Vec::new();
+    if let Some((issuer, subject)) = owner {
+        let account_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM knotree_registry_accounts
+             WHERE delegated_credential_id=$1 AND issuer=$2 AND subject=$3 AND revoked_at IS NULL",
+        )
+        .bind(credential_id)
+        .bind(issuer)
+        .bind(subject)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for account_id in account_ids {
+            service_ids.extend(revoke_account_rows(&mut transaction, account_id, REASON).await?);
+        }
+    }
+    let connection_ids: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE knotree_registry_connections SET revoked_at=now(), updated_at=now()
+         WHERE delegated_credential_id=$1 AND account_id IS NULL AND revoked_at IS NULL
+         RETURNING id",
+    )
+    .bind(credential_id)
+    .fetch_all(&mut *transaction)
+    .await?;
+    service_ids.extend(stop_connection_deploys(&mut transaction, &connection_ids, REASON).await?);
+    transaction.commit().await?;
+    remove_pull_secrets(state, service_ids).await;
+    Ok(())
+}
+
+async fn remove_pull_secrets(state: &AppState, service_ids: Vec<Uuid>) {
+    if !state.config.uses_kubernetes_workloads() {
+        return;
+    }
+    for service_id in service_ids {
+        if let Err(error) =
+            crate::cluster_kubernetes::delete_app_image_pull_secret(&state.config, service_id).await
+        {
+            tracing::warn!(app_service_id = %service_id, error = %error,
+                "could not remove Knotree Registry Kubernetes pull Secret");
+        }
+    }
+}
+
+async fn stop_connection_deploys(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    connection_ids: &[Uuid],
+    reason: &str,
+) -> Result<Vec<Uuid>, AppError> {
     let service_ids: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE project_app_services
          SET auto_deploy_enabled = FALSE, registry_connection_id = NULL,
              auto_deploy_error = $2, updated_at = now()
          WHERE registry_connection_id = ANY($1) RETURNING id",
     )
-    .bind(&connection_ids)
+    .bind(connection_ids)
     .bind(reason)
     .fetch_all(&mut **transaction)
     .await?;
@@ -424,16 +485,7 @@ pub async fn disconnect(
     )
     .await?;
     transaction.commit().await?;
-    if state.config.uses_kubernetes_workloads() {
-        for service_id in service_ids {
-            if let Err(error) =
-                crate::cluster_kubernetes::delete_app_image_pull_secret(&state.config, service_id).await
-            {
-                tracing::warn!(app_service_id = %service_id, error = %error,
-                    "could not remove Knotree Registry Kubernetes pull Secret");
-            }
-        }
-    }
+    remove_pull_secrets(&state, service_ids).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -738,5 +790,85 @@ mod tests {
         assert!(safe_return_to(Some("https://evil.example")).is_none());
         assert!(safe_return_to(Some("/\\evil.example")).is_none());
         assert!(safe_return_to(None).is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_revocation_only_revokes_the_reported_owner() {
+        use crate::test_support::{seed_owner_project, test_app_state};
+        let Some(state) = test_app_state().await else {
+            return;
+        };
+        let project = seed_owner_project(&state).await;
+        let issuer = "https://accounts.knotree.com";
+        let subject = project.user_id.to_string();
+        let credential_id = Uuid::new_v4();
+        let account_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO knotree_registry_accounts
+                (id, user_id, issuer, subject, registry_username, credential_ciphertext,
+                 delegated_credential_id, credential_expires_at)
+             VALUES ($1, $2, $3, $4, 'kt-owner', 'unused', $5, now() + interval '30 days')",
+        )
+        .bind(account_id)
+        .bind(project.user_id)
+        .bind(issuer)
+        .bind(&subject)
+        .bind(credential_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let derived = Uuid::new_v4();
+        let legacy_credential = Uuid::new_v4();
+        let legacy = Uuid::new_v4();
+        for (id, account, delegated) in [
+            (derived, Some(account_id), None),
+            (legacy, None, Some(legacy_credential)),
+        ] {
+            sqlx::query(
+                "INSERT INTO knotree_registry_connections
+                    (id, project_id, user_id, registry_username, repository,
+                     credential_ciphertext, account_id, delegated_credential_id)
+                 VALUES ($1, $2, $3, 'kt-owner', 'kt-owner/app', 'unused', $4, $5)",
+            )
+            .bind(id)
+            .bind(project.project_id)
+            .bind(project.user_id)
+            .bind(account)
+            .bind(delegated)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        let revoked = |table: &'static str, id: Uuid| {
+            let db = state.db.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>(&format!(
+                    "SELECT revoked_at IS NOT NULL FROM {table} WHERE id = $1"
+                ))
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+            }
+        };
+
+        // A different owner cannot revoke someone else's account.
+        revoke_from_registry(&state, credential_id, Some((issuer, "someone-else")))
+            .await
+            .unwrap();
+        assert!(!revoked("knotree_registry_accounts", account_id).await);
+        assert!(!revoked("knotree_registry_connections", derived).await);
+
+        revoke_from_registry(&state, credential_id, Some((issuer, &subject)))
+            .await
+            .unwrap();
+        assert!(revoked("knotree_registry_accounts", account_id).await);
+        assert!(revoked("knotree_registry_connections", derived).await);
+        assert!(!revoked("knotree_registry_connections", legacy).await);
+
+        revoke_from_registry(&state, legacy_credential, None).await.unwrap();
+        assert!(revoked("knotree_registry_connections", legacy).await);
+        // Replays are harmless.
+        revoke_from_registry(&state, legacy_credential, None).await.unwrap();
     }
 }

@@ -9,6 +9,7 @@ import {
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import { KnotreeRegistryAccountCard } from "@/components/knotree-registry-account-card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
@@ -141,10 +142,10 @@ export function GitHubIntegrationPage() {
       <section className="github-integration-content">
         <div className="github-integration-intro">
           <p className="github-integration-eyebrow">Developer access</p>
-          <h1>GitHub</h1>
+          <h1>Integrations</h1>
           <p>
-            Connect your GitHub account once and use its package access across
-            every project you deploy on Knotree.
+            Connect GitHub and Knotree Registry once and use their image access
+            across every project you deploy on Knotree.
           </p>
         </div>
 
@@ -265,12 +266,16 @@ export function GitHubIntegrationPage() {
           </CardFooter>
         </Card>
 
+        <KnotreeRegistryAccountCard
+          callbackStatus={searchParams.get("registry")}
+        />
+
         <p className="github-integration-footnote">
-          This connection belongs to <strong>{session?.user.email}</strong> and
-          is not shared with other Knotree users. GitHub access can be removed
-          at any time.
+          These connections belong to <strong>{session?.user.email}</strong> and
+          are not shared with other Knotree users. Access can be removed at any
+          time.
         </p>
-        {callbackStatus && (
+        {(callbackStatus || searchParams.get("registry")) && (
           <Button
             variant="link"
             className="github-integration-dismiss"

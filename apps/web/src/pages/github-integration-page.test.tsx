@@ -40,9 +40,11 @@ function renderPage(initialEntry = "/settings/integrations") {
 
 describe("GitHubIntegrationPage", () => {
   let connected = true
+  let registryConnected = false
 
   beforeEach(() => {
     connected = true
+    registryConnected = false
     mocks.getCsrfToken.mockResolvedValue("csrf-token")
     mocks.apiRequest.mockImplementation(
       (path: string, options?: { method?: string }) => {
@@ -64,6 +66,20 @@ describe("GitHubIntegrationPage", () => {
           return Promise.resolve({
             connected,
             login: connected ? "jane-doe" : null,
+          })
+        }
+        if (path === "/integrations/knotree-registry") {
+          if (options?.method === "DELETE") {
+            registryConnected = false
+            return Promise.resolve(undefined)
+          }
+          return Promise.resolve({
+            connected: registryConnected,
+            consentReady: true,
+            autoDeployReady: true,
+            namespace: registryConnected ? "kt-jane" : null,
+            expiresAt: registryConnected ? "2026-11-01T00:00:00Z" : null,
+            expired: false,
           })
         }
         if (path === "/auth/github/disconnect" && options?.method === "POST") {
@@ -89,7 +105,7 @@ describe("GitHubIntegrationPage", () => {
         "GitHub has been disconnected from your Knotree account."
       )
     ).toBeInTheDocument()
-    expect(screen.getByText("Not connected")).toBeInTheDocument()
+    expect(screen.getAllByText("Not connected")).toHaveLength(2)
     expect(mocks.apiRequest).toHaveBeenCalledWith("/auth/github/disconnect", {
       method: "POST",
     })
@@ -108,5 +124,33 @@ describe("GitHubIntegrationPage", () => {
       screen.getByRole("button", { name: "Connect GitHub" })
     ).toBeInTheDocument()
     expect(screen.getByText("jane@example.com")).toBeInTheDocument()
+  })
+
+  it("connects Knotree Registry once and can disconnect it", async () => {
+    connected = false
+    registryConnected = true
+    const user = userEvent.setup()
+    renderPage("/settings/integrations?registry=connected")
+
+    expect(await screen.findByText("Connected as kt-jane")).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "Knotree Registry is connected. Import your images from any project."
+      )
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Disconnect" }))
+
+    expect(
+      await screen.findByText(
+        "Knotree Registry was disconnected. Auto-deploys from it are turned off."
+      )
+    ).toBeInTheDocument()
+    expect(mocks.apiRequest).toHaveBeenCalledWith(
+      "/integrations/knotree-registry",
+      { method: "DELETE" }
+    )
+    expect(
+      screen.getByRole("button", { name: "Connect Knotree Registry" })
+    ).toBeInTheDocument()
   })
 })
