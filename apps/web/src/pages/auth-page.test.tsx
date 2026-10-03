@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => {
     getCsrfToken: vi.fn(),
     resetCsrfToken: vi.fn(),
     MockApiError,
+    // The session Knotree Accounts sign-in left behind, if any.
+    session: { current: null as unknown },
   }
 })
 
@@ -39,22 +41,46 @@ vi.mock("@/lib/api", () => ({
 }))
 
 describe("AuthPage", () => {
-  it("offers central sign-in when configured", async () => {
-    const original = mocks.apiRequest.getMockImplementation()!
-    mocks.apiRequest.mockImplementation((path: string, options?: { method?: string }) =>
-      path === "/auth/sso/config" ? Promise.resolve({ enabled: true }) : original(path, options)
+  it("sends both sign-in and sign-up to Knotree Accounts", async () => {
+    const { unmount } = render(
+      <MemoryRouter>
+        <AuthProvider>
+          <AuthPage mode="login" />
+        </AuthProvider>
+      </MemoryRouter>
     )
-    render(<MemoryRouter><AuthProvider><AuthPage mode="login" /></AuthProvider></MemoryRouter>)
-    const link = await screen.findByRole("link", { name: "Continue with Knotree" })
-    expect(link).toHaveAttribute("href", "http://localhost:8080/api/v1/auth/sso/start")
+    expect(
+      await screen.findByRole("link", { name: "Continue with Knotree" })
+    ).toHaveAttribute("href", "http://localhost:8080/api/v1/auth/sso/start")
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument()
+    unmount()
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <AuthPage mode="register" />
+        </AuthProvider>
+      </MemoryRouter>
+    )
+    expect(
+      await screen.findByRole("link", { name: "Create a Knotree account" })
+    ).toHaveAttribute(
+      "href",
+      "http://localhost:8080/api/v1/auth/sso/start?intent=signup"
+    )
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument()
   })
 
   beforeEach(() => {
+    mocks.session.current = null
     mocks.getCsrfToken.mockResolvedValue("csrf-token")
     mocks.apiRequest.mockImplementation(
       (path: string, options?: { method?: string }) => {
         if (path === "/auth/sso/config") return Promise.resolve({ enabled: false })
         if (path === "/auth/me") {
+          if (mocks.session.current) {
+            return Promise.resolve(mocks.session.current)
+          }
           return Promise.reject(
             new mocks.MockApiError(
               401,
@@ -193,47 +219,26 @@ describe("AuthPage", () => {
     )
   })
 
-  it("registers a user and routes to first-workspace setup", async () => {
-    const user = userEvent.setup()
-
-    render(
-      <MemoryRouter initialEntries={["/register"]}>
-        <AuthProvider>
-          <Routes>
-            <Route path="/register" element={<AuthPage mode="register" />} />
-            <Route path="/new/workspace" element={<p>workspace setup</p>} />
-          </Routes>
-        </AuthProvider>
-      </MemoryRouter>
-    )
-
-    await user.type(await screen.findByLabelText("Full name"), "Jane Doe")
-    await user.type(screen.getByLabelText("Work email"), "jane@example.com")
-    await user.type(screen.getByLabelText("Password"), "correct horse")
-    await user.click(screen.getByRole("button", { name: "Create account" }))
-
-    expect(await screen.findByText("workspace setup")).toBeInTheDocument()
-    expect(mocks.apiRequest).toHaveBeenCalledWith(
-      "/auth/register",
-      expect.objectContaining({ method: "POST" })
-    )
-  })
-
   it("creates the first workspace and routes to its UUID", async () => {
     const user = userEvent.setup()
 
+    mocks.session.current = {
+      user: {
+        id: "user-id",
+        fullName: "Jane Doe",
+        email: "jane@example.com",
+        emailVerified: true,
+      },
+      workspace: null,
+    }
     render(
-      <MemoryRouter initialEntries={["/register"]}>
+      <MemoryRouter initialEntries={["/"]}>
         <AuthProvider>
           <App />
         </AuthProvider>
       </MemoryRouter>
     )
 
-    await user.type(await screen.findByLabelText("Full name"), "Jane Doe")
-    await user.type(screen.getByLabelText("Work email"), "jane@example.com")
-    await user.type(screen.getByLabelText("Password"), "correct horse")
-    await user.click(screen.getByRole("button", { name: "Create account" }))
 
     await user.type(
       await screen.findByLabelText("Workspace name"),
@@ -250,8 +255,19 @@ describe("AuthPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("routes an existing user's login to its workspace", async () => {
-    const user = userEvent.setup()
+  it("routes a signed-in Knotree account to its workspace", async () => {
+    mocks.session.current = {
+      user: {
+        id: "existing-user-id",
+        fullName: "Existing User",
+        email: "existing@example.com",
+        emailVerified: true,
+      },
+      workspace: {
+        id: "6fa459ea-ee8a-3ca4-894e-db77e160355e",
+        name: "Existing Workspace",
+      },
+    }
 
     render(
       <MemoryRouter initialEntries={["/login"]}>
@@ -260,13 +276,6 @@ describe("AuthPage", () => {
         </AuthProvider>
       </MemoryRouter>
     )
-
-    await user.type(
-      await screen.findByLabelText("Email"),
-      "existing@example.com"
-    )
-    await user.type(screen.getByLabelText("Password"), "correct horse")
-    await user.click(screen.getByRole("button", { name: "Sign in" }))
 
     expect(
       await screen.findByRole("heading", {
@@ -283,18 +292,23 @@ describe("AuthPage", () => {
       value: { writeText: clipboardWrite },
     })
 
+    mocks.session.current = {
+      user: {
+        id: "user-id",
+        fullName: "Jane Doe",
+        email: "jane@example.com",
+        emailVerified: true,
+      },
+      workspace: null,
+    }
     render(
-      <MemoryRouter initialEntries={["/register"]}>
+      <MemoryRouter initialEntries={["/"]}>
         <AuthProvider>
           <App />
         </AuthProvider>
       </MemoryRouter>
     )
 
-    await user.type(await screen.findByLabelText("Full name"), "Jane Doe")
-    await user.type(screen.getByLabelText("Work email"), "jane@example.com")
-    await user.type(screen.getByLabelText("Password"), "correct horse")
-    await user.click(screen.getByRole("button", { name: "Create account" }))
 
     await user.type(
       await screen.findByLabelText("Workspace name"),

@@ -44,12 +44,6 @@ export type CreateAppServiceInput = {
   registryConnectionId?: string
 }
 
-export type CreateKnotreeRegistryConnectionInput = {
-  username: string
-  token: string
-  repository: string
-}
-
 export type UpdateAppServiceInput = {
   appPort: number
 }
@@ -117,29 +111,6 @@ export function listKnotreeRegistryConnections(
 ) {
   return apiRequest<KnotreeRegistryConnectionList>(
     knotreeRegistryConnectionsPath(workspaceId, projectSlug)
-  )
-}
-
-export function createKnotreeRegistryConnection(
-  workspaceId: string,
-  projectSlug: string,
-  input: CreateKnotreeRegistryConnectionInput
-) {
-  return apiRequest<KnotreeRegistryConnection>(
-    knotreeRegistryConnectionsPath(workspaceId, projectSlug),
-    { method: "POST", body: input }
-  )
-}
-
-export function updateKnotreeRegistryConnection(
-  workspaceId: string,
-  projectSlug: string,
-  connectionId: string,
-  token: string
-) {
-  return apiRequest<KnotreeRegistryConnection>(
-    `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/${encodeURIComponent(connectionId)}`,
-    { method: "PATCH", body: { token } }
   )
 }
 
@@ -462,17 +433,6 @@ export function executeDatabaseQuery(
   )
 }
 
-export function startKnotreeRegistryConsent(
-  workspaceId: string,
-  projectSlug: string,
-  repository: string
-) {
-  return apiRequest<{ authorizationUrl: string }>(
-    `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/authorize`,
-    { method: "POST", body: { repository } }
-  )
-}
-
 function imageStorePath(
   workspaceId: string,
   projectSlug: string,
@@ -638,17 +598,6 @@ export function getKnotreeRegistryAccount() {
   return apiRequest<KnotreeRegistryAccountStatus>(KNOTREE_REGISTRY_ACCOUNT_PATH)
 }
 
-export function startKnotreeRegistryAccountConsent(returnTo: string) {
-  return apiRequest<{ authorizationUrl: string }>(
-    `${KNOTREE_REGISTRY_ACCOUNT_PATH}/authorize`,
-    { method: "POST", body: { returnTo } }
-  )
-}
-
-export function disconnectKnotreeRegistryAccount() {
-  return apiRequest<void>(KNOTREE_REGISTRY_ACCOUNT_PATH, { method: "DELETE" })
-}
-
 export function listKnotreeRegistryRepositories() {
   return apiRequest<KnotreeRegistryRepositoryList>(
     `${KNOTREE_REGISTRY_ACCOUNT_PATH}/repositories`
@@ -672,21 +621,4 @@ export function importKnotreeRegistryRepository(
     `${knotreeRegistryConnectionsPath(workspaceId, projectSlug)}/from-account`,
     { method: "POST", body: { repository } }
   )
-}
-
-/** Registry consent must stay on Registry's own authorize page. */
-export function isKnotreeRegistryAuthorizationUrl(value: string) {
-  try {
-    const target = new URL(value)
-    return (
-      target.origin === "https://registry.knotree.com" &&
-      /^\/cloud\/authorize\/[0-9a-f-]{36}$/.test(target.pathname) &&
-      !target.search &&
-      !target.hash &&
-      !target.username &&
-      !target.password
-    )
-  } catch {
-    return false
-  }
 }

@@ -18,8 +18,6 @@ import {
 import type {
   AuthResponse,
   CreateWorkspaceResponse,
-  LoginRequest,
-  RegisterRequest,
   Workspace,
 } from "@/lib/auth-types"
 
@@ -29,8 +27,6 @@ type AuthContextValue = {
   status: AuthStatus
   session: AuthResponse | null
   bootstrapError: string | null
-  signIn: (input: LoginRequest) => Promise<AuthResponse>
-  signUp: (input: RegisterRequest) => Promise<AuthResponse>
   signOut: () => Promise<void>
   createWorkspace: (input: { name: string }) => Promise<Workspace>
 }
@@ -84,26 +80,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const signIn = useCallback(async (input: LoginRequest) => {
-    const nextSession = await apiRequest<AuthResponse>("/auth/login", {
-      method: "POST",
-      body: input,
-    })
-    setSession(nextSession)
-    setBootstrapError(null)
-    return nextSession
-  }, [])
-
-  const signUp = useCallback(async (input: RegisterRequest) => {
-    const nextSession = await apiRequest<AuthResponse>("/auth/register", {
-      method: "POST",
-      body: input,
-    })
-    setSession(nextSession)
-    setBootstrapError(null)
-    return nextSession
-  }, [])
-
   const signOut = useCallback(async () => {
     try {
       await apiRequest<void>("/auth/logout", { method: "POST" })
@@ -132,8 +108,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       session,
       bootstrapError,
-      signIn,
-      signUp,
       signOut,
       createWorkspace,
     }),
@@ -141,9 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       bootstrapError,
       createWorkspace,
       session,
-      signIn,
       signOut,
-      signUp,
       status,
     ]
   )

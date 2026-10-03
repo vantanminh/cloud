@@ -31,7 +31,6 @@ const mocks = vi.hoisted(() => ({
   updateAppServiceAutoDeploy: vi.fn(),
   updateAppServiceDatabase: vi.fn(),
   updateAppServicePublicAccess: vi.fn(),
-  updateKnotreeRegistryConnection: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => mocks)
@@ -695,7 +694,7 @@ describe("ResourceWorkspace settings pane", () => {
     )
   })
 
-  it("controls Knotree Registry auto-deploy, rotates its token, and disconnects safely", async () => {
+  it("controls Knotree Registry auto-deploy and disconnects safely", async () => {
     const user = userEvent.setup()
     const onAppServiceUpdated = vi.fn()
     const onToast = vi.fn()
@@ -720,13 +719,6 @@ describe("ResourceWorkspace settings pane", () => {
       ...disconnectedService,
       autoDeployEnabled: true,
       registryConnectionId: "registry-connection-1",
-    })
-    mocks.updateKnotreeRegistryConnection.mockResolvedValue({
-      id: "registry-connection-1",
-      registryHost: "registry.knotree.com",
-      username: "service-user",
-      repository: "team/api",
-      verifiedAt: "2026-09-23T09:10:00Z",
     })
     mocks.deleteKnotreeRegistryConnection.mockResolvedValue(undefined)
     mocks.listAppServices.mockResolvedValue([disconnectedService])
@@ -772,20 +764,8 @@ describe("ResourceWorkspace settings pane", () => {
       )
     })
 
-    await user.type(
-      within(dialog).getByLabelText("Replace pull token"),
-      "replacement-pull-pat"
-    )
-    await user.click(within(dialog).getByRole("button", { name: "Update token" }))
-    await waitFor(() => {
-      expect(mocks.updateKnotreeRegistryConnection).toHaveBeenCalledWith(
-        "de305d54-75b4-431b-adb2-eb6b9e546014",
-        "test-2",
-        "registry-connection-1",
-        "replacement-pull-pat"
-      )
-    })
-    expect(within(dialog).getByLabelText("Replace pull token")).toHaveValue("")
+    // Credentials are renewed by Cloud; there is no token to paste.
+    expect(within(dialog).queryByLabelText("Replace pull token")).toBeNull()
 
     await user.click(
       within(dialog).getByRole("button", { name: "Disconnect Knotree Registry" })
@@ -803,7 +783,7 @@ describe("ResourceWorkspace settings pane", () => {
     })
     expect(onAppServiceUpdated).toHaveBeenCalledWith(disconnectedService)
     expect(onToast).toHaveBeenCalledWith(
-      "Cloud connection removed. Revoke the PAT in Knotree Registry too if you no longer need it. The running service stays up; future Cloud pulls and auto-deploys are stopped."
+      "Knotree Registry access removed for this service. The running service stays up; future pulls and auto-deploys are stopped."
     )
   })
 

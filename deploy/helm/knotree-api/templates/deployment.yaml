@@ -117,6 +117,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if .Values.knotreeRegistry.internal.enabled }}
+            - name: KNOTREE_REGISTRY_INTERNAL_ORIGIN
+              value: {{ .Values.knotreeRegistry.internal.origin | quote }}
+            - name: KNOTREE_REGISTRY_TOKEN_FILE
+              value: /var/run/secrets/knotree-registry/token
+            {{- end }}
           {{- else }}
           env:
             - name: DATABASE_URL
@@ -272,6 +278,11 @@ spec:
               mountPath: {{ .Values.env.htmlSiteDataDir | quote }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.knotreeRegistry.internal.enabled }}
+            - name: knotree-registry-token
+              mountPath: /var/run/secrets/knotree-registry
+              readOnly: true
+            {{- end }}
       volumes:
         - name: html-sites
           hostPath:
@@ -279,3 +290,14 @@ spec:
             type: DirectoryOrCreate
         - name: tmp
           emptyDir: {}
+        {{- if .Values.knotreeRegistry.internal.enabled }}
+        # Short-lived token Registry verifies with TokenReview. The kubelet
+        # rotates it; it only works for Registry's internal API audience.
+        - name: knotree-registry-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.knotreeRegistry.internal.audience | quote }}
+                  expirationSeconds: {{ .Values.knotreeRegistry.internal.tokenExpirationSeconds }}
+                  path: token
+        {{- end }}

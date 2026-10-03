@@ -2899,8 +2899,12 @@ pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
         let mut github_interval =
             tokio::time::interval(Duration::from_secs(AUTO_DEPLOY_INTERVAL_SECONDS));
         let mut registry_interval = tokio::time::interval(Duration::from_secs(3));
+        let mut credential_interval = tokio::time::interval(Duration::from_secs(
+            crate::registry_accounts::RENEW_INTERVAL_SECONDS,
+        ));
         github_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         registry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        credential_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -2913,6 +2917,9 @@ pub fn spawn_auto_deployer(state: AppState) -> tokio::task::JoinHandle<()> {
                     if let Err(error) = process_registry_deploy_jobs(&state).await {
                         tracing::warn!(error = %error, "could not process Knotree Registry deployment jobs");
                     }
+                }
+                _ = credential_interval.tick() => {
+                    crate::registry_accounts::renew_expiring_credentials(&state).await;
                 }
             }
         }

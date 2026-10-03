@@ -266,16 +266,14 @@ export function GitHubIntegrationPage() {
           </CardFooter>
         </Card>
 
-        <KnotreeRegistryAccountCard
-          callbackStatus={searchParams.get("registry")}
-        />
+        <KnotreeRegistryAccountCard />
 
         <p className="github-integration-footnote">
           These connections belong to <strong>{session?.user.email}</strong> and
           are not shared with other Knotree users. Access can be removed at any
           time.
         </p>
-        {(callbackStatus || searchParams.get("registry")) && (
+        {callbackStatus && (
           <Button
             variant="link"
             className="github-integration-dismiss"

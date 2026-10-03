@@ -70,21 +70,6 @@ struct RegistryConnectionResponse {
 struct RegistryConnectionListResponse {
     connections: Vec<RegistryConnectionResponse>,
     auto_deploy_ready: bool,
-    consent_ready: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRegistryConnectionRequest {
-    pub username: String,
-    pub token: String,
-    pub repository: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateRegistryConnectionRequest {
-    pub token: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -126,9 +111,9 @@ struct RegistryEventMetadata {
     credential_id: Option<Uuid>,
 }
 
-/// An account-derived connection auto-deploys only when Registry reports the
-/// pushed namespace belongs to the same central identity that connected it.
-/// Legacy per-repository connections keep their verified-at-consent scope.
+/// A connection auto-deploys only when Registry reports the pushed namespace
+/// belongs to the Knotree account that owns the connection. Legacy
+/// connections without a recorded owner keep their repository scope.
 fn owner_matches(
     account_identity: Option<(&str, &str)>,
     metadata: &RegistryEventMetadata,
@@ -184,153 +169,6 @@ pub async fn list_connections(
     Ok(Json(RegistryConnectionListResponse {
         connections,
         auto_deploy_ready: state.config.knotree_registry_webhook_secret.is_some(),
-        consent_ready: state.config.sso.is_some(),
-    }))
-}
-
-pub async fn create_connection(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path((workspace_id, project_slug)): Path<(String, String)>,
-    Json(input): Json<CreateRegistryConnectionRequest>,
-) -> Result<Json<impl Serialize>, AppError> {
-    security::require_csrf(&headers, &state.config)?;
-    let user = auth::authenticate(&state, &headers).await?;
-    let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
-    let username = validate_registry_username(&input.username)?;
-    let token = input.token.trim();
-    let repository = validate_registry_repository(&input.repository)?;
-    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
-        return Err(validation_error(
-            "token",
-            "Enter a valid pull-only Knotree Registry token.",
-        ));
-    }
-
-    if !verify_pull_access(&username, token, &repository).await {
-        return Err(AppError::Conflict {
-            code: "KNOTREE_REGISTRY_AUTHENTICATION_FAILED",
-            message: "Knotree Registry could not verify pull access to this repository.",
-        });
-    }
-    let encrypted =
-        security::encrypt_secret(token, &state.config.database_credentials_encryption_key)?;
-    let id = Uuid::new_v4();
-    let row = sqlx::query_as::<_, RegistryConnectionRow>(
-        "INSERT INTO knotree_registry_connections
-            (id, project_id, user_id, registry_username, repository, credential_ciphertext)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, registry_username, repository, verified_at",
-    )
-    .bind(id)
-    .bind(project_id)
-    .bind(user.id)
-    .bind(&username)
-    .bind(&repository)
-    .bind(encrypted)
-    .fetch_one(&state.db)
-    .await?;
-
-    Ok(Json(RegistryConnectionResponse {
-        id: row.id,
-        registry_host: REGISTRY_HOST.to_owned(),
-        username: row.registry_username,
-        repository: row.repository,
-        verified_at: row
-            .verified_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(AppError::internal)?,
-    }))
-}
-
-pub async fn update_connection(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path((workspace_id, project_slug, connection_id)): Path<(String, String, Uuid)>,
-    Json(input): Json<UpdateRegistryConnectionRequest>,
-) -> Result<Json<impl Serialize>, AppError> {
-    security::require_csrf(&headers, &state.config)?;
-    let user = auth::authenticate(&state, &headers).await?;
-    let project_id =
-        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
-    let token = input.token.trim();
-    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
-        return Err(validation_error(
-            "token",
-            "Enter a valid pull-only Knotree Registry token.",
-        ));
-    }
-    let connection = sqlx::query_as::<_, RegistryConnectionRow>(
-        "SELECT id, registry_username, repository, verified_at
-         FROM knotree_registry_connections
-         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
-           AND account_id IS NULL",
-    )
-    .bind(connection_id)
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound {
-        code: "KNOTREE_REGISTRY_CONNECTION_NOT_FOUND",
-        message: "The Knotree Registry connection could not be found.",
-    })?;
-    if !verify_pull_access(&connection.registry_username, token, &connection.repository).await {
-        return Err(AppError::Conflict {
-            code: "KNOTREE_REGISTRY_AUTHENTICATION_FAILED",
-            message: "Knotree Registry could not verify pull access to this repository.",
-        });
-    }
-
-    let service_ids = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM project_app_services WHERE registry_connection_id = $1",
-    )
-    .bind(connection_id)
-    .fetch_all(&state.db)
-    .await?;
-    if state.config.uses_kubernetes_workloads() {
-        for service_id in &service_ids {
-            cluster_kubernetes::update_app_image_pull_secret(
-                &state.config,
-                *service_id,
-                &connection.registry_username,
-                token,
-            )
-            .await
-            .map_err(|_| AppError::ServiceUnavailable {
-                code: "KNOTREE_REGISTRY_SECRET_UPDATE_FAILED",
-                message: "The Registry token was verified, but Kubernetes credentials could not be updated. Retry the rotation.",
-            })?;
-        }
-    }
-
-    let encrypted =
-        security::encrypt_secret(token, &state.config.database_credentials_encryption_key)?;
-    let row = sqlx::query_as::<_, RegistryConnectionRow>(
-        "UPDATE knotree_registry_connections
-         SET credential_ciphertext = $1, verified_at = now(), updated_at = now(),
-             delegated_credential_id = NULL, credential_expires_at = NULL
-         WHERE id = $2 AND project_id = $3 AND revoked_at IS NULL
-         RETURNING id, registry_username, repository, verified_at",
-    )
-    .bind(encrypted)
-    .bind(connection_id)
-    .bind(project_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AppError::NotFound {
-        code: "KNOTREE_REGISTRY_CONNECTION_NOT_FOUND",
-        message: "The Knotree Registry connection could not be found.",
-    })?;
-    Ok(Json(RegistryConnectionResponse {
-        id: row.id,
-        registry_host: REGISTRY_HOST.to_owned(),
-        username: row.registry_username,
-        repository: row.repository,
-        verified_at: row
-            .verified_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(AppError::internal)?,
     }))
 }
 
@@ -422,8 +260,10 @@ pub(crate) async fn load_credentials(
     project_id: Uuid,
     connection_id: Uuid,
 ) -> Result<Option<RegistryDockerCredentials>, AppError> {
-    // Connections created from an account always use the account's current
-    // credential, so reconnecting the account renews every derived project.
+    // Renew first, so a deploy never uses a credential Cloud could have renewed.
+    crate::registry_accounts::renew_if_needed(state, connection_id).await;
+    // Connections still on a retired account consent use the account's
+    // credential until the renewal above moves them to their own.
     let row = sqlx::query_as::<_, (String, String)>(
         "SELECT connection.registry_username,
                 COALESCE(account.credential_ciphertext, connection.credential_ciphertext)
@@ -513,21 +353,6 @@ pub(crate) fn validate_registry_repository(value: &str) -> Result<String, AppErr
     Ok(repository.to_owned())
 }
 
-pub(crate) fn validate_registry_username(value: &str) -> Result<String, AppError> {
-    let username = value.trim();
-    if username.is_empty()
-        || username.len() > 128
-        || username.contains(':')
-        || username.chars().any(char::is_control)
-    {
-        return Err(validation_error(
-            "username",
-            "Enter a valid Knotree Registry username.",
-        ));
-    }
-    Ok(username.to_owned())
-}
-
 fn is_valid_repository(repository: &str) -> bool {
     !repository.is_empty()
         && repository.len() <= 255
@@ -554,12 +379,6 @@ fn is_valid_tag(tag: &str) -> bool {
         && tag
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
-}
-
-pub(crate) async fn verify_pull_access(username: &str, password: &str, repository: &str) -> bool {
-    request_registry_bearer(username, password, repository)
-        .await
-        .is_some()
 }
 
 pub(crate) async fn resolve_tag_digest(
@@ -810,7 +629,8 @@ async fn persist_registry_event(
         immutable_image(repository, digest).expect("event repository and digest were validated");
     let services = sqlx::query_as::<_, (Uuid, String, String, Option<String>, Option<String>)>(
         "SELECT service.id, service.image, connection.repository,
-                account.issuer, account.subject
+                COALESCE(connection.owner_issuer, account.issuer),
+                COALESCE(connection.owner_subject, account.subject)
          FROM project_app_services AS service
          JOIN knotree_registry_connections AS connection
            ON connection.id = service.registry_connection_id

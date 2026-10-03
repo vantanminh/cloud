@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react"
-import { ContainerIcon, SearchIcon } from "lucide-react"
+import { SearchIcon } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
@@ -21,7 +20,6 @@ type KnotreeRegistryImagePickerProps = {
   accountLoading: boolean
   selectedRepository: string
   disabled?: boolean
-  onConnect: () => void
   onSelect: (repository: string, tag: string) => void
 }
 
@@ -30,18 +28,17 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 /**
- * Lists only the signed-in user's own Registry namespace (the API uses that
- * user's account credential) and picks a repository and tag to deploy.
+ * Lists only the signed-in Knotree account's own Registry namespace and picks
+ * a repository and tag to deploy. There is no connect step.
  */
 export function KnotreeRegistryImagePicker({
   account,
   accountLoading,
   selectedRepository,
   disabled,
-  onConnect,
   onSelect,
 }: KnotreeRegistryImagePickerProps) {
-  const usable = Boolean(account?.connected && !account.expired)
+  const usable = Boolean(account?.connected)
   const [repositories, setRepositories] = useState<
     KnotreeRegistryRepository[] | null
   >(null)
@@ -102,22 +99,9 @@ export function KnotreeRegistryImagePicker({
   if (!usable) {
     return (
       <div className="project-registry-picker">
-        <p className="project-dialog-description">
-          {account?.expired
-            ? "Your Knotree Registry connection expired. Reconnect to import images."
-            : "Connect your Knotree Registry account once to pick your images here and redeploy on every push."}
+        <p className="project-dialog-description" role="status">
+          Knotree Registry could not be reached. Try again in a moment.
         </p>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={disabled || account?.consentReady === false}
-          onClick={onConnect}
-        >
-          <ContainerIcon data-icon="inline-start" />
-          {account?.expired
-            ? "Reconnect Knotree Registry"
-            : "Connect Knotree Registry"}
-        </Button>
       </div>
     )
   }
@@ -130,7 +114,7 @@ export function KnotreeRegistryImagePicker({
     <div className="project-registry-picker">
       <Field>
         <FieldLabel htmlFor="knotreeRegistrySearch">
-          Import from {account?.namespace}
+          Your images · {account?.namespace}
         </FieldLabel>
         <div className="project-registry-search">
           <SearchIcon aria-hidden="true" />

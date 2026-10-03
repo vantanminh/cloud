@@ -125,7 +125,17 @@ pub async fn configuration(State(state): State<AppState>) -> Json<serde_json::Va
     Json(serde_json::json!({"enabled": state.config.sso.is_some()}))
 }
 
-pub async fn start(State(state): State<AppState>) -> Result<Response, AppError> {
+#[derive(Deserialize, Default)]
+pub struct StartQuery {
+    /// `signup` opens Knotree account creation instead of sign-in.
+    #[serde(default)]
+    intent: Option<String>,
+}
+
+pub async fn start(
+    State(state): State<AppState>,
+    Query(query): Query<StartQuery>,
+) -> Result<Response, AppError> {
     let config = configured(&state)?;
     let state_token = security::random_token();
     let browser = security::random_token();
@@ -150,6 +160,9 @@ pub async fn start(State(state): State<AppState>) -> Result<Response, AppError> 
         .append_pair("state", &state_token)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
+    if query.intent.as_deref() == Some("signup") {
+        url.query_pairs_mut().append_pair("screen_hint", "signup");
+    }
     let mut response = Redirect::to(url.as_str()).into_response();
     security::append_cookie(
         &mut response,
@@ -280,6 +293,8 @@ struct Profile {
     email: String,
     email_verified: bool,
     name: Option<String>,
+    #[serde(default)]
+    preferred_username: Option<String>,
 }
 
 async fn bounded_json<T: serde::de::DeserializeOwned>(
@@ -296,6 +311,28 @@ async fn bounded_json<T: serde::de::DeserializeOwned>(
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| invalid_login())
+}
+
+fn display_name(profile: &Profile) -> Option<String> {
+    profile
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+        .map(|name| name.chars().take(80).collect())
+}
+
+fn username(profile: &Profile) -> Option<String> {
+    profile
+        .preferred_username
+        .as_deref()
+        .filter(|name| {
+            (1..=39).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        .map(str::to_owned)
 }
 
 async fn provision_identity(
@@ -325,25 +362,29 @@ async fn provision_identity(
     .fetch_optional(&mut **transaction)
     .await?
     {
+        // The Knotree account is the source of truth: refresh what it shows.
+        sqlx::query(
+            "UPDATE users SET email=$2, full_name=COALESCE($3, full_name), username=$4,
+                    email_verified_at=COALESCE(email_verified_at, now()), updated_at=now()
+             WHERE id=$1",
+        )
+        .bind(user_id)
+        .bind(&email)
+        .bind(display_name(profile))
+        .bind(username(profile))
+        .execute(&mut **transaction)
+        .await?;
         return Ok(user_id);
     }
-    let name: String = profile
-        .name
-        .as_deref()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Knotree user")
-        .chars()
-        .take(80)
-        .collect();
+    let name = display_name(profile).unwrap_or_else(|| "Knotree user".to_owned());
     let user_id = Uuid::new_v4();
-    let inserted = sqlx::query("INSERT INTO users (id, full_name, email, password_hash, email_verified_at) VALUES ($1,$2,$3,'!sso-only',now()) ON CONFLICT DO NOTHING")
-        .bind(user_id).bind(name).bind(email).execute(&mut **transaction).await?;
-    if inserted.rows_affected() != 1 {
-        return Err(AppError::Conflict {
-            code: "SSO_ACCOUNT_LINK_REQUIRED",
-            message: "A Cloud account already uses this email. Sign in to that account to link your Knotree identity.",
-        });
-    }
+    sqlx::query("INSERT INTO users (id, full_name, email, username, password_hash, email_verified_at) VALUES ($1,$2,$3,$4,'!sso-only',now())")
+        .bind(user_id)
+        .bind(name)
+        .bind(email)
+        .bind(username(profile))
+        .execute(&mut **transaction)
+        .await?;
     sqlx::query("INSERT INTO sso_identities (issuer, subject, user_id) VALUES ($1,$2,$3)")
         .bind(issuer)
         .bind(&profile.sub)
@@ -452,7 +493,7 @@ mod tests {
             server.abort();
             return;
         };
-        let response = start(State(state.clone())).await.unwrap();
+        let response = start(State(state.clone()), Query(StartQuery::default())).await.unwrap();
         let url = Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
         let params: HashMap<String, String> = url
             .query_pairs()
@@ -530,6 +571,7 @@ mod tests {
             email,
             email_verified: false,
             name: Some("SSO User".into()),
+            preferred_username: Some("sso-user".into()),
         };
         assert!(
             provision_identity(&mut transaction, "https://accounts.knotree.com", &profile)
@@ -546,28 +588,33 @@ mod tests {
             .await
             .unwrap();
         assert!(!security::verify_password("any-password", &hash));
+
+        // Another Knotree account with the same email is a different Cloud user.
         let original_sub = profile.sub.clone();
         profile.sub = Uuid::new_v4().to_string();
-        assert!(matches!(
-            provision_identity(&mut transaction, "https://accounts.knotree.com", &profile).await,
-            Err(AppError::Conflict {
-                code: "SSO_ACCOUNT_LINK_REQUIRED",
-                ..
-            })
-        ));
+        let other = provision_identity(&mut transaction, "https://accounts.knotree.com", &profile)
+            .await
+            .unwrap();
+        assert_ne!(other, user);
+
+        // Email and username follow the Knotree account at every sign-in.
         profile.sub = original_sub;
-        assert!(
-            provision_identity(&mut transaction, "https://other.example.com", &profile)
-                .await
-                .is_err()
-        );
         profile.email = "changed@example.com".into();
+        profile.preferred_username = Some("renamed".into());
         assert_eq!(
             provision_identity(&mut transaction, "https://accounts.knotree.com", &profile)
                 .await
                 .unwrap(),
             user
         );
+        let (email, username): (String, Option<String>) =
+            sqlx::query_as("SELECT email, username FROM users WHERE id=$1")
+                .bind(user)
+                .fetch_one(&mut *transaction)
+                .await
+                .unwrap();
+        assert_eq!(email, "changed@example.com");
+        assert_eq!(username.as_deref(), Some("renamed"));
         transaction.rollback().await.unwrap();
     }
 
@@ -586,7 +633,7 @@ mod tests {
         else {
             return;
         };
-        let response = start(State(state.clone())).await.unwrap();
+        let response = start(State(state.clone()), Query(StartQuery::default())).await.unwrap();
         let url = Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
         let state_token = url
             .query_pairs()

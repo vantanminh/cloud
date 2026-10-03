@@ -6,9 +6,6 @@ import { AppServiceCreateDialog } from "@/components/app-service-create-dialog"
 
 const mocks = vi.hoisted(() => ({
   createAppService: vi.fn(),
-  createKnotreeRegistryConnection: vi.fn(),
-  startKnotreeRegistryConsent: vi.fn(),
-  listKnotreeRegistryConnections: vi.fn(),
   getGithubConnectionStatus: vi.fn(),
   getGithubAuthorizationUrl: vi.fn(),
   listAppServices: vi.fn(),
@@ -16,37 +13,27 @@ const mocks = vi.hoisted(() => ({
   listKnotreeRegistryRepositories: vi.fn(),
   listKnotreeRegistryTags: vi.fn(),
   importKnotreeRegistryRepository: vi.fn(),
-  startKnotreeRegistryAccountConsent: vi.fn(),
 }))
 
 vi.mock("@/lib/resources", () => ({
   createAppService: mocks.createAppService,
-  createKnotreeRegistryConnection: mocks.createKnotreeRegistryConnection,
-  startKnotreeRegistryConsent: mocks.startKnotreeRegistryConsent,
   getGithubConnectionStatus: mocks.getGithubConnectionStatus,
   getGithubAuthorizationUrl: mocks.getGithubAuthorizationUrl,
   listAppServices: mocks.listAppServices,
-  listKnotreeRegistryConnections: mocks.listKnotreeRegistryConnections,
   appServiceDeploymentEventsUrl: () => "/events",
   getKnotreeRegistryAccount: mocks.getKnotreeRegistryAccount,
   listKnotreeRegistryRepositories: mocks.listKnotreeRegistryRepositories,
   listKnotreeRegistryTags: mocks.listKnotreeRegistryTags,
   importKnotreeRegistryRepository: mocks.importKnotreeRegistryRepository,
-  startKnotreeRegistryAccountConsent: mocks.startKnotreeRegistryAccountConsent,
-  isKnotreeRegistryAuthorizationUrl: (value: string) =>
-    value.startsWith("https://registry.knotree.com/cloud/authorize/"),
 }))
 
 describe("AppServiceCreateDialog HTML pages", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.getKnotreeRegistryAccount.mockResolvedValue({
-      connected: false,
-      consentReady: true,
+      connected: true,
       autoDeployReady: false,
-      namespace: null,
-      expiresAt: null,
-      expired: false,
+      namespace: "kt-owner",
     })
     mocks.createAppService.mockResolvedValue({
       id: "svc-1",
@@ -168,63 +155,12 @@ describe("AppServiceCreateDialog HTML pages", () => {
     )
   })
 
-  it("starts repository consent and rejects an external authorization destination", async () => {
+  it("only deploys Knotree Registry images from the account's own namespace", async () => {
     const user = userEvent.setup()
-    mocks.listKnotreeRegistryConnections.mockResolvedValue({
-      connections: [],
-      autoDeployReady: false,
-      consentReady: true,
-    })
-    mocks.startKnotreeRegistryConsent.mockResolvedValue({
-      authorizationUrl: "https://attacker.example/cloud/authorize/123",
-    })
-    render(
-      <AppServiceCreateDialog
-        workspaceId="de305d54-75b4-431b-adb2-eb6b9e546014"
-        projectSlug="proj"
-        open
-        onOpenChange={vi.fn()}
-        onCreated={vi.fn()}
-      />
-    )
-    await user.type(
-      screen.getByLabelText("Docker image"),
-      "registry.knotree.com/kt-owner/app:production"
-    )
-    await user.selectOptions(
-      screen.getByLabelText("Image access"),
-      "knotree_registry"
-    )
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Authorize Registry pull access",
-      })
-    )
-    await waitFor(() =>
-      expect(mocks.startKnotreeRegistryConsent).toHaveBeenCalledWith(
-        "de305d54-75b4-431b-adb2-eb6b9e546014",
-        "proj",
-        "kt-owner/app"
-      )
-    )
-    expect(
-      await screen.findByText("Registry returned an invalid authorization URL.")
-    ).toBeInTheDocument()
-    expect(mocks.createKnotreeRegistryConnection).not.toHaveBeenCalled()
-  })
-
-  it("connects a pull-only Knotree Registry token before creating a service", async () => {
-    const user = userEvent.setup()
-    mocks.listKnotreeRegistryConnections.mockResolvedValue({
-      connections: [],
-      autoDeployReady: false,
-    })
-    mocks.createKnotreeRegistryConnection.mockResolvedValue({
-      id: "registry-connection-1",
+    mocks.listKnotreeRegistryRepositories.mockResolvedValue({
+      namespace: "kt-owner",
       registryHost: "registry.knotree.com",
-      username: "service-user",
-      repository: "team/api",
-      verifiedAt: "2026-09-23T09:00:00Z",
+      repositories: [],
     })
 
     render(
@@ -245,60 +181,31 @@ describe("AppServiceCreateDialog HTML pages", () => {
       screen.getByLabelText("Image access"),
       "knotree_registry"
     )
-    await waitFor(() => {
-      expect(mocks.listKnotreeRegistryConnections).toHaveBeenCalled()
-    })
+    // Nothing to connect: no consent button and no token fields.
     expect(
-      screen.getByRole("checkbox", { name: /Auto-deploy new image digests/ })
-    ).toBeDisabled()
-    await user.type(screen.getByLabelText("Registry username"), "service-user")
-    await user.type(screen.getByLabelText("Pull-only access token"), "pull-pat")
-    expect(
-      screen.getByText("repository:team/api:pull", { exact: false })
-    ).toBeInTheDocument()
-    await user.click(
-      screen.getByRole("button", { name: "Connect Knotree Registry & deploy" })
+      screen.queryByRole("button", { name: /Connect Knotree Registry/ })
+    ).toBeNull()
+    expect(screen.queryByLabelText("Pull-only access token")).toBeNull()
+    await waitFor(() =>
+      expect(mocks.getKnotreeRegistryAccount).toHaveBeenCalled()
     )
+    await user.click(screen.getByRole("button", { name: "Deploy service" }))
 
-    await waitFor(() => {
-      expect(mocks.createKnotreeRegistryConnection).toHaveBeenCalledWith(
-        "de305d54-75b4-431b-adb2-eb6b9e546014",
-        "proj",
-        {
-          username: "service-user",
-          token: "pull-pat",
-          repository: "team/api",
-        }
+    expect(
+      await screen.findByText(
+        "Choose an image from your namespace, registry.knotree.com/kt-owner/…."
       )
-      expect(mocks.createAppService).toHaveBeenCalledWith(
-        "de305d54-75b4-431b-adb2-eb6b9e546014",
-        "proj",
-        {
-          name: "App service",
-          image: "registry.knotree.com/team/api:production",
-          imageSource: "knotree_registry",
-          appPort: 3000,
-          registryConnectionId: "registry-connection-1",
-          autoDeploy: false,
-        }
-      )
-    })
+    ).toBeInTheDocument()
+    expect(mocks.importKnotreeRegistryRepository).not.toHaveBeenCalled()
+    expect(mocks.createAppService).not.toHaveBeenCalled()
   })
 
-  it("imports an image from the connected Registry account with auto-deploy", async () => {
+  it("imports an image from the account's Registry namespace with auto-deploy", async () => {
     const user = userEvent.setup()
     mocks.getKnotreeRegistryAccount.mockResolvedValue({
       connected: true,
-      consentReady: true,
       autoDeployReady: true,
       namespace: "kt-owner",
-      expiresAt: "2026-11-01T00:00:00Z",
-      expired: false,
-    })
-    mocks.listKnotreeRegistryConnections.mockResolvedValue({
-      connections: [],
-      autoDeployReady: true,
-      consentReady: true,
     })
     mocks.listKnotreeRegistryRepositories.mockResolvedValue({
       namespace: "kt-owner",
@@ -364,7 +271,7 @@ describe("AppServiceCreateDialog HTML pages", () => {
     expect(screen.getByLabelText("Docker image")).toHaveValue(
       "registry.knotree.com/kt-owner/api:latest"
     )
-    // The per-repository token fields are not needed for the user's own images.
+    // There is never a token to paste for the account's own images.
     expect(screen.queryByLabelText("Pull-only access token")).toBeNull()
     await user.click(
       screen.getByRole("checkbox", { name: /Auto-deploy new image digests/ })
@@ -390,6 +297,5 @@ describe("AppServiceCreateDialog HTML pages", () => {
         }
       )
     })
-    expect(mocks.createKnotreeRegistryConnection).not.toHaveBeenCalled()
   })
 })
