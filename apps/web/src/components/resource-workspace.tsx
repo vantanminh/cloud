@@ -8,12 +8,15 @@ import {
 } from "react"
 import {
   ActivityIcon,
+  BoxIcon,
   Clock3Icon,
   CopyIcon,
   DatabaseIcon,
+  FileCodeIcon,
   FileTextIcon,
   GitBranchIcon,
   HistoryIcon,
+  LayersIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -226,21 +229,28 @@ export function ResourceWorkspace({
       <div className="resource-workspace-sheet">
         <div className="resource-workspace-head">
           <div className="resource-workspace-identity">
-            <span
-              className={cn(
-                "resource-workspace-logo",
-                node.resource?.resourceType === "postgres"
-                  ? "postgres"
-                  : "project"
+            <span className="resource-workspace-logo" aria-hidden="true">
+              {node.resource?.resourceType === "postgres" ? (
+                <DatabaseIcon />
+              ) : node.resource?.resourceType === "redis" ? (
+                <LayersIcon />
+              ) : node.resource?.resourceType === "app" &&
+                isHtmlPage(node.resource) ? (
+                <FileCodeIcon />
+              ) : node.resource?.resourceType === "app" ? (
+                <BoxIcon />
+              ) : (
+                <GitBranchIcon />
               )}
-              aria-hidden="true"
-            >
-              {node.id === "postgres" ? <DatabaseIcon /> : <GitBranchIcon />}
             </span>
             <div className="resource-workspace-title-group">
               <h2 id="resource-workspace-title">{node.title}</h2>
               <p>
-                {node.type} · {environment}
+                <span>{node.type}</span>
+                <span aria-hidden="true">·</span>
+                <span className="mono">{environment}</span>
+                <span aria-hidden="true">·</span>
+                <span>{node.status}</span>
               </p>
             </div>
           </div>

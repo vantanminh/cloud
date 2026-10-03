@@ -9,6 +9,7 @@ import {
 
 import { useAuth } from "@/auth/auth-context"
 import { LoadingScreen } from "@/components/loading-screen"
+import { ThemeProvider } from "@/components/theme-provider"
 import { AuthPage } from "@/pages/auth-page"
 import { GitHubIntegrationPage } from "@/pages/github-integration-page"
 import { ProjectHomePage } from "@/pages/project-home-page"
@@ -16,27 +17,29 @@ import { NewWorkspacePage, WorkspacePage } from "@/pages/workspace-page"
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<SessionDestination />} />
-      <Route element={<PublicOnlyRoute />}>
-        <Route path="/login" element={<AuthPage mode="login" />} />
-        <Route path="/register" element={<AuthPage mode="register" />} />
-      </Route>
-      <Route element={<ProtectedRoute />}>
-        <Route path="/new/workspace" element={<WorkspaceCreationRoute />} />
-        <Route path="/settings" element={<SettingsRoute />} />
-        <Route
-          path="/settings/integrations"
-          element={<GitHubIntegrationPage />}
-        />
-        <Route
-          path="/workspace/:workspaceId/project/:projectSlug"
-          element={<ProjectRoute />}
-        />
-        <Route path="/workspace/:workspaceId" element={<WorkspaceRoute />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <ThemeProvider>
+      <Routes>
+        <Route path="/" element={<SessionDestination />} />
+        <Route element={<PublicOnlyRoute />}>
+          <Route path="/login" element={<AuthPage mode="login" />} />
+          <Route path="/register" element={<AuthPage mode="register" />} />
+        </Route>
+        <Route element={<ProtectedRoute />}>
+          <Route path="/new/workspace" element={<WorkspaceCreationRoute />} />
+          <Route path="/settings" element={<SettingsRoute />} />
+          <Route
+            path="/settings/integrations"
+            element={<GitHubIntegrationPage />}
+          />
+          <Route
+            path="/workspace/:workspaceId/project/:projectSlug"
+            element={<ProjectRoute />}
+          />
+          <Route path="/workspace/:workspaceId" element={<WorkspaceRoute />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </ThemeProvider>
   )
 }
 

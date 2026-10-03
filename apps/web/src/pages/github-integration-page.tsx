@@ -1,25 +1,24 @@
 import { useEffect, useState } from "react"
 import {
-  ArrowLeftIcon,
   CheckCircle2Icon,
+  FolderKanbanIcon,
   GitBranchIcon,
-  Link2OffIcon,
+  PlugIcon,
   RefreshCwIcon,
 } from "lucide-react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import {
+  AppShell,
+  BreadcrumbSeparator,
+  SidebarNavItem,
+} from "@/components/app-shell"
+import { BrandMark } from "@/components/brand-mark"
+import { LoadingScreen } from "@/components/loading-screen"
 import { KnotreeRegistryAccountCard } from "@/components/knotree-registry-account-card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import {
@@ -30,7 +29,7 @@ import {
 import type { GithubConnectionStatus } from "@/lib/types"
 
 export function GitHubIntegrationPage() {
-  const { session } = useAuth()
+  const { session, status } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [connection, setConnection] = useState<GithubConnectionStatus | null>(
@@ -119,172 +118,206 @@ export function GitHubIntegrationPage() {
     }
   }
 
-  return (
-    <main className="github-integration-page">
-      <header className="github-integration-header">
-        <div className="github-integration-header-inner">
-          <div className="github-integration-brand">
-            <span className="github-integration-brand-mark" aria-hidden="true">
-              <GitBranchIcon />
-            </span>
-            <div>
-              <p className="github-integration-eyebrow">Account settings</p>
-              <p className="github-integration-heading">Integrations</p>
-            </div>
+  const content = (
+    <div className="app-content">
+      <div className="app-page app-page-narrow">
+        <div className="page-header">
+          <div>
+            <span className="page-eyebrow">Account settings</span>
+            <h1>Integrations</h1>
+            <p>
+              Connect GitHub and Knotree Registry once and use their image
+              access across every project you deploy on Knotree.
+            </p>
           </div>
-          <Link className="github-integration-back" to={workspaceHref}>
-            <ArrowLeftIcon aria-hidden="true" />
+        </div>
+
+        <div className="settings-stack">
+          {callbackMessage && (
+            <Alert
+              variant={callbackStatus === "error" ? "destructive" : "default"}
+            >
+              <CheckCircle2Icon aria-hidden="true" />
+              <AlertDescription>{callbackMessage}</AlertDescription>
+            </Alert>
+          )}
+          {notice && (
+            <Alert>
+              <CheckCircle2Icon aria-hidden="true" />
+              <AlertDescription>{notice}</AlertDescription>
+            </Alert>
+          )}
+          {loadError && (
+            <Alert variant="destructive">
+              <AlertDescription>{loadError}</AlertDescription>
+            </Alert>
+          )}
+          {actionError && (
+            <Alert variant="destructive">
+              <AlertDescription>{actionError}</AlertDescription>
+            </Alert>
+          )}
+
+          <section className="settings-card" aria-labelledby="github-title">
+            <div className="settings-card-header">
+              <span className="settings-card-icon" aria-hidden="true">
+                <GitBranchIcon />
+              </span>
+              <div>
+                <h2 id="github-title">GitHub account</h2>
+                <p>Used for private images from GitHub Container Registry.</p>
+              </div>
+            </div>
+            <div className="settings-card-body">
+              {isLoading ? (
+                <div className="github-integration-loading" role="status">
+                  <Spinner />
+                  <span>Checking GitHub connection</span>
+                </div>
+              ) : connection?.connected ? (
+                <div className="connection-state is-connected">
+                  <span className="connection-dot" aria-hidden="true" />
+                  <div>
+                    <strong>Connected as @{connection.login}</strong>
+                    <p>
+                      Private <code>ghcr.io</code> images deployed by this
+                      account use this GitHub connection.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="connection-state">
+                  <span className="connection-dot" aria-hidden="true" />
+                  <div>
+                    <strong>Not connected</strong>
+                    <p>
+                      Connect GitHub to pull private container images. Public
+                      images do not need an account connection.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="settings-card-footer">
+              <span>OAuth · read:packages</span>
+              <div>
+                {connection?.connected ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isLoading || isConnecting || isDisconnecting}
+                      onClick={() => void connectGithub()}
+                    >
+                      {isConnecting ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <RefreshCwIcon data-icon="inline-start" />
+                      )}
+                      Reconnect
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={isLoading || isConnecting || isDisconnecting}
+                      onClick={() => void disconnectGithubAccount()}
+                    >
+                      {isDisconnecting && <Spinner data-icon="inline-start" />}
+                      Disconnect
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    size="sm"
+                    disabled={isLoading || isConnecting || isDisconnecting}
+                    onClick={() => void connectGithub()}
+                  >
+                    {isConnecting ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <GitBranchIcon data-icon="inline-start" />
+                    )}
+                    Connect GitHub
+                  </Button>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <KnotreeRegistryAccountCard />
+
+          <p className="settings-footnote">
+            These connections belong to <strong>{session?.user.email}</strong>{" "}
+            and are not shared with other Knotree users. Access can be removed
+            at any time.
+          </p>
+          {callbackStatus && (
+            <Button
+              variant="link"
+              className="justify-self-start px-0"
+              onClick={() =>
+                navigate("/settings/integrations", { replace: true })
+              }
+            >
+              Dismiss message
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
+  if (status === "loading") {
+    return <LoadingScreen />
+  }
+
+  if (!session?.workspace) {
+    return (
+      <main className="workspace-page">
+        <header className="justify-between">
+          <BrandMark compact />
+          <Link
+            className="text-[0.8125rem] text-muted-foreground hover:text-foreground"
+            to={workspaceHref}
+          >
             Back to workspace
           </Link>
-        </div>
-      </header>
+        </header>
+        <div className="w-full">{content}</div>
+      </main>
+    )
+  }
 
-      <section className="github-integration-content">
-        <div className="github-integration-intro">
-          <p className="github-integration-eyebrow">Developer access</p>
-          <h1>Integrations</h1>
-          <p>
-            Connect GitHub and Knotree Registry once and use their image access
-            across every project you deploy on Knotree.
-          </p>
-        </div>
-
-        {callbackMessage && (
-          <Alert
-            variant={callbackStatus === "error" ? "destructive" : "default"}
-          >
-            <CheckCircle2Icon aria-hidden="true" />
-            <AlertDescription>{callbackMessage}</AlertDescription>
-          </Alert>
-        )}
-        {notice && (
-          <Alert>
-            <CheckCircle2Icon aria-hidden="true" />
-            <AlertDescription>{notice}</AlertDescription>
-          </Alert>
-        )}
-        {loadError && (
-          <Alert variant="destructive">
-            <AlertDescription>{loadError}</AlertDescription>
-          </Alert>
-        )}
-        {actionError && (
-          <Alert variant="destructive">
-            <AlertDescription>{actionError}</AlertDescription>
-          </Alert>
-        )}
-
-        <Card className="github-integration-card">
-          <CardHeader className="github-integration-card-header">
-            <span className="github-integration-card-icon" aria-hidden="true">
-              <GitBranchIcon />
-            </span>
-            <div>
-              <CardTitle>GitHub account</CardTitle>
-              <CardDescription>
-                Used for private images from GitHub Container Registry.
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="github-integration-card-content">
-            {isLoading ? (
-              <div className="github-integration-loading" role="status">
-                <Spinner />
-                <span>Checking GitHub connection</span>
-              </div>
-            ) : connection?.connected ? (
-              <div className="github-integration-connected">
-                <div
-                  className="github-integration-status-dot"
-                  aria-hidden="true"
-                >
-                  <CheckCircle2Icon />
-                </div>
-                <div>
-                  <strong>Connected as @{connection.login}</strong>
-                  <p>
-                    Private <code>ghcr.io</code> images deployed by this account
-                    use this GitHub connection.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="github-integration-disconnected">
-                <div
-                  className="github-integration-status-dot"
-                  aria-hidden="true"
-                >
-                  <Link2OffIcon />
-                </div>
-                <div>
-                  <strong>Not connected</strong>
-                  <p>
-                    Connect GitHub to pull private container images. Public
-                    images do not need an account connection.
-                  </p>
-                </div>
-              </div>
-            )}
-          </CardContent>
-          <CardFooter className="github-integration-card-footer">
-            {connection?.connected ? (
-              <>
-                <Button
-                  variant="outline"
-                  disabled={isLoading || isConnecting || isDisconnecting}
-                  onClick={() => void connectGithub()}
-                >
-                  {isConnecting ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <RefreshCwIcon data-icon="inline-start" />
-                  )}
-                  Reconnect
-                </Button>
-                <Button
-                  variant="destructive"
-                  disabled={isLoading || isConnecting || isDisconnecting}
-                  onClick={() => void disconnectGithubAccount()}
-                >
-                  {isDisconnecting && <Spinner data-icon="inline-start" />}
-                  Disconnect
-                </Button>
-              </>
-            ) : (
-              <Button
-                disabled={isLoading || isConnecting || isDisconnecting}
-                onClick={() => void connectGithub()}
-              >
-                {isConnecting ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <GitBranchIcon data-icon="inline-start" />
-                )}
-                Connect GitHub
-              </Button>
-            )}
-          </CardFooter>
-        </Card>
-
-        <KnotreeRegistryAccountCard />
-
-        <p className="github-integration-footnote">
-          These connections belong to <strong>{session?.user.email}</strong> and
-          are not shared with other Knotree users. Access can be removed at any
-          time.
-        </p>
-        {callbackStatus && (
-          <Button
-            variant="link"
-            className="github-integration-dismiss"
-            onClick={() =>
-              navigate("/settings/integrations", { replace: true })
-            }
-          >
-            Dismiss message
-          </Button>
-        )}
-      </section>
-    </main>
+  return (
+    <AppShell
+      workspace={session.workspace}
+      user={session.user}
+      nav={
+        <SidebarNavItem
+          label="Projects"
+          icon={<FolderKanbanIcon />}
+          to={workspaceHref}
+        />
+      }
+      footerNav={
+        <SidebarNavItem
+          label="Integrations"
+          icon={<PlugIcon />}
+          active
+          to="/settings/integrations"
+        />
+      }
+      breadcrumbs={
+        <>
+          <Link className="app-breadcrumb-link" to={workspaceHref}>
+            {session.workspace.name}
+          </Link>
+          <BreadcrumbSeparator />
+          <span className="app-breadcrumb-current">Integrations</span>
+        </>
+      }
+    >
+      {content}
+    </AppShell>
   )
 }

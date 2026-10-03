@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react"
-import { CheckCircle2Icon, ContainerIcon, Link2OffIcon } from "lucide-react"
+import { ContainerIcon } from "lucide-react"
 
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
 import { getKnotreeRegistryAccount } from "@/lib/resources"
@@ -55,32 +48,32 @@ export function KnotreeRegistryAccountCard() {
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <Card className="github-integration-card">
-        <CardHeader className="github-integration-card-header">
-          <span className="github-integration-card-icon" aria-hidden="true">
+      <section className="settings-card" aria-labelledby="registry-title">
+        <div className="settings-card-header">
+          <span className="settings-card-icon" aria-hidden="true">
             <ContainerIcon />
           </span>
           <div>
-            <CardTitle>Knotree Registry</CardTitle>
-            <CardDescription>
+            <h2 id="registry-title">Knotree Registry</h2>
+            <p>
               Your registry.knotree.com images are available in every project
               and redeploy automatically when you push a tag.
-            </CardDescription>
+            </p>
           </div>
-        </CardHeader>
-        <CardContent className="github-integration-card-content">
+        </div>
+        <div className="settings-card-body">
           {isLoading ? (
             <div className="github-integration-loading" role="status">
               <Spinner />
               <span>Checking Knotree Registry</span>
             </div>
           ) : account?.connected ? (
-            <div className="github-integration-connected">
-              <div className="github-integration-status-dot" aria-hidden="true">
-                <CheckCircle2Icon />
-              </div>
+            <div className="connection-state is-connected">
+              <span className="connection-dot" aria-hidden="true" />
               <div>
-                <strong>Linked to your Knotree account · {account.namespace}</strong>
+                <strong>
+                  Linked to your Knotree account · {account.namespace}
+                </strong>
                 <p>
                   Nothing to connect or renew. Cloud only reads your own
                   namespace, and other users never see these images.
@@ -88,10 +81,8 @@ export function KnotreeRegistryAccountCard() {
               </div>
             </div>
           ) : (
-            <div className="github-integration-disconnected">
-              <div className="github-integration-status-dot" aria-hidden="true">
-                <Link2OffIcon />
-              </div>
+            <div className="connection-state">
+              <span className="connection-dot" aria-hidden="true" />
               <div>
                 <strong>Unavailable</strong>
                 <p>
@@ -101,8 +92,8 @@ export function KnotreeRegistryAccountCard() {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </>
   )
 }

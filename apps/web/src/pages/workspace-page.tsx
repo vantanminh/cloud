@@ -3,13 +3,18 @@ import {
   ArrowUpRightIcon,
   CheckIcon,
   FolderKanbanIcon,
-  LogOutIcon,
+  PlugIcon,
   PlusIcon,
-  Settings2Icon,
+  SearchIcon,
 } from "lucide-react"
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom"
 
 import { useAuth } from "@/auth/auth-context"
+import {
+  AppShell,
+  BreadcrumbSeparator,
+  SidebarNavItem,
+} from "@/components/app-shell"
 import { BrandMark } from "@/components/brand-mark"
 import { ProjectCreateDialog } from "@/components/project-create-dialog"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -23,6 +28,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { ApiError } from "@/lib/api"
+import { initials } from "@/lib/initials"
 import { listProjects } from "@/lib/projects"
 import type { Project, Workspace } from "@/lib/types"
 
@@ -81,15 +87,18 @@ export function NewWorkspacePage() {
   return (
     <WorkspaceFrame>
       <div className="workspace-content">
-        <div className="workspace-stepper" aria-label="Step 1 of 2">
-          <span className="workspace-stepper-active" />
-          <span />
+        <div className="workspace-step">
+          <div className="workspace-stepper" aria-label="Step 1 of 2">
+            <span className="workspace-stepper-active" />
+            <span />
+          </div>
+          <span aria-hidden="true">Step 1 of 2</span>
         </div>
-        <div className="flex flex-col gap-3">
-          <h1 className="font-heading text-3xl font-semibold tracking-[-0.04em] text-foreground sm:text-4xl">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-[1.375rem] font-semibold tracking-[-0.025em] text-foreground">
             Create your first workspace
           </h1>
-          <p className="text-base leading-7 text-muted-foreground">
+          <p className="text-sm leading-6 text-muted-foreground">
             A workspace is where your ideas come together.
           </p>
         </div>
@@ -125,14 +134,14 @@ export function NewWorkspacePage() {
             type="submit"
             size="lg"
             disabled={isSubmitting}
-            className="h-11 w-full text-sm"
+            className="h-9 w-full text-sm"
           >
             {isSubmitting && <Spinner data-icon="inline-start" />}
             Create workspace
           </Button>
         </form>
 
-        <p className="text-center text-sm text-muted-foreground">
+        <p className="text-center text-[0.8125rem] text-muted-foreground">
           Projects and services can be added any time.
         </p>
       </div>
@@ -141,13 +150,14 @@ export function NewWorkspacePage() {
 }
 
 export function WorkspacePage() {
-  const { session, signOut } = useAuth()
+  const { session } = useAuth()
   const { workspaceId: routeWorkspaceId } = useParams()
   const navigate = useNavigate()
   const workspace = session?.workspace
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [projectsError, setProjectsError] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [search, setSearch] = useState("")
   const workspaceId = workspace?.id
 
   useEffect(() => {
@@ -179,19 +189,17 @@ export function WorkspacePage() {
     }
   }, [workspaceId])
 
-  async function handleSignOut() {
-    try {
-      await signOut()
-    } finally {
-      navigate("/login", { replace: true })
-    }
-  }
-
   if (!session || !workspace || workspace.id !== routeWorkspaceId) {
     return null
   }
 
   const currentWorkspaceId = workspace.id
+  const normalizedSearch = search.trim().toLowerCase()
+  const visibleProjects = (projects ?? []).filter(
+    (project) =>
+      !normalizedSearch ||
+      `${project.name} ${project.slug}`.toLowerCase().includes(normalizedSearch)
+  )
 
   function handleProjectCreated(project: Project) {
     setProjects((currentProjects) =>
@@ -202,138 +210,152 @@ export function WorkspacePage() {
   }
 
   return (
-    <main className="workspace-projects-page">
-      <header className="workspace-projects-header">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
-          <BrandMark compact />
-          <div className="flex items-center gap-4">
-            <span className="hidden text-sm text-muted-foreground sm:inline">
-              {session.user.email}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsCreateOpen(true)}
-            >
-              <PlusIcon data-icon="inline-start" />
-              New project
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => navigate("/settings/integrations")}
-            >
-              <Settings2Icon data-icon="inline-start" />
-              Settings
-            </Button>
-            <Button variant="ghost" size="sm" onClick={handleSignOut}>
-              <LogOutIcon data-icon="inline-start" />
-              Sign out
-            </Button>
-          </div>
-        </div>
-      </header>
-      <section className="workspace-projects-content">
-        <div className="workspace-projects-intro">
-          <div className="flex max-w-xl flex-col gap-3">
-            <p className="workspace-projects-eyebrow">Workspace</p>
-            <h1 className="font-heading text-4xl font-semibold tracking-[-0.04em] text-foreground sm:text-5xl">
-              Welcome to {workspace.name}
-            </h1>
-            <p className="text-lg leading-8 text-muted-foreground">
-              Create a project to map its services, data, and infrastructure in
-              one place.
-            </p>
-          </div>
-          <Button size="lg" onClick={() => setIsCreateOpen(true)}>
-            <PlusIcon data-icon="inline-start" />
-            New project
-          </Button>
-        </div>
-
-        {projectsError && (
-          <Alert variant="destructive">
-            <AlertDescription>{projectsError}</AlertDescription>
-          </Alert>
-        )}
-
-        {projects === null ? (
-          <div className="workspace-projects-loading" role="status">
-            <Spinner />
-            <span>Loading projects</span>
-          </div>
-        ) : projects.length === 0 ? (
-          <section
-            className="workspace-empty-projects"
-            aria-labelledby="empty-projects-title"
-          >
-            <div className="workspace-empty-icon" aria-hidden="true">
-              <FolderKanbanIcon />
-            </div>
-            <div className="flex max-w-md flex-col gap-3">
-              <h2
-                id="empty-projects-title"
-                className="text-2xl font-semibold tracking-[-0.03em]"
-              >
-                Create your first project
-              </h2>
-              <p className="leading-7 text-muted-foreground">
-                Projects give your workspace a focused home for topology,
-                resources, and future deployments.
+    <AppShell
+      workspace={workspace}
+      user={session.user}
+      nav={
+        <SidebarNavItem
+          label="Projects"
+          icon={<FolderKanbanIcon />}
+          active
+          to={`/workspace/${workspace.id}`}
+        />
+      }
+      footerNav={
+        <SidebarNavItem
+          label="Integrations"
+          icon={<PlugIcon />}
+          to="/settings/integrations"
+        />
+      }
+      breadcrumbs={
+        <>
+          <span className="app-breadcrumb-current">{workspace.name}</span>
+          <BreadcrumbSeparator />
+          <span className="app-breadcrumb-link">Projects</span>
+        </>
+      }
+      actions={
+        <Button size="sm" onClick={() => setIsCreateOpen(true)}>
+          <PlusIcon data-icon="inline-start" />
+          New project
+        </Button>
+      }
+    >
+      <div className="app-content">
+        <div className="app-page">
+          <div className="page-header">
+            <div>
+              <span className="page-eyebrow">Workspace</span>
+              <h1>Welcome to {workspace.name}</h1>
+              <p>
+                Each project groups its services, databases and private network.
               </p>
             </div>
-            <Button size="lg" onClick={() => setIsCreateOpen(true)}>
-              <PlusIcon data-icon="inline-start" />
-              Create project
-            </Button>
-          </section>
-        ) : (
-          <section aria-labelledby="projects-title">
-            <div className="workspace-projects-list-heading">
+          </div>
+
+          {projectsError && (
+            <Alert variant="destructive" className="mb-6">
+              <AlertDescription>{projectsError}</AlertDescription>
+            </Alert>
+          )}
+
+          {projects === null ? (
+            <div className="loading-row" role="status">
+              <Spinner />
+              <span>Loading projects</span>
+            </div>
+          ) : projects.length === 0 ? (
+            <section
+              className="empty-panel"
+              aria-labelledby="empty-projects-title"
+            >
+              <span className="empty-icon" aria-hidden="true">
+                <FolderKanbanIcon />
+              </span>
               <div>
-                <h2
-                  id="projects-title"
-                  className="text-2xl font-semibold tracking-[-0.03em]"
-                >
-                  Projects
-                </h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Choose a project to open its home.
+                <h2 id="empty-projects-title">Create your first project</h2>
+                <p>
+                  Projects give your workspace a focused home for topology,
+                  resources, and deployments.
                 </p>
               </div>
-              <span className="workspace-project-count">
-                {projects.length}{" "}
-                {projects.length === 1 ? "project" : "projects"}
-              </span>
-            </div>
-            <div className="workspace-project-list">
-              {projects.map((project) => (
-                <Link
-                  key={project.id}
-                  to={`/workspace/${workspace.id}/project/${project.slug}`}
-                  className="workspace-project-item"
-                >
-                  <span className="workspace-project-icon" aria-hidden="true">
-                    <FolderKanbanIcon />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="truncate font-semibold text-foreground">
-                      {project.name}
-                    </span>
-                    <span className="truncate text-sm text-muted-foreground">
-                      /{project.slug}
-                    </span>
-                  </span>
-                  <ArrowUpRightIcon
-                    className="workspace-project-arrow"
-                    aria-hidden="true"
+              <Button onClick={() => setIsCreateOpen(true)}>
+                <PlusIcon data-icon="inline-start" />
+                Create project
+              </Button>
+              <ol className="empty-steps" aria-label="How projects work">
+                <li>
+                  <span>01</span>Create a project
+                </li>
+                <li>
+                  <span>02</span>Add services and data
+                </li>
+                <li>
+                  <span>03</span>Deploy and observe
+                </li>
+              </ol>
+            </section>
+          ) : (
+            <section aria-labelledby="projects-title">
+              <div className="projects-toolbar">
+                <div className="flex items-baseline gap-2.5">
+                  <h2 id="projects-title">Projects</h2>
+                  <span>{projects.length}</span>
+                </div>
+                <label className="search-field">
+                  <SearchIcon aria-hidden="true" />
+                  <span className="sr-only">Search projects</span>
+                  <input
+                    type="search"
+                    value={search}
+                    placeholder="Search projects"
+                    onChange={(event) => setSearch(event.target.value)}
                   />
-                </Link>
-              ))}
-            </div>
-          </section>
-        )}
-      </section>
+                </label>
+              </div>
+              <div className="workspace-project-list">
+                {visibleProjects.map((project) => (
+                  <Link
+                    key={project.id}
+                    to={`/workspace/${workspace.id}/project/${project.slug}`}
+                    className="workspace-project-item"
+                  >
+                    <span className="workspace-project-item-head">
+                      <span className="project-initial" aria-hidden="true">
+                        {initials(project.name)}
+                      </span>
+                      <ArrowUpRightIcon
+                        className="workspace-project-arrow"
+                        aria-hidden="true"
+                      />
+                    </span>
+                    <span className="workspace-project-item-body">
+                      <strong>{project.name}</strong>
+                      <span>/{project.slug}</span>
+                    </span>
+                  </Link>
+                ))}
+                {!normalizedSearch && (
+                  <button
+                    type="button"
+                    className="workspace-project-item workspace-project-new"
+                    onClick={() => setIsCreateOpen(true)}
+                  >
+                    <PlusIcon aria-hidden="true" />
+                    New project
+                  </button>
+                )}
+              </div>
+              {visibleProjects.length === 0 && (
+                <p className="loading-row">
+                  No projects match &ldquo;{search.trim()}&rdquo;.
+                </p>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
       <ProjectCreateDialog
         key={isCreateOpen ? "project-dialog-open" : "project-dialog-closed"}
         workspaceId={currentWorkspaceId}
@@ -341,17 +363,17 @@ export function WorkspacePage() {
         onOpenChange={setIsCreateOpen}
         onCreated={handleProjectCreated}
       />
-    </main>
+    </AppShell>
   )
 }
 
 function WorkspaceFrame({ children }: { children: ReactNode }) {
   return (
     <main className="workspace-page">
-      <div className="workspace-frame">
-        <BrandMark />
-        {children}
-      </div>
+      <header>
+        <BrandMark compact />
+      </header>
+      <div className="workspace-frame">{children}</div>
     </main>
   )
 }
@@ -369,15 +391,15 @@ function WorkspaceCreated({
         <div className="workspace-ready-mark" aria-hidden="true">
           <CheckIcon />
         </div>
-        <div className="flex flex-col gap-3 text-center">
-          <h1 className="font-heading text-3xl font-semibold tracking-[-0.04em] text-foreground sm:text-4xl">
+        <div className="flex flex-col gap-2 text-center">
+          <h1 className="text-[1.375rem] font-semibold tracking-[-0.025em] text-foreground">
             Workspace created
           </h1>
-          <p className="text-base leading-7 text-muted-foreground">
+          <p className="text-sm leading-6 text-muted-foreground">
             {workspace.name} is ready for your ideas.
           </p>
         </div>
-        <Button size="lg" className="h-11 w-full text-sm" onClick={onContinue}>
+        <Button size="lg" className="h-9 w-full text-sm" onClick={onContinue}>
           Continue to workspace
         </Button>
       </div>
