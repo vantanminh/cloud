@@ -81,6 +81,27 @@ export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {}
 ): Promise<T> {
+  try {
+    return await sendApiRequest<T>(path, options)
+  } catch (error) {
+    // The CSRF cookie is per browser; if it changed since this tab cached its
+    // token (sign-in, logout, another tab), fetch a fresh one and retry once.
+    if (
+      error instanceof ApiError &&
+      error.status === 403 &&
+      (error.code === "CSRF_INVALID" || error.code === "CSRF_REQUIRED")
+    ) {
+      resetCsrfToken()
+      return sendApiRequest<T>(path, options)
+    }
+    throw error
+  }
+}
+
+async function sendApiRequest<T>(
+  path: string,
+  options: ApiRequestOptions
+): Promise<T> {
   const method = (options.method ?? "GET").toUpperCase()
   const headers = new Headers(options.headers)
   headers.set("Accept", "application/json")
