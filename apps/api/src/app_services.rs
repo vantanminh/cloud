@@ -49,9 +49,10 @@ use crate::{
     models::{
         AccountDeploymentLog, AppServiceDatabaseConnectionResponse, AppServiceDeploymentResponse,
         AppServiceLogsResponse, AppServiceMetricPoint, AppServiceMetricsResponse,
-        AppServiceResponse, CreateAppServiceRequest, UpdateAppServiceAutoDeployRequest,
+        AppServiceResponse, CreateAppServiceRequest, RegistryDeployHistoryResponse,
+        RegistryDeployJobResponse, UpdateAppServiceAutoDeployRequest,
         UpdateAppServiceDatabaseRequest, UpdateAppServicePublicAccessRequest,
-        UpdateAppServiceRequest,
+        UpdateAppServiceRegistryConnectionRequest, UpdateAppServiceRequest,
     },
     html_pages::{self, IMAGE_SOURCE_HTML, IMAGE_SOURCE_HTML_GITHUB},
     knotree_registry::{self, RegistryDockerCredentials},
@@ -1275,6 +1276,189 @@ pub async fn update_auto_deploy(
         .await?;
     }
     transaction.commit().await?;
+
+    let database =
+        database_resource_by_id(&state, project_id, service.database_resource_id).await?;
+    Ok(Json(app_service_response(
+        &service,
+        &state.config.app_service_public_host,
+        state.config.bind_addr.port(),
+        state.config.app_service_public_domain.as_deref(),
+        &state.config.app_service_public_scheme,
+        database.as_ref(),
+        latest_deployment(&state.db, service.id).await?,
+    )?))
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RegistryDeployJobRow {
+    id: Uuid,
+    image_digest: String,
+    status: String,
+    attempt_count: i32,
+    last_error: Option<String>,
+    deployment_id: Option<Uuid>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+const REGISTRY_DEPLOY_HISTORY_LIMIT: i64 = 10;
+
+pub async fn registry_deploys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+) -> Result<Json<RegistryDeployHistoryResponse>, AppError> {
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM project_app_services WHERE id = $1 AND project_id = $2)",
+    )
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_one(&state.db)
+    .await?;
+    if !exists {
+        return Err(AppError::NotFound {
+            code: "APP_SERVICE_NOT_FOUND",
+            message: "The app service could not be found.",
+        });
+    }
+    let rows = sqlx::query_as::<_, RegistryDeployJobRow>(
+        "SELECT id, image_digest, status, attempt_count, last_error, deployment_id,
+                created_at, updated_at
+         FROM knotree_registry_deploy_jobs
+         WHERE app_service_id = $1
+         ORDER BY created_at DESC, id DESC
+         LIMIT $2",
+    )
+    .bind(app_service_id)
+    .bind(REGISTRY_DEPLOY_HISTORY_LIMIT)
+    .fetch_all(&state.db)
+    .await?;
+    let jobs = rows
+        .into_iter()
+        .map(|row| {
+            Ok(RegistryDeployJobResponse {
+                id: row.id,
+                image_digest: row.image_digest,
+                status: row.status,
+                attempt_count: row.attempt_count,
+                last_error: row.last_error,
+                deployment_id: row.deployment_id,
+                received_at: row
+                    .created_at
+                    .format(&Rfc3339)
+                    .map_err(AppError::internal)?,
+                updated_at: row
+                    .updated_at
+                    .format(&Rfc3339)
+                    .map_err(AppError::internal)?,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    Ok(Json(RegistryDeployHistoryResponse {
+        app_service_id,
+        auto_deploy_ready: state.config.knotree_registry_webhook_secret.is_some(),
+        jobs,
+    }))
+}
+
+/// Attach a project Registry connection to an existing Registry service, so a
+/// service whose connection was disconnected can pull and auto-deploy again
+/// without being recreated.
+pub async fn update_registry_connection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workspace_id, project_slug, app_service_id)): Path<(String, String, Uuid)>,
+    Json(input): Json<UpdateAppServiceRegistryConnectionRequest>,
+) -> Result<Json<AppServiceResponse>, AppError> {
+    security::require_csrf(&headers, &state.config)?;
+    let user = auth::authenticate(&state, &headers).await?;
+    let project_id =
+        projects::accessible_project_id(&state, user.id, &workspace_id, &project_slug).await?;
+    let existing = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "SELECT {APP_SERVICE_COLUMNS} FROM project_app_services WHERE id = $1 AND project_id = $2"
+    ))
+    .bind(app_service_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "APP_SERVICE_NOT_FOUND",
+        message: "The app service could not be found.",
+    })?;
+    if existing.image_source != IMAGE_SOURCE_KNOTREE_REGISTRY {
+        return Err(AppError::BadRequest {
+            code: "REGISTRY_CONNECTION_SOURCE_UNSUPPORTED",
+            message: "Only Knotree Registry services can use a Registry connection.",
+        });
+    }
+    let image = knotree_registry::parse_registry_image(&existing.image).ok_or_else(|| {
+        AppError::internal("the stored Knotree Registry image reference is invalid")
+    })?;
+    let repository = sqlx::query_scalar::<_, String>(
+        "SELECT repository FROM knotree_registry_connections
+         WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL
+           AND (credential_expires_at IS NULL OR credential_expires_at > now())",
+    )
+    .bind(input.connection_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound {
+        code: "KNOTREE_REGISTRY_CONNECTION_NOT_FOUND",
+        message: "The Knotree Registry connection could not be found.",
+    })?;
+    if repository != image.repository {
+        return Err(AppError::BadRequest {
+            code: "KNOTREE_REGISTRY_REPOSITORY_MISMATCH",
+            message: "This connection grants pull access to a different repository.",
+        });
+    }
+
+    if state.config.uses_kubernetes_workloads() {
+        let credentials =
+            knotree_registry::load_credentials(&state, project_id, input.connection_id)
+                .await?
+                .ok_or(AppError::NotFound {
+                    code: "KNOTREE_REGISTRY_CONNECTION_NOT_FOUND",
+                    message: "The Knotree Registry connection could not be found.",
+                })?;
+        cluster_kubernetes::update_app_image_pull_secret(
+            &state.config,
+            app_service_id,
+            &credentials.username,
+            &credentials.password,
+        )
+        .await
+        .map_err(|_| AppError::ServiceUnavailable {
+            code: "KNOTREE_REGISTRY_SECRET_UPDATE_FAILED",
+            message: "The connection is valid, but Kubernetes pull credentials could not be updated. Try again.",
+        })?;
+    }
+
+    let service = sqlx::query_as::<_, AppServiceRow>(&format!(
+        "UPDATE project_app_services
+         SET registry_connection_id = $1, auto_deploy_error = NULL, updated_at = now()
+         WHERE id = $2 AND project_id = $3 AND image_source = $4
+           AND EXISTS (
+               SELECT 1 FROM knotree_registry_connections
+               WHERE id = $1 AND project_id = $3 AND revoked_at IS NULL
+           )
+         RETURNING {APP_SERVICE_COLUMNS}"
+    ))
+    .bind(input.connection_id)
+    .bind(app_service_id)
+    .bind(project_id)
+    .bind(IMAGE_SOURCE_KNOTREE_REGISTRY)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::Conflict {
+        code: "KNOTREE_REGISTRY_CONNECTION_CHANGED",
+        message: "The Registry connection changed while it was being attached. Try again.",
+    })?;
 
     let database =
         database_resource_by_id(&state, project_id, service.database_resource_id).await?;
@@ -5456,5 +5640,131 @@ mod tests {
         .await
         .expect("assigned subdomain");
         assert!(subdomain.is_some());
+    }
+
+    #[tokio::test]
+    async fn registry_service_reconnects_and_lists_recent_registry_deploys() {
+        let Some(state) = crate::test_support::test_app_state_configured(|config| {
+            config.database_cluster_provider = "docker".to_owned();
+        })
+        .await
+        else {
+            return;
+        };
+        let seed = crate::test_support::seed_owner_project(&state).await;
+        let headers = crate::test_support::session_headers(&state, seed.user_id).await;
+        let ciphertext = security::encrypt_secret(
+            "pull-token",
+            &state.config.database_credentials_encryption_key,
+        )
+        .expect("encrypt token");
+        let connection_id = Uuid::new_v4();
+        let other_connection_id = Uuid::new_v4();
+        for (id, repository) in [
+            (connection_id, "team/api"),
+            (other_connection_id, "team/web"),
+        ] {
+            sqlx::query(
+                "INSERT INTO knotree_registry_connections
+                    (id, project_id, user_id, registry_username, repository, credential_ciphertext)
+                 VALUES ($1, $2, $3, 'deployer', $4, $5)",
+            )
+            .bind(id)
+            .bind(seed.project_id)
+            .bind(seed.user_id)
+            .bind(repository)
+            .bind(&ciphertext)
+            .execute(&state.db)
+            .await
+            .expect("seed connection");
+        }
+        let service_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO project_app_services
+                (id, project_id, name, image, image_source, app_port, status, auto_deploy_enabled,
+                 auto_deploy_error)
+             VALUES ($1, $2, 'API', 'registry.knotree.com/team/api:production',
+                     'knotree_registry', 8080, 'ready', FALSE,
+                     'Knotree Registry connection was disconnected.')",
+        )
+        .bind(service_id)
+        .bind(seed.project_id)
+        .execute(&state.db)
+        .await
+        .expect("seed disconnected registry service");
+        let path = || {
+            Path((
+                seed.workspace_route_id.clone(),
+                seed.project_slug.clone(),
+                service_id,
+            ))
+        };
+
+        let mismatch = update_registry_connection(
+            State(state.clone()),
+            headers.clone(),
+            path(),
+            Json(UpdateAppServiceRegistryConnectionRequest {
+                connection_id: other_connection_id,
+            }),
+        )
+        .await
+        .err()
+        .expect("a connection for another repository is rejected");
+        assert!(matches!(
+            mismatch,
+            AppError::BadRequest {
+                code: "KNOTREE_REGISTRY_REPOSITORY_MISMATCH",
+                ..
+            }
+        ));
+
+        let Json(reconnected) = update_registry_connection(
+            State(state.clone()),
+            headers.clone(),
+            path(),
+            Json(UpdateAppServiceRegistryConnectionRequest { connection_id }),
+        )
+        .await
+        .expect("matching connection is attached");
+        assert_eq!(reconnected.registry_connection_id, Some(connection_id));
+        assert_eq!(reconnected.auto_deploy_error, None);
+
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let delivery_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO knotree_registry_webhook_deliveries (delivery_id, event_kind)
+             VALUES ($1, 'tag_updated')",
+        )
+        .bind(delivery_id)
+        .execute(&state.db)
+        .await
+        .expect("seed delivery");
+        sqlx::query(
+            "INSERT INTO knotree_registry_deploy_jobs
+                (id, delivery_id, app_service_id, image_digest, immutable_image, status, last_error)
+             VALUES ($1, $2, $3, $4, $5, 'failed', 'Registry image deployment failed.')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(delivery_id)
+        .bind(service_id)
+        .bind(&digest)
+        .bind(format!("registry.knotree.com/team/api@{digest}"))
+        .execute(&state.db)
+        .await
+        .expect("seed deploy job");
+
+        let Json(history) = registry_deploys(State(state.clone()), headers.clone(), path())
+            .await
+            .expect("history is readable by a project member");
+        assert_eq!(history.app_service_id, service_id);
+        assert!(!history.auto_deploy_ready);
+        assert_eq!(history.jobs.len(), 1);
+        assert_eq!(history.jobs[0].image_digest, digest);
+        assert_eq!(history.jobs[0].status, "failed");
+        assert_eq!(
+            history.jobs[0].last_error.as_deref(),
+            Some("Registry image deployment failed.")
+        );
     }
 }

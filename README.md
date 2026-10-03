@@ -195,19 +195,17 @@ go test ./... # from sdks/images/go
 
 ## Deployment
 
-The Vite output is configured for an assets-only Cloudflare Worker at
-`cloud.knotree.com`:
+Production is deployed by GitHub CI on every push to `main`: the `deploy` job
+rolls out the API and web images (by digest) to k3s, and `cloud.knotree.com`
+reaches them through Cloudflare's proxied DNS record, nginx-edge and the Traefik
+IngressRoute (API under `/api`, the dashboard everywhere else). See
+`deploy/ci/README.md`.
 
-```powershell
-pnpm --dir apps/web build
-pnpm --dir apps/web exec wrangler deploy
-```
-
-Set `apps/web/.env.production` (or the CI build environment) to:
-
-```text
-VITE_API_BASE_URL=https://cloudapi.knotree.com/api/v1
-```
+Do not attach a Cloudflare Worker custom domain to `cloud.knotree.com`. A
+custom domain replaces the proxied DNS record, so the Worker answers every
+request, including `/api/v1`, and the CI deploy stops being reachable. That
+includes `apps/web/wrangler.jsonc` (`pnpm --dir apps/web exec wrangler deploy`)
+and the Worker of the retired `knotree-cloud` repository.
 
 The API image is in `apps/api/Dockerfile`. The Helm chart in
 `deploy/helm/knotree-api` expects an existing secret containing `DATABASE_URL`.

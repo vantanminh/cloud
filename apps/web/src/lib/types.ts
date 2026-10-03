@@ -129,6 +129,26 @@ export type KnotreeRegistryConnectionList = {
   consentReady?: boolean
 }
 
+export type RegistryDeployJobStatus =
+  "pending" | "running" | "succeeded" | "failed"
+
+export type RegistryDeployJob = {
+  id: string
+  imageDigest: string
+  status: RegistryDeployJobStatus
+  attemptCount: number
+  lastError: string | null
+  deploymentId: string | null
+  receivedAt: string
+  updatedAt: string
+}
+
+export type RegistryDeployHistory = {
+  appServiceId: string
+  autoDeployReady: boolean
+  jobs: RegistryDeployJob[]
+}
+
 export type DatabaseTable = {
   schemaName: string
   tableName: string
