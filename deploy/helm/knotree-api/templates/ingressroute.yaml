@@ -25,7 +25,7 @@ spec:
 {{- if .Values.web.enabled }}
     - match: Host(`{{ .Values.web.ingress.host }}`)
       kind: Rule
-      priority: 1000
+      priority: 100
       services:
         - name: {{ include "knotree-api.fullname" . }}-web
           port: {{ .Values.web.service.port }}
